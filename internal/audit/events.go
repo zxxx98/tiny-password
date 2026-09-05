@@ -23,28 +23,36 @@ const (
 	EventUserDeleted         = "user.deleted"
 	EventUserSessionsRevoked = "user.sessions.revoked"
 	// Item lifecycle events (design §7.3). Field reveals and copies are
-	// recorded by the workspace milestone; trash/purge follow in T12.
-	EventVaultItemCreated = "vault.item.created"
-	EventVaultItemUpdated = "vault.item.updated"
-	EventVaultItemViewed  = "vault.item.viewed"
+	// recorded by the workspace milestone.
+	EventVaultItemCreated         = "vault.item.created"
+	EventVaultItemUpdated         = "vault.item.updated"
+	EventVaultItemViewed          = "vault.item.viewed"
+	EventVaultItemTrashed         = "vault.item.trashed"
+	EventVaultItemRestored        = "vault.item.restored"
+	EventVaultItemPurged          = "vault.item.purged"
+	EventVaultItemHistoryRestored = "vault.item.history_restored"
 )
 
 var allowlist = map[string]bool{
-	EventSetupSuccess:        true,
-	EventSetupFailure:        true,
-	EventLoginSuccess:        true,
-	EventLoginFailure:        true,
-	EventLogout:              true,
-	EventSessionRevoked:      true,
-	EventPasswordChanged:     true,
-	EventUserCreated:         true,
-	EventUserDisabled:        true,
-	EventUserEnabled:         true,
-	EventUserDeleted:         true,
-	EventUserSessionsRevoked: true,
-	EventVaultItemCreated:    true,
-	EventVaultItemUpdated:    true,
-	EventVaultItemViewed:     true,
+	EventSetupSuccess:             true,
+	EventSetupFailure:             true,
+	EventLoginSuccess:             true,
+	EventLoginFailure:             true,
+	EventLogout:                   true,
+	EventSessionRevoked:           true,
+	EventPasswordChanged:          true,
+	EventUserCreated:              true,
+	EventUserDisabled:             true,
+	EventUserEnabled:              true,
+	EventUserDeleted:              true,
+	EventUserSessionsRevoked:      true,
+	EventVaultItemCreated:         true,
+	EventVaultItemUpdated:         true,
+	EventVaultItemViewed:          true,
+	EventVaultItemTrashed:         true,
+	EventVaultItemRestored:        true,
+	EventVaultItemPurged:          true,
+	EventVaultItemHistoryRestored: true,
 }
 
 // Results are restricted to the database CHECK constraint's domain.

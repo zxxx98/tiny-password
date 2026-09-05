@@ -32,6 +32,11 @@ const itemsMaxBodyBytes = 288 << 10
 // appended so a cursor can never be replayed under different filters.
 const itemsListFilters = "v1:items"
 
+const (
+	itemsTrashFilters   = "v1:trash"
+	itemsHistoryFilters = "v1:history:"
+)
+
 type itemCreateRequest struct {
 	ItemType   string          `json:"item_type"`
 	VaultScope string          `json:"vault_scope"`
@@ -81,6 +86,90 @@ func registerItems(api *http.ServeMux, deps ItemsDeps) {
 		}
 		update := vault.UpdateInput{Revision: input.Revision, Tags: input.Tags, Favorite: input.Favorite, Payload: input.Payload}
 		detail, err := deps.Service.Update(r.Context(), principal, r.PathValue("itemId"), update)
+		if err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
+	}))
+
+	// Trash lifecycle (T12): delete marks deleted_at only; restore brings
+	// the item back unchanged; purge removes it permanently.
+	api.Handle("DELETE /api/v1/items/{itemId}", guarded(func(w http.ResponseWriter, r *http.Request) {
+		if err := deps.Service.Trash(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId")); err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	api.Handle("POST /api/v1/items/{itemId}/restore", guarded(func(w http.ResponseWriter, r *http.Request) {
+		detail, err := deps.Service.RestoreTrashed(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId"))
+		if err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
+	}))
+
+	api.Handle("DELETE /api/v1/items/{itemId}/purge", guarded(func(w http.ResponseWriter, r *http.Request) {
+		if err := deps.Service.Purge(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId")); err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	// The trash listing shows the caller's readable trashed items.
+	api.Handle("GET /api/v1/items/trash", guarded(func(w http.ResponseWriter, r *http.Request) {
+		principal := CurrentPrincipal(r.Context())
+		beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, deps.Cursor, principal.UserID, itemsTrashFilters)
+		if !ok {
+			return
+		}
+		metas, err := deps.Service.ListTrash(r.Context(), principal, beforeCreated, beforeID, limit+1)
+		if err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		var lastCreated, lastID string
+		if len(metas) > limit {
+			metas = metas[:limit]
+			lastCreated, lastID = metas[len(metas)-1].UpdatedAt, metas[len(metas)-1].ID
+		}
+		writeJSON(w, http.StatusOK, CursorPageResponse(deps.Cursor, principal.UserID, itemsTrashFilters, metas, lastCreated, lastID))
+	}))
+
+	// Encrypted history: readable by whoever can read the item.
+	api.Handle("GET /api/v1/items/{itemId}/history", guarded(func(w http.ResponseWriter, r *http.Request) {
+		principal := CurrentPrincipal(r.Context())
+		itemID := r.PathValue("itemId")
+		filters := itemsHistoryFilters + itemID
+		beforeRevision, _, limit, ok := DecodeCursorParams(w, r, deps.Cursor, principal.UserID, filters)
+		if !ok {
+			return
+		}
+		entries, err := deps.Service.ListHistory(r.Context(), principal, itemID, beforeRevision, limit+1)
+		if err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		var lastRevision string
+		if len(entries) > limit {
+			entries = entries[:limit]
+			lastRevision = strconv.FormatUint(entries[len(entries)-1].Revision, 10)
+		}
+		writeJSON(w, http.StatusOK, CursorPageResponse(deps.Cursor, principal.UserID, filters, entries, lastRevision, ""))
+	}))
+
+	// Restoring a history version re-encrypts it as a new current revision.
+	api.Handle("POST /api/v1/items/{itemId}/history/{revision}/restore", guarded(func(w http.ResponseWriter, r *http.Request) {
+		revision, err := strconv.ParseUint(r.PathValue("revision"), 10, 64)
+		if err != nil || revision == 0 {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid revision")
+			return
+		}
+		detail, err := deps.Service.RestoreHistory(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId"), revision)
 		if err != nil {
 			writeItemsError(w, r, err)
 			return

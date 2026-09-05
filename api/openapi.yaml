@@ -465,6 +465,30 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /items/trash:
+    get:
+      tags: [items]
+      summary: List the caller's readable trashed items (metadata only)
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: trashed item metadata, newest first; payloads are not
+            included and the detail endpoint keeps returning 404 for trashed
+            items until they are restored
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ItemMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /items:
     get:
       tags: [items]

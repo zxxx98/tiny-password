@@ -187,7 +187,110 @@ func (repo repository) updateItem(ctx context.Context, q Queryer, current itemRo
 	if err != nil {
 		return false, err
 	}
+	if affected != 1 {
+		return false, nil
+	}
+	// Retain only the most recent MaxHistoryVersions archived versions;
+	// with ten or fewer rows this deletes nothing.
+	_, err = q.ExecContext(ctx,
+		`DELETE FROM item_versions WHERE item_id=? AND revision NOT IN
+		   (SELECT revision FROM (SELECT revision FROM item_versions WHERE item_id=? ORDER BY revision DESC LIMIT ?))`,
+		current.ID, current.ID, MaxHistoryVersions)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// listHistory pages archived versions newest-first by revision. before==0
+// starts from the newest version.
+func (repo repository) listHistory(ctx context.Context, q Queryer, itemID string, before uint64, limit int) ([]HistoryEntry, error) {
+	query := `SELECT revision, created_at FROM item_versions WHERE item_id=?`
+	args := []any{itemID}
+	if before > 0 {
+		query += ` AND revision < ?`
+		args = append(args, before)
+	}
+	query += ` ORDER BY revision DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []HistoryEntry{}
+	for rows.Next() {
+		var e HistoryEntry
+		if err := rows.Scan(&e.Revision, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// getHistoryVersion loads one archived version. The projection reuses
+// itemRow so decryption shares the row-based path.
+func (repo repository) getHistoryVersion(ctx context.Context, q Queryer, itemID string, revision uint64) (itemRow, error) {
+	row := itemRow{ID: itemID, Revision: revision}
+	err := q.QueryRowContext(ctx,
+		`SELECT payload_version, nonce, ciphertext, created_at FROM item_versions WHERE item_id=? AND revision=?`,
+		itemID, revision).Scan(&row.PayloadVersion, &row.Nonce, &row.Ciphertext, &row.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return itemRow{}, errItemMissing
+	}
+	return row, err
+}
+
+// setDeletedAt moves an item into (at != "") or out of (at == "") the trash.
+// The conditional forms make concurrent double-trash / double-restore lose
+// loudly instead of double-auditing.
+func (repo repository) setDeletedAt(ctx context.Context, q Queryer, itemID, at string) (bool, error) {
+	var (
+		res sql.Result
+		err error
+	)
+	if at == "" {
+		res, err = q.ExecContext(ctx,
+			`UPDATE vault_items SET deleted_at=NULL WHERE id=? AND deleted_at IS NOT NULL`, itemID)
+	} else {
+		res, err = q.ExecContext(ctx,
+			`UPDATE vault_items SET deleted_at=? WHERE id=? AND deleted_at IS NULL`, at, itemID)
+	}
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
 	return affected == 1, nil
+}
+
+// deleteItemCompletely removes the item row; item_versions cascade via the
+// foreign key. Runs inside the caller's transaction.
+func (repo repository) deleteItemCompletely(ctx context.Context, q Queryer, itemID string) error {
+	_, err := q.ExecContext(ctx, `DELETE FROM vault_items WHERE id=?`, itemID)
+	return err
+}
+
+// expiredTrashIDs lists trashed items whose retention deadline has passed.
+func (repo repository) expiredTrashIDs(ctx context.Context, q Queryer, cutoff string) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT id FROM vault_items WHERE deleted_at IS NOT NULL AND deleted_at <= ? ORDER BY id`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // currentRevision re-reads just the revision after a CAS miss so the conflict
