@@ -15,7 +15,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/bootstrap"
 	"github.com/tiny-password/tiny-password/internal/httpapi"
+	"github.com/tiny-password/tiny-password/internal/platform/config"
+	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 	"github.com/tiny-password/tiny-password/internal/webassets"
 	"github.com/tiny-password/tiny-password/migrations"
@@ -50,7 +53,21 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 
-	ready := &httpapi.ReadyChecker{DB: db}
+	// Master key is read from the mounted secret file only (D03). A missing
+	// or invalid key keeps the process alive (healthz ok) but not ready.
+	keyFile := config.MasterKeyFile()
+	masterKey, masterKeyErr := func() (*crypto.MasterKey, error) {
+		raw, err := config.ReadMasterKeyFile(keyFile)
+		if err != nil {
+			return nil, err
+		}
+		return crypto.NewMasterKey(raw)
+	}()
+	if masterKeyErr != nil {
+		logger.Warn("master key unavailable; readiness will fail", "file", keyFile, "error", masterKeyErr.Error())
+	}
+
+	ready := &httpapi.ReadyChecker{DB: db, MasterKeyCheck: bootstrap.MasterKeyCheck(db.DB, masterKey, masterKeyErr)}
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           httpapi.New(httpapi.Options{SPA: webassets.SPAHandler(), Ready: ready}),

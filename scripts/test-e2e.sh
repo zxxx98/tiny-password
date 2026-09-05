@@ -20,10 +20,15 @@ IMAGE="${IMAGE:-tiny-password:dev}"
 export TP_TEST_DATA_DIR="$(mktemp -d /tmp/tiny-password-e2e.XXXXXX)"
 # The container runs as UID 10001; a throwaway test dir may be world-writable.
 chmod 0777 "$TP_TEST_DATA_DIR"
+# Synthetic master key lives outside the data dir (test only, never committed).
+KEY_DIR="$(mktemp -d /tmp/tiny-password-key.XXXXXX)"
+KEY_FILE="$KEY_DIR/master_key"
+head -c 32 /dev/urandom > "$KEY_FILE"
+chmod 0644 "$KEY_FILE"  # container reads as UID 10001; synthetic key only
 CONTAINER_NAME="tiny-password-e2e"
 cleanup() {
   $DOCKER rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  rm -rf "$TP_TEST_DATA_DIR"
+  rm -rf "$TP_TEST_DATA_DIR" "$KEY_DIR"
 }
 trap cleanup EXIT
 
@@ -31,6 +36,7 @@ echo "e2e: starting test container (data dir: $TP_TEST_DATA_DIR)"
 $DOCKER run -d --name "$CONTAINER_NAME" \
   -p 127.0.0.1:18080:8080 \
   -v "$TP_TEST_DATA_DIR:/data" \
+  -v "$KEY_FILE:/run/secrets/master_key:ro" \
   --tmpfs /tmp:mode=700,uid=10001,gid=10001 \
   "$IMAGE" >/dev/null
 
@@ -43,6 +49,10 @@ for i in $(seq 1 30); do
 done
 
 echo "e2e: /healthz ok"
+ready="$(curl -s http://127.0.0.1:18080/readyz)"
+echo "$ready" | grep -q '"status":"ready"' || { echo "e2e: instance not ready: $ready"; exit 1; }
+echo "$ready" | grep -q '"master_key":true' || { echo "e2e: master key check missing: $ready"; exit 1; }
+echo "e2e: /readyz ready with master key check"
 code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/api/v1/unknown)"
 [ "$code" = "404" ] || { echo "e2e: unknown API returned $code, want 404"; exit 1; }
 body="$(curl -s http://127.0.0.1:18080/api/v1/unknown)"
