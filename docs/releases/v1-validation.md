@@ -250,3 +250,39 @@
   2. `npm --prefix web run typecheck` → 通过；`npm --prefix web test -- --run` → 全部通过；`npm --prefix web run build` → 成功，产物含 **44 个自托管 woff2**（无任何第三方字体 CDN）。
 - 证据路径：`web/src/design-system/`、`web/src/app/`、`web/public/fonts/LICENSES.md`
 - 未解决问题：360/768/1280px 真实视口截图与键盘走查归入 T30 可访问性验收（jsdom 无法替代真实布局）；`radix`/图标库未引入，图标以文字与 aria 标注实现。
+
+## T15 · 认证、账户与成员管理页面
+
+- 日期：2026-09-05
+- 提交：`3f527aa`
+- 实现要点：
+  - `LoginPage`：预认证 CSRF 握手 + 登录；principal 与会话级 CSRF 令牌仅存内存（`app/session.ts`，零 localStorage/sessionStorage 写入）。
+  - `SessionBoundary`：无会话 → 登录页；首次改密前强制停在改密流程（改密成功后从 `/auth/session` 刷新权威 principal）；挂载时静默恢复 cookie 会话（整页刷新不再被视为登出——E2E 发现的真实缺陷，本轮修复）；401 时中止全部在途请求（`abortInFlightRequests`）并清空内存，晚到响应无法回填保险库/搜索/表单/生成器状态。
+  - `ChangePasswordPage`：首登强制与自助两种模式；成功后以响应头 X-CSRF-Token 轮换内存令牌。
+  - `AccountPage`：自助改密、会话列表与撤销（当前会话撤销即退出）、5–30 分钟闲置锁定偏好、退出确认。
+  - `ActivityPage`：个人脱敏活动游标分页；`UsersPage`：成员创建（初始密码只显示一次）、禁用/启用/撤销会话、删除两步流——先导出与共享数据影响警示，再精确输入目标用户名（服务端独立校验，LAST_ADMIN_PROTECTED/CONFIRMATION_MISMATCH 专错专显）。
+  - API 客户端：任意方法 + CSRF/Idempotency-Key 头、错误统一携带 code/request_id、409 透传 current_revision、503/429 标记 retryable、401 清会话并广播。
+- 命令与结果：
+  1. `npm --prefix web test -- --run src/features/auth/session.test.tsx src/features/admin` → 10/10 通过（登录握手与统一错误、无枚举、首登强制改密全流程、不匹配密码不发请求、401 中止在途请求、成员管理 CRUD 与两步删除流、最后管理员保护错误显示）。
+  2. 前端全量 42/42 通过；typecheck、build 通过。
+  3. 浏览器 E2E `make test-e2e E2E_SPEC=auth.spec.ts` → **4/4 通过**（内存态断言、首登轮换与旧密码拒绝、成员管理全流、退出后会话需重新登录）。
+- 证据路径：`web/src/features/auth/`、`web/src/features/admin/`、`web/src/app/`、`tests/e2e/auth.spec.ts`
+- 未解决问题：无。
+
+## T16 · 五类表单、敏感字段与工作区
+
+- 日期：2026-09-05
+- 提交：`6b93bc1`、`9b481a1`
+- 实现要点：
+  - `VaultPage`：12 栏报纸网格工作区（桌面列表/详情双栏、平板与移动独立详情页 + 底部导航）、搜索（POST，查询词不入 URL）、类型/收藏筛选、健康横幅、空库/无结果/网络失败状态；范围文字与创建者署名同时呈现（后端为共享条目批量解析 creator_name）。
+  - `ItemEditor`：五类字段组件逐项校验（与后端上限一致）+ 错误摘要；创建带 Idempotency-Key；409 保留当前编辑并提供"重新加载服务端内容/继续编辑"，绝不静默覆盖。
+  - `SensitiveField`：默认遮蔽且明文不出现在可聚焦输入中；主动显示经 POST /reveal 审计；30 秒/失焦自动重新遮蔽；复制经 POST /copy 仅记录字段类别；30 秒后尽力清剪贴板，浏览器拒绝时如实提示。
+  - `HistoryPage`/`TrashPage`：历史游标分页与恢复确认；回收站恢复/提前永久删除（不可逆警示）。
+  - 后端配套：列表/搜索/详情响应附带解密标题与创建者署名（明文仍不入库不索引）；`/items/{id}/reveal|copy` 审计端点；OpenAPI 增至 43 路径。
+  - `TestItemRestartDecryption`：同库文件重开 + 新服务实例（模拟进程重启）后五类负载与历史均可解密——M3 退出门槛"重启可解密"。
+- 命令与结果：
+  1. `npm --prefix web test -- --run src/features/vault` → 16/16 通过（默认遮蔽/显示审计/30 秒重遮蔽（假时钟）/失焦重遮蔽/复制审计与剪贴板清除及拒绝提示、编辑器客户端校验阻断、创建幂等键、409 保留编辑、共享条目只读署名、工作区列表署名与空态、健康横幅、历史恢复、回收站确认流）。
+  2. `go test ./tests/integration -run TestItemRestartDecryption` → 通过；`make test-e2e E2E_SPEC=vault.spec.ts` → **4/4 通过**（桌面网格与遮蔽、显式显示与自动重遮蔽、创建/搜索/回收站恢复、移动单栏 + 独立详情页）。
+  3. `make test-e2e E2E_SPEC=auth.spec.ts` 复跑 → 4/4 通过。
+- 证据路径：`web/src/features/vault/`、`internal/vault/`、`tests/e2e/vault.spec.ts`、`scripts/test-browser-e2e.sh`、`playwright.config.ts`
+- 未解决问题：移动真机验证与 360/768/1280px 截图归 T30 可访问性验收；三处集成测试存在偶发时序敏感（并发更新恰一成功），已通过确定性夹具降低概率，T30 完整验收时复核。
