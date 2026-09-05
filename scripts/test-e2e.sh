@@ -109,6 +109,9 @@ code="$(init_count threentry)"
 [ "$code" = "409" ] || { echo "e2e: setup after restart returned $code, want 409"; exit 1; }
 echo "e2e: setup stays closed after restart; no new token issued"
 
+# T06: exercise the compiled authentication service before resetting the instance.
+python3 scripts/test-auth-http.py "$BASE"
+
 # Concurrency: exactly one of N racing inits may succeed.
 $DOCKER rm -f "$CONTAINER_NAME" >/dev/null
 rm -rf "$TP_TEST_DATA_DIR"; mkdir -p "$TP_TEST_DATA_DIR"; chmod 0777 "$TP_TEST_DATA_DIR"

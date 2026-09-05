@@ -80,3 +80,21 @@
   - `sudo -n docker build -t tiny-password:review-fixes .`：成功。
   - `IMAGE=tiny-password:review-fixes bash scripts/test-e2e.sh`：PASS；初始化成功，重启后仍返回 409 且不重发令牌，并发结果恰好 1 个 200、7 个 409。
 - 证据路径：`tests/integration/setup_key_test.go`、`internal/httpapi/csrf_test.go`、`internal/platform/config/http_test.go`、`scripts/test-e2e.sh`。
+
+## T06 · 登录、会话与密码生命周期
+
+- 日期：2026-09-05；基于 M1 修复提交 `4d319cd`；执行环境为当前 Linux 工作区及 Docker 单容器。
+- 交付：登录/退出、本人会话查询和撤销、自助改密、首次改密访问限制、默认 15 分钟闲置/24 小时绝对期限、5–30 分钟闲置偏好、显式用户活动续期。
+- 密码校验使用 Argon2id；不存在用户执行 dummy 验证，错误密码和未知用户名返回相同错误。会话令牌为 32-byte CSPRNG，仅持久化 SHA-256；对外会话管理 ID 与凭据哈希分离。Cookie 默认 Secure/HttpOnly/SameSite=Lax。
+- 登录消费预认证 CSRF 并发放会话绑定 token；改密在一个事务中比较旧哈希与当前会话有效性、撤销全部旧会话并发放新会话。GET 不续期，活动请求不能恢复过期/撤销会话。
+- SQLite 原子限流覆盖用户名、直接来源地址与实例全局，默认每分钟 5/20/100 次，成功/失败请求均计数，重建服务实例不能清除窗口；改密也限流。转发头不参与来源判断，可信代理配置在 T07。
+- `0002_auth_sessions.sql` 增量迁移保留既有账号和会话哈希，增加公开会话 ID、用户闲置偏好及限流索引。原始 `0001` 不变。
+- 验证命令与结果：
+  - `go test ./... -count=1`、`go vet ./...`：通过。
+  - `go test -race -count=1 ./...`：全部通过，覆盖认证/会话/密码 HTTP 集成、假时钟过期、跨用户撤销拒绝、限流三维度及并发准入、旧库迁移。
+  - 并发测试覆盖：登录与改密竞争、两次改密仅一次提交、验证期间撤销不能创建会话、轮换失败整体回滚、登录读取并发更新后的闲置偏好。最后一项在修复前明确失败，移入创建事务后通过。
+  - `sudo -n docker build -t tiny-password:t06 .`：成功（包含前端构建）。
+  - `IMAGE=tiny-password:t06 bash scripts/test-e2e.sh`：PASS；新增 `scripts/test-auth-http.py` 验证两次登录、改密后旧会话立即失效、新凭据登录和退出；M1 重启/令牌与严格并发 1×200 + 7×409 验收继续通过。
+  - OpenAPI YAML 与全部本地 `$ref` 解析、`git diff --check`：通过。
+- 证据路径：`internal/auth/concurrency_test.go`、`tests/integration/auth_test.go`、`tests/integration/auth_migration_test.go`、`scripts/test-auth-http.py`。
+- 后续范围：登录/首次改密页面在 T15；通用 HTTP 安全与幂等在 T07；登录/退出/改密审计接入在 T08。会话列表当前返回全部本人有效会话，GET 查询不延长期限。

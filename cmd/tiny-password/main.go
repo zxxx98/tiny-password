@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/bootstrap"
 	"github.com/tiny-password/tiny-password/internal/httpapi"
 	"github.com/tiny-password/tiny-password/internal/platform/config"
@@ -82,14 +83,20 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
+	authService, err := auth.NewService(db.DB, auth.Options{})
+	if err != nil {
+		return fmt.Errorf("auth service: %w", err)
+	}
+	csrf := httpapi.NewPreAuthCSRF(config.AllowInsecureCookies())
 	server := &http.Server{
 		Addr: addr,
 		Handler: httpapi.New(httpapi.Options{
 			SPA:   webassets.SPAHandler(),
 			Ready: ready,
+			Auth:  &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies()},
 			Setup: &httpapi.SetupDeps{
 				Service:   bootService,
-				CSRF:      httpapi.NewPreAuthCSRF(config.AllowInsecureCookies()),
+				CSRF:      csrf,
 				Logger:    logger,
 				RateLimit: setupRateLimit,
 			},

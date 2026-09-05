@@ -165,6 +165,12 @@ paths:
     post:
       tags: [auth]
       summary: Password login; identical error for unknown user and wrong password
+      description: |
+        Requires pre-auth X-CSRF-Token and its cookie. Success consumes that
+        context and returns a new session-bound CSRF token. Requests are limited
+        across normalized username (5/min), direct source address (20/min), and
+        instance (100/min), including successful attempts. Forwarded headers do
+        not affect source identity; trusted proxy support belongs to T07.
       security: []
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -186,10 +192,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [must_change_password]
+                required: [must_change_password, csrf_token, user]
                 properties:
+                  csrf_token: { type: string }
+                  user: { $ref: "#/components/schemas/CurrentPrincipal" }
                   must_change_password: { type: boolean }
-                  password_expires_at: { type: string, format: date-time, nullable: true }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           description: account disabled (ACCOUNT_DISABLED)
@@ -197,6 +204,59 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
+  /auth/session:
+    get:
+      tags: [auth]
+      summary: Current user, session deadlines and session-bound CSRF token
+      description: Read-only; polling never extends session expiry. Allowed during first-login password change.
+      responses:
+        "200":
+          description: current session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, csrf_token]
+                properties:
+                  user: { $ref: "#/components/schemas/CurrentPrincipal" }
+                  csrf_token: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/session/activity:
+    post:
+      tags: [auth]
+      summary: Extend a live session after explicit user interaction
+      description: |
+        Requires session-bound X-CSRF-Token. Clients must call only after user
+        interaction, never on polling timers. Extends idle expiry using the user's
+        preference, capped at the original 24-hour absolute deadline. Cannot
+        restore expired or revoked sessions. First-login users are forbidden.
+      responses:
+        "204": { description: activity recorded }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /auth/preferences:
+    patch:
+      tags: [auth]
+      summary: Change the caller's idle timeout preference
+      description: |
+        Requires session-bound X-CSRF-Token and completed first-login password
+        change. Reductions shorten existing live sessions; increases take effect
+        on subsequent user activity or login. Expired sessions are never revived.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idle_timeout_minutes]
+              additionalProperties: false
+              properties:
+                idle_timeout_minutes: { type: integer, minimum: 5, maximum: 30, default: 15 }
+      responses:
+        "204": { description: preference saved }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /auth/logout:
     post:
       tags: [auth]
@@ -208,7 +268,11 @@ paths:
     post:
       tags: [auth]
       summary: Self-service password change (requires current password)
-      description: On success all other sessions of the user are revoked.
+      description: |
+        On success every old session, including the caller's, is revoked atomically.
+        A fresh session is issued via Set-Cookie; X-CSRF-Token carries its new CSRF
+        context. A first-login user may access only password change, current session
+        information and logout until this succeeds.
       requestBody:
         required: true
         content:
@@ -220,14 +284,19 @@ paths:
                 current_password: { type: string, maxLength: 1024 }
                 new_password: { $ref: "#/components/schemas/NewPassword" }
       responses:
-        "204": { description: changed; sessions rotated }
+        "204":
+          description: changed; every old session revoked and caller receives a new session
+          headers:
+            Set-Cookie: { schema: { type: string } }
+            X-CSRF-Token: { schema: { type: string } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
   /auth/sessions:
     get:
       tags: [auth]
-      summary: List the current user's own sessions
+      summary: List the current user's own active sessions
+      description: All unexpired and unrevoked sessions are returned; next_cursor is null. Requires first-login password change to be complete.
       responses:
         "200":
           description: sessions of the caller only
@@ -1005,6 +1074,7 @@ components:
             - REVISION_CONFLICT
             - USERNAME_TAKEN
             - ACCOUNT_DISABLED
+            - PASSWORD_CHANGE_REQUIRED
             - LAST_ADMIN_PROTECTED
             - CONFIRMATION_MISMATCH
             - IDEMPOTENCY_KEY_CONFLICT
@@ -1067,6 +1137,16 @@ components:
         role: { type: string, enum: [admin, member] }
         status: { type: string, enum: [active, disabled, must_change_password] }
         created_at: { type: string, format: date-time }
+    CurrentPrincipal:
+      type: object
+      required: [user_id, username, role, must_change_password, idle_timeout_minutes, session]
+      properties:
+        user_id: { $ref: "#/components/schemas/OpaqueId" }
+        username: { $ref: "#/components/schemas/Username" }
+        role: { type: string, enum: [admin, member] }
+        must_change_password: { type: boolean }
+        idle_timeout_minutes: { type: integer, minimum: 5, maximum: 30 }
+        session: { $ref: "#/components/schemas/SessionInfo" }
     SessionInfo:
       type: object
       required: [id, created_at, expires_at, current]

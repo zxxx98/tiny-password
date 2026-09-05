@@ -19,6 +19,7 @@ type Options struct {
 	// Setup wires the one-time initialization endpoints; nil leaves the
 	// instance without a setup entry point.
 	Setup *SetupDeps
+	Auth  *AuthDeps
 }
 
 // New returns the top-level HTTP handler: /healthz plus the /api/v1 tree are
@@ -60,6 +61,9 @@ func New(opts Options) http.Handler {
 func registerAPIRoutes(api *http.ServeMux, opts Options) {
 	if opts.Setup != nil {
 		registerSetup(api, *opts.Setup)
+	}
+	if opts.Auth != nil {
+		registerAuth(api, *opts.Auth)
 	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "resource not found")
