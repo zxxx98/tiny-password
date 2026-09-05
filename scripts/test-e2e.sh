@@ -38,6 +38,7 @@ $DOCKER run -d --name "$CONTAINER_NAME" \
   -v "$TP_TEST_DATA_DIR:/data" \
   -v "$KEY_FILE:/run/secrets/master_key:ro" \
   --tmpfs /tmp:mode=700,uid=10001,gid=10001 \
+  -e TP_SETUP_RATE_LIMIT_PER_MIN=200 \
   "$IMAGE" >/dev/null
 
 for i in $(seq 1 30); do
@@ -62,5 +63,76 @@ echo "e2e: unknown API returns JSON 404"
 page="$(curl -s http://127.0.0.1:18080/some/spa/route)"
 echo "$page" | grep -qi "tiny password" || { echo "e2e: SPA route did not serve the app"; exit 1; }
 echo "e2e: SPA route serves the app"
+
+# ---- M1 acceptance: one-time initialization flow ---------------------------
+BASE=http://127.0.0.1:18080
+status="$(curl -s $BASE/api/v1/setup/status)"
+echo "$status" | grep -q '"initialized":false' || { echo "e2e: expected uninitialized, got $status"; exit 1; }
+
+token="$($DOCKER logs "$CONTAINER_NAME" 2>&1 | grep -o '"msg":"setup_token_issued","token":"[^"]*"' | head -1 | sed 's/.*"token":"//; s/"$//')"
+[ -n "$token" ] || { echo "e2e: no setup token found in container logs"; exit 1; }
+echo "e2e: setup token retrieved from logs (${#token} chars)"
+
+init_count() { # init_count <username> -> HTTP status code
+  csrf="$(curl -s -c /tmp/tp-e2e-cookies -X POST $BASE/api/v1/csrf | grep -o '"csrf_token":"[^"]*"' | cut -d'"' -f4)"
+  curl -s -o /tmp/tp-e2e-body -w '%{http_code}' -b /tmp/tp-e2e-cookies \
+    -H "Content-Type: application/json" \
+    -H "X-CSRF-Token: $csrf" \
+    -H "Origin: $BASE" \
+    -d "{\"token\":\"$token\",\"username\":\"$1\",\"password\":\"correct horse battery 42\"}" \
+    $BASE/api/v1/setup/init
+}
+
+code="$(init_count admin)"
+[ "$code" = "200" ] || { echo "e2e: setup init returned $code: $(cat /tmp/tp-e2e-body)"; exit 1; }
+status="$(curl -s $BASE/api/v1/setup/status)"
+echo "$status" | grep -q '"initialized":true' || { echo "e2e: status after init: $status"; exit 1; }
+echo "e2e: one-time initialization succeeded"
+
+code="$(init_count secondtry)"
+[ "$code" = "409" ] || { echo "e2e: second init returned $code, want 409"; exit 1; }
+echo "e2e: setup entry point closed after success"
+
+# Restart the container: entry must stay closed, no new token may be issued.
+$DOCKER restart "$CONTAINER_NAME" >/dev/null
+for i in $(seq 1 30); do
+  curl -fsS $BASE/healthz >/dev/null 2>&1 && break
+  [ "$i" = 30 ] && { echo "e2e: container did not come back"; exit 1; }
+  sleep 1
+done
+token_count="$($DOCKER logs "$CONTAINER_NAME" 2>&1 | grep -c 'setup_token_issued')"
+[ "$token_count" = "1" ] || { echo "e2e: token issued $token_count times across restart, want exactly 1"; exit 1; }
+code="$(init_count threentry)"
+[ "$code" = "409" ] || { echo "e2e: setup after restart returned $code, want 409"; exit 1; }
+echo "e2e: setup stays closed after restart; no new token issued"
+
+# Concurrency: exactly one of N racing inits may succeed.
+$DOCKER rm -f "$CONTAINER_NAME" >/dev/null
+rm -rf "$TP_TEST_DATA_DIR"; mkdir -p "$TP_TEST_DATA_DIR"; chmod 0777 "$TP_TEST_DATA_DIR"
+$DOCKER run -d --name "$CONTAINER_NAME" \
+  -p 127.0.0.1:18080:8080 \
+  -v "$TP_TEST_DATA_DIR:/data" \
+  -v "$KEY_FILE:/run/secrets/master_key:ro" \
+  --tmpfs /tmp:mode=700,uid=10001,gid=10001 \
+  -e TP_SETUP_RATE_LIMIT_PER_MIN=200 \
+  "$IMAGE" >/dev/null
+for i in $(seq 1 30); do
+  curl -fsS $BASE/healthz >/dev/null 2>&1 && break
+  [ "$i" = 30 ] && { echo "e2e: second container not ready"; exit 1; }
+  sleep 1
+done
+token="$($DOCKER logs "$CONTAINER_NAME" 2>&1 | grep -o '"msg":"setup_token_issued","token":"[^"]*"' | head -1 | sed 's/.*"token":"//; s/"$//')"
+oks=0
+other=0
+for i in $(seq 1 8); do
+  ( code="$(init_count "race$i")"; if [ "$code" = "200" ]; then echo OK >> /tmp/tp-e2e-race; else echo "$code" >> /tmp/tp-e2e-race; fi ) &
+done
+wait
+for line in $(cat /tmp/tp-e2e-race); do
+  if [ "$line" = "OK" ]; then oks=$((oks+1)); else other=$((other+1)); fi
+done
+rm -f /tmp/tp-e2e-race /tmp/tp-e2e-cookies /tmp/tp-e2e-body
+[ "$oks" = "1" ] || { echo "e2e: concurrent init produced $oks successes, want exactly 1"; exit 1; }
+echo "e2e: concurrent initialization: exactly 1 success among 8 racers ($other rejected)"
 
 echo "e2e: PASS"

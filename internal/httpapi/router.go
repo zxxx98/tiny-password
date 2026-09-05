@@ -16,13 +16,16 @@ type Options struct {
 	SPA http.Handler
 	// Ready powers /readyz; nil means the endpoint reports 503.
 	Ready *ReadyChecker
+	// Setup wires the one-time initialization endpoints; nil leaves the
+	// instance without a setup entry point.
+	Setup *SetupDeps
 }
 
 // New returns the top-level HTTP handler: /healthz plus the /api/v1 tree are
 // owned here; everything else falls through to the SPA handler.
 func New(opts Options) http.Handler {
 	api := http.NewServeMux()
-	registerAPIRoutes(api)
+	registerAPIRoutes(api, opts)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
@@ -54,7 +57,10 @@ func New(opts Options) http.Handler {
 
 // registerAPIRoutes mounts versioned endpoints as milestones deliver them.
 // Unknown API paths hit the catch-all and return the stable JSON 404.
-func registerAPIRoutes(api *http.ServeMux) {
+func registerAPIRoutes(api *http.ServeMux, opts Options) {
+	if opts.Setup != nil {
+		registerSetup(api, *opts.Setup)
+	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "resource not found")
 	})

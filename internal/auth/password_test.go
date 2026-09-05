@@ -95,14 +95,14 @@ func TestHashParametersAreStoredPerHash(t *testing.T) {
 func TestMalformedHashesRejected(t *testing.T) {
 	cases := []string{
 		"",
-		"argon2id$v=19$m=65536,t=3,p=2$salt$hash",                     // missing leading $
-		"$argon2i$v=19$m=65536,t=3,p=2$c2FsdA$aGFzaA",                 // wrong variant
-		"$argon2id$v=16$m=65536,t=3,p=2$c2FsdHNhbHRzYWx0$aGFzaA",      // wrong version
-		"$argon2id$v=19$m=65536,t=3$c2FsdHNhbHRzYWx0$aGFzaA",          // missing p
-		"$argon2id$v=19$m=4194304,t=3,p=2$c2FsdHNhbHRzYWx0$aGFzaA",    // memory > ceiling
-		"$argon2id$v=19$m=65536,t=4096,p=2$c2FsdHNhbHRzYWx0$aGFzaA",   // iterations > ceiling
-		"$argon2id$v=19$m=65536,t=3,p=512$c2FsdHNhbHRzYWx0$aGFzaA",    // parallelism > ceiling
-		"$argon2id$v=19$m=65536,t=3,p=2$c2FsdA$aGFzaA",                // salt too short
+		"argon2id$v=19$m=65536,t=3,p=2$salt$hash",                        // missing leading $
+		"$argon2i$v=19$m=65536,t=3,p=2$c2FsdA$aGFzaA",                    // wrong variant
+		"$argon2id$v=16$m=65536,t=3,p=2$c2FsdHNhbHRzYWx0$aGFzaA",         // wrong version
+		"$argon2id$v=19$m=65536,t=3$c2FsdHNhbHRzYWx0$aGFzaA",             // missing p
+		"$argon2id$v=19$m=4194304,t=3,p=2$c2FsdHNhbHRzYWx0$aGFzaA",       // memory > ceiling
+		"$argon2id$v=19$m=65536,t=4096,p=2$c2FsdHNhbHRzYWx0$aGFzaA",      // iterations > ceiling
+		"$argon2id$v=19$m=65536,t=3,p=512$c2FsdHNhbHRzYWx0$aGFzaA",       // parallelism > ceiling
+		"$argon2id$v=19$m=65536,t=3,p=2$c2FsdA$aGFzaA",                   // salt too short
 		"$argon2id$v=19$m=65536,t=3,p=2$c2FsdHNhbHRzYWx0$bm90MzJieXRlcw", // hash not 32 bytes
 		"not a hash at all",
 	}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -68,9 +69,31 @@ func run(logger *slog.Logger) error {
 	}
 
 	ready := &httpapi.ReadyChecker{DB: db, MasterKeyCheck: bootstrap.MasterKeyCheck(db.DB, masterKey, masterKeyErr)}
+
+	bootService, err := bootstrap.NewService(db, masterKey, logger)
+	if err != nil {
+		return fmt.Errorf("bootstrap service: %w", err)
+	}
+
+	setupRateLimit := 10
+	if v := os.Getenv("TP_SETUP_RATE_LIMIT_PER_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			setupRateLimit = n
+		}
+	}
+
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           httpapi.New(httpapi.Options{SPA: webassets.SPAHandler(), Ready: ready}),
+		Addr: addr,
+		Handler: httpapi.New(httpapi.Options{
+			SPA:   webassets.SPAHandler(),
+			Ready: ready,
+			Setup: &httpapi.SetupDeps{
+				Service:   bootService,
+				CSRF:      httpapi.NewPreAuthCSRF(),
+				Logger:    logger,
+				RateLimit: setupRateLimit,
+			},
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      120 * time.Second,
