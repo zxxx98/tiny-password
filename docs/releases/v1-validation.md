@@ -202,3 +202,19 @@
   - 历史保留最近 10 版、回收站/恢复/清理入口属 T12；T11 更新已同事务归档旧版本，T12 的 12 连更用例将在其上验证保留策略。
   - M2 遗留清单（管理员读成员个人条目 404、猜 ID、批量探测、删除级联真实 API）本轮已全部覆盖并关闭。
 
+
+## T12 · 历史、恢复与回收站
+
+- 日期：2026-09-05
+- 提交：`d64c0bd`（worktree `tiny-password-m03`，分支 `m03-personal-vault`）
+- 实现要点：
+  - `internal/vault/history.go`：历史游标分页（按 revision 倒序，可读者即可读历史）；历史恢复解密旧版本后以新 nonce + 新 revision AAD 重新加密为新的当前版本，同事务归档被替换的当前版本——旧密文永不前拷。
+  - `internal/vault/trash.go`：删除仅置 deleted_at；恢复原样返回（不 bump revision 不重加密）；purge 仅对已入回收站条目开放（可读者收到 404/403 语义与更新一致：不可读 404、可读不可管理 403、非回收站目标 404）；`PurgeExpiredTrash` 为 30 天到期清理入口（T23 调度接入），同事务级联删除历史并按匿名操作者记录审计，重复执行安全。
+  - 历史保留最近 10 版：每次有效更新/历史恢复同事务裁剪（`revision NOT IN 最新 10 条`，≤10 行时零删除）。
+  - 新增 `GET /api/v1/items/trash`（OpenAPI 同步至 41 路径）：回收站元数据列表，payload 不出密文。
+  - 审计事件：`vault.item.trashed/restored/purged/history_restored` 入允许列表。
+- 命令与结果：
+  1. `go test ./tests/integration -run 'TestHistory|TestTrash' -v` → **8/8 通过**：12 连更保留 3..12 共 10 版、无变化更新不产生历史（T11 用例复验）；跨成员历史 404、共享读者恢复 403/创建者 200；恢复创建 revision 5 且新 AAD 可解密、可再次回退至 revision 6；未知 revision 404；篡改历史密文恢复 500 且 revision/历史行数不变；回收站生命周期（删除→列表/详情隐身→回收站可见→恢复→提前 purge→行与历史清空）；共享条目 bob trash/restore/purge 全 403、管理员对成员个人条目全 404；29 天不清、31 天清理恰 1 条、重复执行 0 条、后台清理审计为匿名操作者；历史游标分页 7..1 严格倒序、坏游标 400。
+  2. `go vet ./...`、`go test ./... -count=1`、`go test -race ./tests/integration -count=1`（536 s）、`git diff --check` → 全部通过。
+- 证据路径：`internal/vault/history.go`、`internal/vault/trash.go`、`internal/vault/repository.go`、`internal/httpapi/items.go`、`tests/integration/item_lifecycle_test.go`
+- 未解决问题：无阻塞项；后台清理的调度接入在 T23 完成。
