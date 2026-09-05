@@ -35,7 +35,11 @@ const itemsListFilters = "v1:items"
 const (
 	itemsTrashFilters   = "v1:trash"
 	itemsHistoryFilters = "v1:history:"
+	itemsSearchFilters  = "v1:search"
 )
+
+// runeLen counts Unicode code points, the unit the OpenAPI string limits use.
+func runeLen(s string) int { return len([]rune(s)) }
 
 type itemCreateRequest struct {
 	ItemType   string          `json:"item_type"`
@@ -114,6 +118,57 @@ func registerItems(api *http.ServeMux, deps ItemsDeps) {
 
 	api.Handle("DELETE /api/v1/items/{itemId}/purge", guarded(func(w http.ResponseWriter, r *http.Request) {
 		if err := deps.Service.Purge(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId")); err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	// Search (T13): POST keeps the query out of URLs; CSRF and no-store come
+	// from the session guard and error writer. Cursor and limit arrive in the
+	// JSON body, so this handler decodes them itself.
+	api.Handle("POST /api/v1/items/search", guarded(func(w http.ResponseWriter, r *http.Request) {
+		deps.search(w, r)
+	}))
+
+	// Password health over the caller's readable login items (T13).
+	api.Handle("GET /api/v1/items/health", guarded(func(w http.ResponseWriter, r *http.Request) {
+		report, err := deps.Service.Health(r.Context(), CurrentPrincipal(r.Context()))
+		if err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	}))
+
+	// Favorite and tags are item writes (D06): personal owner or shared
+	// creator only, revision-locked like any other update.
+	api.Handle("PUT /api/v1/items/{itemId}/favorite", guarded(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Favorite *bool `json:"favorite"`
+		}
+		if !decodeJSONBody(w, r, &input, authMaxBodyBytes) {
+			return
+		}
+		if input.Favorite == nil {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "favorite is required")
+			return
+		}
+		if err := deps.Service.SetFavorite(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId"), *input.Favorite); err != nil {
+			writeItemsError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	api.Handle("PUT /api/v1/items/{itemId}/tags", guarded(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Tags []string `json:"tags"`
+		}
+		if !decodeJSONBody(w, r, &input, authMaxBodyBytes) {
+			return
+		}
+		if err := deps.Service.SetTags(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId"), input.Tags); err != nil {
 			writeItemsError(w, r, err)
 			return
 		}
@@ -262,6 +317,67 @@ func (d ItemsDeps) createFingerprint(input itemCreateRequest) string {
 		strconv.FormatBool(input.Favorite), tags, string(canonical))
 }
 
+// search implements POST /items/search with a body-carried cursor and limit.
+func (d ItemsDeps) search(w http.ResponseWriter, r *http.Request) {
+	principal := CurrentPrincipal(r.Context())
+	var body struct {
+		Query  string `json:"query"`
+		Scope  string `json:"scope"`
+		Type   string `json:"type"`
+		Tag    string `json:"tag"`
+		Cursor string `json:"cursor"`
+		Limit  *int   `json:"limit"`
+	}
+	if !decodeJSONBody(w, r, &body, authMaxBodyBytes) {
+		return
+	}
+	if strings.TrimSpace(body.Query) == "" {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "query is required")
+		return
+	}
+	if runeLen(body.Query) > 256 {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "query must be at most 256 characters")
+		return
+	}
+	if runeLen(body.Tag) > 64 {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "tag must be at most 64 characters")
+		return
+	}
+	// The query itself is part of the cursor binding: a cursor never leaks
+	// results across different searches.
+	filters := itemsSearchFilters + ":q=" + body.Query + ":scope=" + body.Scope + ":type=" + body.Type + ":tag=" + body.Tag
+	limit := defaultPageSize
+	if body.Limit != nil {
+		if *body.Limit < 1 || *body.Limit > maxPageSize {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", pageSizeTooLarge)
+			return
+		}
+		limit = *body.Limit
+	}
+	var beforeUpdated, beforeID string
+	if body.Cursor != "" {
+		sort, err := d.Cursor.Decode(body.Cursor, principal.UserID, filters)
+		if err != nil || len(sort) != 2 {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid or expired cursor")
+			return
+		}
+		beforeUpdated, beforeID = sort[0], sort[1]
+	}
+	metas, err := d.Service.Search(r.Context(), principal, vault.SearchInput{
+		Query: body.Query, Scope: body.Scope, Type: body.Type, Tag: body.Tag,
+	}, beforeUpdated, beforeID, limit+1)
+	if err != nil {
+		writeItemsError(w, r, err)
+		return
+	}
+	var lastCreated, lastID string
+	if len(metas) > limit {
+		metas = metas[:limit]
+		lastCreated, lastID = metas[len(metas)-1].UpdatedAt, metas[len(metas)-1].ID
+	}
+	writeJSON(w, http.StatusOK, CursorPageResponse(d.Cursor, principal.UserID, filters, metas, lastCreated, lastID))
+}
+
 func (d ItemsDeps) list(w http.ResponseWriter, r *http.Request) {
 	principal := CurrentPrincipal(r.Context())
 	query := r.URL.Query()
@@ -278,11 +394,12 @@ func (d ItemsDeps) list(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Favorite = &favorite
 	}
-	// Tags live inside the ciphertext: filtering by tag requires the
-	// decrypt-and-filter pipeline of the search milestone (T13). Fail closed
-	// instead of silently returning unfiltered results.
-	if query.Get("tag") != "" {
-		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "tag filtering is not available yet")
+	// Tags live inside the ciphertext; a tag filter switches the list to the
+	// decrypt-and-filter scanner (T13). The tag participates in the cursor
+	// filter identity below.
+	filter.Tag = query.Get("tag")
+	if runeLen(filter.Tag) > 64 {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "tag must be at most 64 characters")
 		return
 	}
 	// The filter identity binds cursors to this exact filter combination.
@@ -290,6 +407,7 @@ func (d ItemsDeps) list(w http.ResponseWriter, r *http.Request) {
 	if filter.Favorite != nil {
 		filters += ":favorite=" + strconv.FormatBool(*filter.Favorite)
 	}
+	filters += ":tag=" + filter.Tag
 
 	beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, d.Cursor, principal.UserID, filters)
 	if !ok {

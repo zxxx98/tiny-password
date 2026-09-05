@@ -80,8 +80,11 @@ func TestHistoryListAndCrossMemberAccess(t *testing.T) {
 
 	item := h.mustCreateItem(t, alice, "personal", "secure_note", noteItem("note", "v0"), nil)
 	id := item["id"].(string)
-	for rev, body := range map[int]string{1: "v1", 2: "v2", 3: "v3"} {
-		h.updateNote(t, alice, id, rev, body)
+	for _, step := range []struct {
+		rev  int
+		body string
+	}{{1, "v1"}, {2, "v2"}, {3, "v3"}} {
+		h.updateNote(t, alice, id, step.rev, step.body)
 	}
 
 	// Creator lists history newest-first; entries carry revision + updated_at.

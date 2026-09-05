@@ -133,27 +133,48 @@ func (repository) getItem(ctx context.Context, q Queryer, id string) (itemRow, e
 // listItems pages the candidate set newest-first by the (updated_at, id)
 // keyset. The caller supplies the authorization predicate; this function
 // never decides who may see what.
-func (repository) listItems(ctx context.Context, q Queryer, where string, args []any, beforeUpdated, beforeID string, limit int) ([]metaRow, error) {
-	query := `SELECT ` + metaColumns + ` FROM vault_items WHERE ` + where
+func (repo repository) listItems(ctx context.Context, q Queryer, where string, args []any, beforeUpdated, beforeID string, limit int) ([]metaRow, error) {
+	rows, err := repo.listRows(ctx, q, where, args, beforeUpdated, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]metaRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, metaRow{
+			ID: r.ID, Scope: r.Scope, OwnerID: r.OwnerID, CreatorID: r.CreatorID,
+			ItemType: r.ItemType, Favorite: r.Favorite, Revision: r.Revision,
+			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, DeletedAt: r.DeletedAt,
+		})
+	}
+	return out, nil
+}
+
+// listRows is the full-row variant of listItems: it carries the encrypted
+// columns so the decrypt-and-filter scanner can process candidates in
+// batches. limit<=0 means "all remaining rows" (health scans).
+func (repo repository) listRows(ctx context.Context, q Queryer, where string, args []any, beforeUpdated, beforeID string, limit int) ([]itemRow, error) {
+	query := `SELECT ` + itemColumns + ` FROM vault_items WHERE ` + where
 	if beforeUpdated != "" {
 		query += ` AND (updated_at < ? OR (updated_at = ? AND id < ?))`
 		args = append(args, beforeUpdated, beforeUpdated, beforeID)
 	}
-	query += ` ORDER BY updated_at DESC, id DESC LIMIT ?`
-	args = append(args, limit)
+	query += ` ORDER BY updated_at DESC, id DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []metaRow{}
+	out := []itemRow{}
 	for rows.Next() {
-		var m metaRow
-		if err := rows.Scan(&m.ID, &m.Scope, &m.OwnerID, &m.CreatorID, &m.ItemType, &m.Favorite,
-			&m.Revision, &m.CreatedAt, &m.UpdatedAt, &m.DeletedAt); err != nil {
+		r, err := scanItem(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

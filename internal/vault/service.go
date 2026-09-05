@@ -22,16 +22,21 @@ type Options struct {
 	Now func() time.Time
 	// Audit receives same-transaction change events and read events.
 	Audit *audit.Service
+	// DecryptHook, when set, fires once per payload decryption with the item
+	// id. Tests use it to assert that only authorized candidates decrypt;
+	// production leaves it nil.
+	DecryptHook func(itemID string)
 }
 
 // Service orchestrates the item lifecycle: the repository narrows candidates,
 // the policy authorizes, and only then is anything decrypted.
 type Service struct {
-	db    *sql.DB
-	key   *crypto.MasterKey
-	repo  repository
-	now   func() time.Time
-	audit *audit.Service
+	db          *sql.DB
+	key         *crypto.MasterKey
+	repo        repository
+	now         func() time.Time
+	audit       *audit.Service
+	decryptHook func(itemID string)
 }
 
 // NewService requires the master key: without it no payload can be sealed
@@ -49,7 +54,7 @@ func NewService(db *sql.DB, key *crypto.MasterKey, options Options) (*Service, e
 	if options.Audit == nil {
 		options.Audit = audit.NewService(audit.Options{})
 	}
-	return &Service{db: db, key: key, now: options.Now, audit: options.Audit}, nil
+	return &Service{db: db, key: key, now: options.Now, audit: options.Audit, decryptHook: options.DecryptHook}, nil
 }
 
 // CreateInput carries the create request. Ownership is derived from the
@@ -119,9 +124,9 @@ func (s *Service) Create(ctx context.Context, actor *auth.Principal, input Creat
 	at := s.now().UTC().Format(TimestampFormat)
 	row := itemRow{
 		ID: id, Scope: input.Scope,
-		OwnerID: sql.NullString{String: owner, Valid: owner != ""},
+		OwnerID:   sql.NullString{String: owner, Valid: owner != ""},
 		CreatorID: sql.NullString{String: creator, Valid: creator != ""},
-		ItemType: input.ItemType, Favorite: input.Favorite,
+		ItemType:  input.ItemType, Favorite: input.Favorite,
 		PayloadVersion: enc.Version, Nonce: enc.Nonce[:], Ciphertext: enc.Ciphertext,
 		Revision: 1, CreatedAt: at, UpdatedAt: at,
 	}
@@ -197,11 +202,14 @@ func (s *Service) Get(ctx context.Context, actor *auth.Principal, id string) (De
 	return Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: typed}, nil
 }
 
-// ListFilter narrows the caller-readable candidate set.
+// ListFilter narrows the caller-readable candidate set. Tags live inside
+// the ciphertext: a tag filter switches the list to the decrypt-and-filter
+// scanner, exactly like search.
 type ListFilter struct {
 	Scope    string // "", "personal" or "shared"
 	ItemType string // "" or one of the five types
 	Favorite *bool  // nil = any
+	Tag      string // "" = any
 }
 
 // List pages item metadata the actor may read, newest first by the
@@ -238,6 +246,13 @@ func (s *Service) List(ctx context.Context, actor *auth.Principal, filter ListFi
 	if filter.Favorite != nil {
 		where += ` AND favorite=?`
 		args = append(args, *filter.Favorite)
+	}
+	if filter.Tag != "" {
+		matched, err := s.scanMatches(ctx, where, args, matchQuery("", filter.Tag), beforeUpdated, beforeID, limit)
+		if err != nil {
+			return nil, err
+		}
+		return matched, nil
 	}
 	rows, err := s.repo.listItems(ctx, s.db, where, args, beforeUpdated, beforeID, limit)
 	if err != nil {
@@ -373,6 +388,9 @@ func (s *Service) Update(ctx context.Context, actor *auth.Principal, id string, 
 // indicates corruption or a bug and maps to a bare internal error — never
 // to details that could leak stored material.
 func (s *Service) decryptRow(row itemRow) ([]byte, any, *storedPayload, error) {
+	if s.decryptHook != nil {
+		s.decryptHook(row.ID)
+	}
 	aad := AADFor(row.ID, row.Scope, row.OwnerID.String, row.CreatorID.String, row.PayloadVersion, row.Revision)
 	raw, err := s.key.DecryptColumns(row.PayloadVersion, row.Nonce, row.Ciphertext, aad)
 	if err != nil {
@@ -423,6 +441,97 @@ func typedPayloadOf(itemType string, envelope *storedPayload) any {
 	default:
 		return nil
 	}
+}
+
+// SetFavorite flips the favorite flag as an ordinary effective update: the
+// previous version is archived and the revision advances (design D06: the
+// favorite flag is part of the item).
+func (s *Service) SetFavorite(ctx context.Context, actor *auth.Principal, itemID string, favorite bool) error {
+	_, err := s.applyMetadataChange(ctx, actor, itemID, &favorite, nil, ActionFavorite)
+	return err
+}
+
+// SetTags replaces the tag list (dedup applies) as an ordinary effective
+// update. Absent-changes keep the stored envelope untouched.
+func (s *Service) SetTags(ctx context.Context, actor *auth.Principal, itemID string, tags []string) error {
+	_, err := s.applyMetadataChange(ctx, actor, itemID, nil, &tags, ActionTag)
+	return err
+}
+
+// applyMetadataChange updates the favorite flag and/or tags through the same
+// optimistic-locking path as a payload update.
+func (s *Service) applyMetadataChange(ctx context.Context, actor *auth.Principal, itemID string, favorite *bool, tags *[]string, action Action) (Detail, error) {
+	if actor == nil {
+		return Detail{}, ErrForbidden
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Detail{}, err
+	}
+	defer tx.Rollback()
+	row, err := s.repo.getItem(ctx, tx, itemID)
+	if err != nil {
+		return Detail{}, ErrNotFound
+	}
+	view := row.policyView()
+	if row.DeletedAt.Valid || !Can(Role(actor.Role), actor.UserID, view, ActionRead) {
+		return Detail{}, ErrNotFound
+	}
+	if !Can(Role(actor.Role), actor.UserID, view, action) {
+		return Detail{}, ErrForbidden
+	}
+	oldRaw, typed, oldEnvelope, err := s.decryptRow(row)
+	if err != nil {
+		return Detail{}, err
+	}
+	newTags := oldEnvelope.Tags
+	if tags != nil {
+		newTags, err = validateTags(*tags)
+		if err != nil {
+			return Detail{}, err
+		}
+	}
+	newFavorite := row.Favorite
+	if favorite != nil {
+		newFavorite = *favorite
+	}
+	envelope, plaintext, err := buildEnvelope(row.ItemType, newTags, typed)
+	if err != nil {
+		return Detail{}, err
+	}
+	if bytes.Equal(plaintext, oldRaw) && newFavorite == row.Favorite {
+		return Detail{Meta: row.toMeta(), Tags: oldEnvelope.Tags, Payload: typed}, nil
+	}
+	enc, err := s.key.Encrypt(plaintext, AADFor(itemID, row.Scope, row.OwnerID.String, row.CreatorID.String, crypto.PayloadVersion, row.Revision+1))
+	if err != nil {
+		return Detail{}, err
+	}
+	updatedAt := s.now().UTC().Format(TimestampFormat)
+	applied, err := s.repo.updateItem(ctx, tx, row, enc.Version, enc.Nonce[:], enc.Ciphertext, newFavorite, updatedAt)
+	if err != nil {
+		return Detail{}, err
+	}
+	if !applied {
+		current, err := s.repo.currentRevision(ctx, tx, itemID)
+		if err != nil {
+			return Detail{}, ErrNotFound
+		}
+		return Detail{}, &RevisionConflictError{CurrentRevision: current}
+	}
+	if err := s.audit.Record(ctx, tx, audit.Event{
+		Name: audit.EventVaultItemUpdated, ActorID: actor.UserID,
+		TargetType: audit.TargetItem, TargetID: itemID, Result: audit.ResultSuccess,
+	}); err != nil {
+		return Detail{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Detail{}, err
+	}
+	meta := row.toMeta()
+	meta.Revision = row.Revision + 1
+	meta.Favorite = newFavorite
+	meta.UpdatedAt = updatedAt
+	return Detail{Meta: meta, Tags: envelope.Tags, Payload: typed}, nil
 }
 
 // AADFor assembles the row-bound additional authenticated data. Exactly one

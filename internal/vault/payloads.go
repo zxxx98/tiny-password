@@ -9,69 +9,69 @@ import (
 // Unicode code points; the login password is additionally capped at 1024
 // UTF-8 bytes (decision D09).
 const (
-	MaxNameRunes          = 256
-	MaxShortTextRunes     = 256  // username, cardholder, full name, company, comment
-	MaxNotesRunes         = 10000
-	MaxPasswordBytes      = 1024
-	MaxURLs               = 16
-	MaxURLRunes           = 2048
-	MaxPublicKeyRunes     = 8192
-	MaxPrivateKeyRunes    = 16384
-	MaxPassphraseRunes    = 1024
-	MaxFingerprintRunes   = 128
-	MaxCardNumberRunes    = 64
-	MaxCVVRunes           = 8
-	MaxPINRunes           = 16
-	MaxEmailRunes         = 320
-	MaxPhoneRunes         = 64
-	MaxRegionRunes        = 96 // country, state, city, district
-	MaxAddressLineRunes   = 512
-	MaxPostalCodeRunes    = 32
-	MaxNoteBodyRunes      = 65536
-	MinExpMonth           = 1
-	MaxExpMonth           = 12
-	MinExpYear            = 2000
-	MaxExpYear            = 9999
-	MaxTagsCount          = 32
-	MaxTagRunes           = 64
+	MaxNameRunes        = 256
+	MaxShortTextRunes   = 256 // username, cardholder, full name, company, comment
+	MaxNotesRunes       = 10000
+	MaxPasswordBytes    = 1024
+	MaxURLs             = 16
+	MaxURLRunes         = 2048
+	MaxPublicKeyRunes   = 8192
+	MaxPrivateKeyRunes  = 16384
+	MaxPassphraseRunes  = 1024
+	MaxFingerprintRunes = 128
+	MaxCardNumberRunes  = 64
+	MaxCVVRunes         = 8
+	MaxPINRunes         = 16
+	MaxEmailRunes       = 320
+	MaxPhoneRunes       = 64
+	MaxRegionRunes      = 96 // country, state, city, district
+	MaxAddressLineRunes = 512
+	MaxPostalCodeRunes  = 32
+	MaxNoteBodyRunes    = 65536
+	MinExpMonth         = 1
+	MaxExpMonth         = 12
+	MinExpYear          = 2000
+	MaxExpYear          = 9999
+	MaxTagsCount        = 32
+	MaxTagRunes         = 64
 )
 
 // LoginPayload is the login credential type (design §6.2).
 type LoginPayload struct {
-	Name               string   `json:"name"`
-	Username           string   `json:"username,omitempty"`
-	Password           string   `json:"password,omitempty"`
-	URLs               []string `json:"urls,omitempty"`
-	Notes              string   `json:"notes,omitempty"`
-	PasswordUpdatedAt  *string  `json:"password_updated_at,omitempty"`
-	PasswordExpiresAt  *string  `json:"password_expires_at,omitempty"`
+	Name              string   `json:"name"`
+	Username          string   `json:"username,omitempty"`
+	Password          string   `json:"password,omitempty"`
+	URLs              []string `json:"urls,omitempty"`
+	Notes             string   `json:"notes,omitempty"`
+	PasswordUpdatedAt *string  `json:"password_updated_at,omitempty"`
+	PasswordExpiresAt *string  `json:"password_expires_at,omitempty"`
 }
 
 // SSHKeyPayload is the SSH key type (design §6.2).
 type SSHKeyPayload struct {
-	Name           string  `json:"name"`
-	Algorithm      string  `json:"algorithm"`
-	PublicKey      string  `json:"public_key,omitempty"`
-	PrivateKey     string  `json:"private_key,omitempty"`
-	KeyPassphrase  string  `json:"key_passphrase,omitempty"`
-	Comment        string  `json:"comment,omitempty"`
-	Fingerprint    string  `json:"fingerprint,omitempty"`
-	Notes          string  `json:"notes,omitempty"`
+	Name          string `json:"name"`
+	Algorithm     string `json:"algorithm"`
+	PublicKey     string `json:"public_key,omitempty"`
+	PrivateKey    string `json:"private_key,omitempty"`
+	KeyPassphrase string `json:"key_passphrase,omitempty"`
+	Comment       string `json:"comment,omitempty"`
+	Fingerprint   string `json:"fingerprint,omitempty"`
+	Notes         string `json:"notes,omitempty"`
 }
 
 // CreditCardPayload is the payment card type. BillingAddressItemID is the
 // only address reference in V1; the service validates it against the policy
 // before anything is stored.
 type CreditCardPayload struct {
-	Name                  string  `json:"name"`
-	Cardholder            string  `json:"cardholder"`
-	Number                string  `json:"number"`
-	ExpMonth              int     `json:"exp_month"`
-	ExpYear               int     `json:"exp_year"`
-	CVV                   string  `json:"cvv,omitempty"`
-	PIN                   string  `json:"pin,omitempty"`
-	BillingAddressItemID  *string `json:"billing_address_item_id,omitempty"`
-	Notes                 string  `json:"notes,omitempty"`
+	Name                 string  `json:"name"`
+	Cardholder           string  `json:"cardholder"`
+	Number               string  `json:"number"`
+	ExpMonth             int     `json:"exp_month"`
+	ExpYear              int     `json:"exp_year"`
+	CVV                  string  `json:"cvv,omitempty"`
+	PIN                  string  `json:"pin,omitempty"`
+	BillingAddressItemID *string `json:"billing_address_item_id,omitempty"`
+	Notes                string  `json:"notes,omitempty"`
 }
 
 // IdentityPayload is the identity/address type (design §6.2).
