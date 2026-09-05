@@ -1,8 +1,9 @@
 @import "tailwindcss";
+@import "./design-system/tokens.css";
 
 /*
  * Newsprint design tokens (style.md). Four colors, zero radius, four
- * typefaces (self-hosted fonts land with T14; system fallbacks until then).
+ * self-hosted typefaces. Fonts and global invariants: design-system/tokens.css.
  */
 @theme {
   --color-paper: #f9f9f7;
@@ -16,10 +17,4 @@
   --font-mono: "JetBrains Mono", "Courier New", monospace;
 
   --radius-*: initial;
-}
-
-body {
-  background-color: var(--color-paper);
-  color: var(--color-ink);
-  font-family: var(--font-ui);
 }

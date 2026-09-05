@@ -1,16 +1,30 @@
-// Minimal same-origin API client. Grows with T07/T14 (error handling,
-// session awareness, request_id plumbing). Data stays in memory only.
+import { SESSION_EXPIRED_EVENT, sessionStore } from "./session";
+
+/**
+ * Same-origin API client. Every error carries the server's stable code and
+ * the request_id so any page can render it. A 401 clears the in-memory
+ * session and fires the session-expired event the shell listens to.
+ * Sensitive data only ever lives in memory (design §12).
+ */
 export class ApiError extends Error {
   readonly code: string;
   readonly requestId: string;
   readonly status: number;
+  /** Current revision, present on 409 REVISION_CONFLICT. */
+  readonly currentRevision?: number;
 
-  constructor(status: number, code: string, message: string, requestId: string) {
+  constructor(status: number, code: string, message: string, requestId: string, currentRevision?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.currentRevision = currentRevision;
+  }
+
+  /** 503/429 responses the UI may invite the user to retry. */
+  get retryable(): boolean {
+    return this.status === 503 || this.status === 429;
   }
 }
 
@@ -18,53 +32,71 @@ async function parseError(response: Response): Promise<ApiError> {
   let code = "INTERNAL";
   let message = "请求失败";
   let requestId = "";
+  let currentRevision: number | undefined;
   try {
     const body = (await response.json()) as {
       code?: string;
       message?: string;
       request_id?: string;
+      current_revision?: number;
     };
     if (body.code) code = body.code;
     if (body.message) message = body.message;
     if (body.request_id) requestId = body.request_id;
+    if (typeof body.current_revision === "number") currentRevision = body.current_revision;
   } catch {
     // non-JSON error body; keep defaults
   }
-  return new ApiError(response.status, code, message, requestId);
+  return new ApiError(response.status, code, message, requestId, currentRevision);
 }
 
-export async function getJSON<T>(url: string): Promise<T> {
-  const response = await fetch(url, { credentials: "same-origin" });
-  if (!response.ok) {
-    throw await parseError(response);
+function handleAuthFailure(status: number): void {
+  if (status === 401) {
+    sessionStore.clear();
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+    }
   }
-  return (await response.json()) as T;
 }
 
-export async function postJSON<T>(
-  url: string,
-  body: unknown,
-  options?: { csrfToken?: string },
-): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (options?.csrfToken) {
+export type RequestOptions = {
+  csrfToken?: string;
+};
+
+export async function request<T>(method: string, url: string, body?: unknown, options?: RequestOptions): Promise<T> {
+  const headers: Record<string, string> = {};
+  const sendBody = body !== undefined;
+  if (sendBody) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (options?.csrfToken && method !== "GET" && method !== "HEAD") {
     headers["X-CSRF-Token"] = options.csrfToken;
   }
   const response = await fetch(url, {
-    method: "POST",
+    method,
     credentials: "same-origin",
     headers,
-    body: JSON.stringify(body),
+    body: sendBody ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
+    handleAuthFailure(response.status);
     throw await parseError(response);
+  }
+  if (response.status === 204) {
+    return undefined as T;
   }
   return (await response.json()) as T;
 }
 
+export async function getJSON<T>(url: string): Promise<T> {
+  return request<T>("GET", url);
+}
+
+export async function postJSON<T>(url: string, body: unknown, options?: { csrfToken?: string }): Promise<T> {
+  return request<T>("POST", url, body, options);
+}
+
 export async function fetchCsrfToken(): Promise<string> {
-  const body = await postJSON<{ csrf_token: string }>("/api/v1/csrf", {});
+  const body = await request<{ csrf_token: string }>("POST", "/api/v1/csrf", {});
   return body.csrf_token;
 }

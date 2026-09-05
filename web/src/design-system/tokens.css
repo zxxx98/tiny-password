@@ -1,0 +1,58 @@
+/*
+ * Newsprint design tokens and global rules (style.md; decisions D12).
+ * Four colors live in styles.css @theme; this file adds the self-hosted
+ * typefaces and the global print-inspired invariants: zero radius, hard
+ * focus, dot-grid paper, and reduced-motion suppression.
+ */
+
+/* Self-hosted typefaces (decision D12): bundled by Vite, no font CDN.
+ * Licenses: web/public/fonts/LICENSES.md. */
+@import "@fontsource/playfair-display/700.css";
+@import "@fontsource/playfair-display/900.css";
+@import "@fontsource/lora/400.css";
+@import "@fontsource/lora/400-italic.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/700.css";
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-ui);
+  /* Subtle 4×4 dot grid: newsprint paper grain (style.md §2). */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4' viewBox='0 0 4 4'%3E%3Cpath fill='%23111111' fill-opacity='0.04' d='M1 3h1v1H1V3zm2-2h1v1H3V1z'%3E%3C/path%3E%3C/svg%3E");
+}
+
+/* Zero border radius everywhere — the style's first invariant. */
+*,
+*::before,
+*::after {
+  border-radius: 0;
+}
+
+/* Hard, always-visible focus for keyboard users. */
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+/* Reduced motion disables non-essential animation globally. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Hard offset "lifted newspaper cutout" hover (style.md §2). */
+.hard-shadow-hover {
+  transition: box-shadow 200ms ease, transform 200ms ease;
+}
+.hard-shadow-hover:hover {
+  box-shadow: 4px 4px 0 0 var(--color-ink);
+  transform: translate(-2px, -2px);
+}
