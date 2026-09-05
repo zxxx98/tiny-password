@@ -286,3 +286,4 @@
   3. `make test-e2e E2E_SPEC=auth.spec.ts` 复跑 → 4/4 通过。
 - 证据路径：`web/src/features/vault/`、`internal/vault/`、`tests/e2e/vault.spec.ts`、`scripts/test-browser-e2e.sh`、`playwright.config.ts`
 - 未解决问题：移动真机验证与 360/768/1280px 截图归 T30 可访问性验收；三处集成测试存在偶发时序敏感（并发更新恰一成功），已通过确定性夹具降低概率，T30 完整验收时复核。
+- race 全量复核（2026-09-05）：`go test -race ./... -count=1 -timeout=25m` 全部通过（集成包 race 下约 612s，超出 Go 默认 10 分钟包超时，race 运行须显式 `-timeout=25m`；性能基线测试经 `raceDetector` 构建标记在 race 模式下跳过，其基线数据以非 race 模式测量）。
