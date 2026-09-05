@@ -236,3 +236,17 @@
   4. `go vet ./...`、`go test ./... -count=1`、`go test -race ./internal/vault`、`go test -race ./tests/integration -run 'TestSearch|TestHealth|TestItem'`、`git diff --check` → 全部通过。另修复 T12 遗留 flaky（map 迭代顺序导致的顺序更新偶发 409，改为确定性切片）。
 - 证据路径：`internal/vault/search.go`、`internal/vault/health.go`、`internal/vault/seed.go`、`internal/httpapi/items.go`、`tests/fixtures/seed.go`、`tests/integration/search_test.go`
 - 未解决问题：单用户 10k 搜索均值 2.9 s，距 T30 的 P95 ≤300 ms 目标有明确差距；T30 将以专用脚本测量并按计划优先测量后优化既有方案（候选批大小、字段投影）。
+
+## T14 · Newsprint 设计原语与响应式壳层
+
+- 日期：2026-09-05
+- 提交：`e133f5c`（worktree `tiny-password-m03`，分支 `m03-personal-vault`）
+- 实现要点：
+  - `web/src/design-system/`：tokens.css（@fontsource 自托管 Playfair Display/Lora/Inter/JetBrains Mono 四套字体、纸面点阵背景、全局零圆角、强制 focus-visible、prefers-reduced-motion 全局关闭动效、硬偏移悬停阴影）；Button（primary/secondary/ghost/link，44×44 触控下限）；Field（持久标签、aria-describedby 关联提示/错误、aria-invalid、底部边框等宽输入）；ConfirmDialog（aria-modal、开启焦点入内、Tab 循环、Escape 取消、关闭后焦点还原、危险操作顶部红条）；Status（ErrorSummary role=alert 携带 request_id、StatusBanner/Loading role=status）。
+  - `web/src/app/`：AppShell（桌面顶部主导航 + <768px 固定底部导航、12 栏 WorkspaceGrid 折叠竖边框、平板/移动单栏，管理入口仅 admin 可见）；router（无依赖 pushState 路由 + `:param` 匹配 + 404 兜底）；session（纯内存 principal/CSRF，零 localStorage/sessionStorage 写入）；api 客户端（任意方法 + CSRF 头注入、错误统一携带 code/request_id，409 透传 current_revision，401 清内存会话并广播 session-expired，503/429 标记 retryable）。
+  - 字体许可：`web/public/fonts/LICENSES.md`（四套 OFL 字体、来源包与许可位置）。
+- 命令与结果：
+  1. `npm --prefix web test -- --run src/design-system src/app` → **26/26 通过**：按钮变体与键盘操作、Field 无障碍关联、对话框焦点进出与 Tab 循环、错误摘要、壳层双导航/角色导航项、路由参数匹配、WorkspaceGrid 栏位、会话纯内存断言、API 401/409/503 行为与 CSRF 头注入、pushState 导航。
+  2. `npm --prefix web run typecheck` → 通过；`npm --prefix web test -- --run` → 全部通过；`npm --prefix web run build` → 成功，产物含 **44 个自托管 woff2**（无任何第三方字体 CDN）。
+- 证据路径：`web/src/design-system/`、`web/src/app/`、`web/public/fonts/LICENSES.md`
+- 未解决问题：360/768/1280px 真实视口截图与键盘走查归入 T30 可访问性验收（jsdom 无法替代真实布局）；`radix`/图标库未引入，图标以文字与 aria 标注实现。
