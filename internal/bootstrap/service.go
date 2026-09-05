@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/idempotency"
 	tpcrypto "github.com/tiny-password/tiny-password/internal/platform/crypto"
@@ -17,10 +18,10 @@ import (
 	tpsqlite "github.com/tiny-password/tiny-password/internal/platform/sqlite"
 )
 
-// Audit events emitted during initialization (centralized in T08).
+// Setup audit events live in the centralized audit package (T08).
 const (
-	EventSetupSuccess = "setup.success"
-	EventSetupFailure = "setup.failure"
+	EventSetupSuccess = audit.EventSetupSuccess
+	EventSetupFailure = audit.EventSetupFailure
 )
 
 const systemStateInitialized = "initialized"
@@ -50,6 +51,7 @@ type Service struct {
 	logger    *slog.Logger
 	token     *SetupToken
 	masterKey *tpcrypto.MasterKey
+	audit     *audit.Service
 }
 
 // NewService inspects the database state: on an uninitialized instance it
@@ -60,7 +62,7 @@ func NewService(db *tpsqlite.DB, masterKey *tpcrypto.MasterKey, logger *slog.Log
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{db: db, logger: logger, masterKey: masterKey}
+	s := &Service{db: db, logger: logger, masterKey: masterKey, audit: audit.NewService(audit.Options{})}
 	if !initialized {
 		token, err := NewSetupToken(logger)
 		if err != nil {
@@ -197,7 +199,6 @@ func (s *Service) Initialize(input InitializeInput) (*InitializeResult, error) {
 			return nil, err
 		}
 	}
-
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -217,11 +218,11 @@ func (s *Service) UsernameByID(id string) (string, error) {
 }
 
 func (s *Service) auditFailure(event string) {
-	_, err := s.db.Exec(
-		`INSERT INTO audit_events (id, event, actor_id, result, request_id, created_at)
-		 VALUES (?, ?, 'anonymous', 'failure', NULL, ?)`,
-		ident.NewUUIDv7(), event, time.Now().UTC().Format(time.RFC3339Nano),
-	)
+	err := s.audit.Record(context.Background(), s.db.DB, audit.Event{
+		Name:    event,
+		ActorID: audit.Anonymous,
+		Result:  audit.ResultFailure,
+	})
 	if err != nil {
 		s.logger.Error("audit write failed", "error", err.Error())
 	}

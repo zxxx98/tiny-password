@@ -21,6 +21,8 @@ type Options struct {
 	// instance without a setup entry point.
 	Setup *SetupDeps
 	Auth  *AuthDeps
+	// Audit wires the personal-activity and admin system-audit queries.
+	Audit *AuditDeps
 	// Logger receives one structured access-log record per request; nil
 	// disables access logging (tests).
 	Logger *slog.Logger
@@ -76,6 +78,9 @@ func registerAPIRoutes(api *http.ServeMux, opts Options) {
 	}
 	if opts.Auth != nil {
 		registerAuth(api, *opts.Auth)
+	}
+	if opts.Audit != nil {
+		registerAudit(api, *opts.Audit)
 	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "resource not found")

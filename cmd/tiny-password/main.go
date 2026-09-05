@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/bootstrap"
 	"github.com/tiny-password/tiny-password/internal/httpapi"
@@ -84,10 +85,6 @@ func run(logger *slog.Logger) error {
 		}
 	}
 
-	authService, err := auth.NewService(db.DB, auth.Options{})
-	if err != nil {
-		return fmt.Errorf("auth service: %w", err)
-	}
 	csrf := httpapi.NewPreAuthCSRF(config.AllowInsecureCookies())
 
 	// Trusted proxy networks come from explicit configuration only; with no
@@ -108,15 +105,30 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("idempotency service: %w", err)
 	}
+	cursorKey, err := httpapi.NewCursorMACKey()
+	if err != nil {
+		return fmt.Errorf("cursor key: %w", err)
+	}
+	cursorCodec, err := httpapi.NewCursorCodec(cursorKey, 0)
+	if err != nil {
+		return fmt.Errorf("cursor codec: %w", err)
+	}
+	auditService := audit.NewService(audit.Options{})
+
+	authService, err := auth.NewService(db.DB, auth.Options{Audit: auditService, Logger: logger})
+	if err != nil {
+		return fmt.Errorf("auth service: %w", err)
+	}
 
 	server := &http.Server{
 		Addr: addr,
 		Handler: httpapi.New(httpapi.Options{
-			SPA:     webassets.SPAHandler(),
-			Ready:   ready,
-			Logger:  logger,
-			Proxy:   proxy,
-			Auth:    &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
+			SPA:    webassets.SPAHandler(),
+			Ready:  ready,
+			Logger: logger,
+			Proxy:  proxy,
+			Auth:   &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
+			Audit:  &httpapi.AuditDeps{Service: auditService, DB: db, Cursor: cursorCodec, Session: authService},
 			Setup: &httpapi.SetupDeps{
 				Service:     bootService,
 				CSRF:        csrf,

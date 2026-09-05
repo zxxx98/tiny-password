@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+
+	"github.com/tiny-password/tiny-password/internal/audit"
 )
 
 type SessionInfo struct {
@@ -86,16 +88,79 @@ func (s *Service) ListSessions(ctx context.Context, token string) ([]SessionInfo
 	}
 	return items, rows.Err()
 }
+
+// Logout revokes the caller's live session; the revocation and its audit row
+// commit together.
 func (s *Service) Logout(ctx context.Context, token string) error {
+	if !validTokenShape(token) {
+		return ErrUnauthorized
+	}
 	at := timestamp(s.now())
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL AND absolute_expires_at>? AND idle_expires_at>? AND EXISTS(SELECT 1 FROM users WHERE id=sessions.user_id AND status='active')`, at, digest(token), at, at)
-	return requireAffected(res, err, ErrUnauthorized)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var userID, publicID string
+	err = tx.QueryRowContext(ctx, `SELECT user_id,public_id FROM sessions WHERE id=? AND revoked_at IS NULL AND absolute_expires_at>? AND idle_expires_at>?
+ AND EXISTS(SELECT 1 FROM users WHERE id=sessions.user_id AND status='active')`, digest(token), at, at).Scan(&userID, &publicID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL", at, digest(token)); err != nil {
+		return err
+	}
+	if err := s.auditRecord(ctx, tx, audit.Event{Name: audit.EventLogout, ActorID: userID, TargetType: audit.TargetSession, TargetID: publicID, Result: audit.ResultSuccess}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
+
+// RevokeSession lets a user revoke one of their own live sessions. The
+// caller's session must itself be live; the audit row shares the transaction.
 func (s *Service) RevokeSession(ctx context.Context, token, id string) error {
+	if !validTokenShape(token) {
+		return ErrNotFound
+	}
 	at := timestamp(s.now())
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE public_id=? AND revoked_at IS NULL
- AND user_id IN (SELECT u.id FROM sessions current JOIN users u ON u.id=current.user_id WHERE current.id=? AND current.revoked_at IS NULL AND current.absolute_expires_at>? AND current.idle_expires_at>? AND u.status='active' AND u.must_change_password=0)`, at, id, digest(token), at, at)
-	return requireAffected(res, err, ErrNotFound)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var callerID string
+	err = tx.QueryRowContext(ctx, `SELECT user_id FROM sessions WHERE id=? AND revoked_at IS NULL AND absolute_expires_at>? AND idle_expires_at>?
+ AND EXISTS(SELECT 1 FROM users u WHERE u.id=sessions.user_id AND u.status='active' AND u.must_change_password=0)`, digest(token), at, at).Scan(&callerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at=? WHERE public_id=? AND revoked_at IS NULL AND user_id=?`, at, id, callerID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return ErrNotFound
+	}
+	if err := s.auditRecord(ctx, tx, audit.Event{Name: audit.EventSessionRevoked, ActorID: callerID, TargetType: audit.TargetSession, TargetID: id, Result: audit.ResultSuccess}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// validTokenShape rejects malformed credentials before touching the database.
+func validTokenShape(token string) bool {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	return err == nil && len(raw) == 32
 }
 func (s *Service) SetIdleTimeout(ctx context.Context, token string, minutes int) error {
 	if minutes < 5 || minutes > 30 {

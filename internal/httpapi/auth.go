@@ -162,6 +162,7 @@ func registerAuth(api *http.ServeMux, deps AuthDeps) {
 		w.WriteHeader(204)
 	})
 }
+
 // authMaxBodyBytes bounds authentication JSON bodies; passwords can be up to
 // 1024 bytes plus envelope, and the endpoint is pre-auth (D09).
 const authMaxBodyBytes = 16 << 10

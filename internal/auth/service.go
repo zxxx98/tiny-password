@@ -8,9 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
 )
 
@@ -35,6 +37,12 @@ func digest(value string) string {
 type Options struct {
 	Now    func() time.Time
 	Limits Limits
+	// Audit writes the authentication audit trail; nil disables auditing
+	// (only acceptable in unit tests). Production wires a real service.
+	Audit *audit.Service
+	// Logger receives standalone audit-write failures (the failure record
+	// itself has no business change to protect).
+	Logger *slog.Logger
 }
 type Service struct {
 	db        *sql.DB
@@ -42,18 +50,45 @@ type Service struct {
 	limits    Limits
 	dummyHash string
 	verify    func(string, string) (bool, error)
+	audit     *audit.Service
+	logger    *slog.Logger
 }
 
 func NewService(db *sql.DB, options Options) (*Service, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 	// A real Argon2 hash makes unknown accounts perform the same password work.
 	dummy, err := HashPassword("unusable dummy password " + ident.NewUUIDv7())
 	if err != nil {
 		return nil, err
 	}
-	return &Service{db: db, now: options.Now, limits: options.Limits.defaults(), dummyHash: dummy, verify: VerifyPassword}, nil
+	return &Service{db: db, now: options.Now, limits: options.Limits.defaults(), dummyHash: dummy, verify: VerifyPassword, audit: options.Audit, logger: options.Logger}, nil
+}
+
+// auditRecord writes one audit row. Inside a transaction the error must
+// propagate (the change rolls back with its lost audit); standalone writes
+// are best-effort and logged.
+func (s *Service) auditRecord(ctx context.Context, db audit.Execer, e audit.Event) error {
+	if s.audit == nil {
+		return nil
+	}
+	if err := s.audit.Record(ctx, db, e); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Service) auditStandalone(ctx context.Context, e audit.Event) {
+	if s.audit == nil {
+		return
+	}
+	if err := s.auditRecord(ctx, s.db, e); err != nil {
+		s.logger.Error("standalone audit write failed", "event", e.Name, "error", err.Error())
+	}
 }
 
 type Principal struct {
@@ -99,9 +134,17 @@ func (s *Service) Login(ctx context.Context, username, password, source string) 
 	}
 	valid, verifyErr := s.verify(password, hash)
 	if verifyErr != nil || !valid || id == "" {
+		// Failure records carry the resolved id or the anonymous marker;
+		// the submitted username never enters the audit trail.
+		actor := audit.Anonymous
+		if id != "" {
+			actor = id
+		}
+		s.auditStandalone(ctx, audit.Event{Name: audit.EventLoginFailure, ActorID: actor, Result: audit.ResultFailure})
 		return nil, ErrUnauthorized
 	}
 	if status != "active" {
+		s.auditStandalone(ctx, audit.Event{Name: audit.EventLoginFailure, ActorID: id, Result: audit.ResultFailure})
 		return nil, ErrAccountDisabled
 	}
 	token, publicID, err := newSession()
@@ -135,6 +178,11 @@ func (s *Service) Login(ctx context.Context, username, password, source string) 
 	}
 	idleExpiry = now.Add(time.Duration(idle) * time.Minute)
 	if _, err := tx.ExecContext(ctx, "UPDATE sessions SET idle_expires_at=? WHERE id=?", timestamp(idleExpiry), digest(token)); err != nil {
+		return nil, err
+	}
+	// Success audit shares the login transaction: a committed session never
+	// lacks its audit record, and a failed audit cancels the login.
+	if err := s.auditRecord(ctx, tx, audit.Event{Name: audit.EventLoginSuccess, ActorID: id, TargetType: audit.TargetSession, TargetID: publicID, Result: audit.ResultSuccess}); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -209,6 +257,9 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, next, sour
 	}
 	absolute, idleExpiry := timestamp(now.Add(AbsoluteLifetime)), timestamp(now.Add(time.Duration(idle)*time.Minute))
 	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,public_id,user_id,created_at,absolute_expires_at,idle_expires_at) VALUES(?,?,?,?,?,?)`, digest(raw), id, p.UserID, at, absolute, idleExpiry); err != nil {
+		return nil, err
+	}
+	if err = s.auditRecord(ctx, tx, audit.Event{Name: audit.EventPasswordChanged, ActorID: p.UserID, TargetType: audit.TargetUser, TargetID: p.UserID, Result: audit.ResultSuccess}); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
