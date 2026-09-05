@@ -147,24 +147,31 @@ func (s *Service) ListTrash(ctx context.Context, actor *auth.Principal, beforeUp
 	}
 	where := `deleted_at IS NOT NULL AND ((vault_scope='personal' AND owner_user_id=?) OR vault_scope='shared')`
 	args := []any{actor.UserID}
-	rows, err := s.repo.listItems(ctx, s.db, where, args, beforeUpdated, beforeID, limit)
+	rows, err := s.repo.listRows(ctx, s.db, where, args, beforeUpdated, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Meta, 0, len(rows))
-	for _, m := range rows {
+	for _, row := range rows {
 		owner, creator := "", ""
-		if m.OwnerID.Valid {
-			owner = m.OwnerID.String
+		if row.OwnerID.Valid {
+			owner = row.OwnerID.String
 		}
-		if m.CreatorID.Valid {
-			creator = m.CreatorID.String
+		if row.CreatorID.Valid {
+			creator = row.CreatorID.String
 		}
-		if !CanReadItem(actor.UserID, policyItem(m.Scope, owner, creator)) {
+		if !CanReadItem(actor.UserID, policyItem(row.Scope, owner, creator)) {
 			continue
 		}
-		out = append(out, m.toMeta())
+		_, typed, _, err := s.decryptRow(row)
+		if err != nil {
+			return nil, err
+		}
+		meta := row.toMeta()
+		meta.Title = TitleOf(typed)
+		out = append(out, meta)
 	}
+	s.attachCreatorNames(ctx, s.db, out)
 	return out, nil
 }
 

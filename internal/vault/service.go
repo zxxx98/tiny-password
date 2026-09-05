@@ -199,7 +199,9 @@ func (s *Service) Get(ctx context.Context, actor *auth.Principal, id string) (De
 	}); err != nil {
 		return Detail{}, err
 	}
-	return Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: typed}, nil
+	meta := row.toMeta()
+	s.attachCreatorNames(ctx, s.db, []Meta{meta})
+	return Detail{Meta: meta, Tags: envelope.Tags, Payload: typed}, nil
 }
 
 // ListFilter narrows the caller-readable candidate set. Tags live inside
@@ -254,25 +256,34 @@ func (s *Service) List(ctx context.Context, actor *auth.Principal, filter ListFi
 		}
 		return matched, nil
 	}
-	rows, err := s.repo.listItems(ctx, s.db, where, args, beforeUpdated, beforeID, limit)
+	rows, err := s.repo.listRows(ctx, s.db, where, args, beforeUpdated, beforeID, limit)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Meta, 0, len(rows))
-	for _, m := range rows {
+	for _, row := range rows {
 		// Defense in depth: re-check the policy even though SQL narrowed the set.
 		owner, creator := "", ""
-		if m.OwnerID.Valid {
-			owner = m.OwnerID.String
+		if row.OwnerID.Valid {
+			owner = row.OwnerID.String
 		}
-		if m.CreatorID.Valid {
-			creator = m.CreatorID.String
+		if row.CreatorID.Valid {
+			creator = row.CreatorID.String
 		}
-		if !CanReadItem(actor.UserID, policyItem(m.Scope, owner, creator)) {
+		if !CanReadItem(actor.UserID, policyItem(row.Scope, owner, creator)) {
 			continue
 		}
-		out = append(out, m.toMeta())
+		// Titles are decrypted per page for the workspace list; no plaintext
+		// ever lands in a column or index (design §6.1, §7.1).
+		_, typed, _, err := s.decryptRow(row)
+		if err != nil {
+			return nil, err
+		}
+		meta := row.toMeta()
+		meta.Title = TitleOf(typed)
+		out = append(out, meta)
 	}
+	s.attachCreatorNames(ctx, s.db, out)
 	return out, nil
 }
 
@@ -534,6 +545,50 @@ func (s *Service) applyMetadataChange(ctx context.Context, actor *auth.Principal
 	return Detail{Meta: meta, Tags: envelope.Tags, Payload: typed}, nil
 }
 
+// attachCreatorNames resolves display usernames for shared items in one
+// batched query so list and detail views can sign entries (design §12).
+func (s *Service) attachCreatorNames(ctx context.Context, q Queryer, metas []Meta) {
+	ids := make([]string, 0, len(metas))
+	need := map[string]bool{}
+	for _, m := range metas {
+		if m.Scope == string(ScopeShared) && m.CreatorID != nil && !need[*m.CreatorID] {
+			need[*m.CreatorID] = true
+			ids = append(ids, *m.CreatorID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	query := `SELECT id, username_display FROM users WHERE id IN (`
+	args := make([]any, 0, len(ids))
+	for i, id := range ids {
+		if i > 0 {
+			query += ","
+		}
+		query += "?"
+		args = append(args, id)
+	}
+	query += `)`
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	names := map[string]string{}
+	for rows.Next() {
+		var id, display string
+		if err := rows.Scan(&id, &display); err != nil {
+			return
+		}
+		names[id] = display
+	}
+	for i := range metas {
+		if metas[i].Scope == string(ScopeShared) && metas[i].CreatorID != nil {
+			metas[i].CreatorName = names[*metas[i].CreatorID]
+		}
+	}
+}
+
 // AADFor assembles the row-bound additional authenticated data. Exactly one
 // of ownerID/creatorID is set, mirroring the database CHECK constraint.
 func AADFor(itemID, scope, ownerID, creatorID string, payloadVersion uint16, revision uint64) crypto.AAD {
@@ -548,4 +603,48 @@ func AADFor(itemID, scope, ownerID, creatorID string, payloadVersion uint16, rev
 		PayloadVersion: payloadVersion,
 		Revision:       revision,
 	}
+}
+
+// secretFields is the closed set of sensitive field categories whose reveal
+// and copy interactions are audited (design §6.4). Values are never recorded.
+var secretFields = map[string]bool{
+	"password":       true,
+	"key_passphrase": true,
+	"private_key":    true,
+	"cvv":            true,
+	"pin":            true,
+	"number":         true,
+}
+
+// RecordSecretEvent writes one sensitive-field interaction to the audit
+// trail. The event fires after the caller could see the value — the UI
+// calls it when a field is revealed or copied — and carries only the field
+// category, never its content.
+func (s *Service) RecordSecretEvent(ctx context.Context, actor *auth.Principal, itemID, kind, field string) error {
+	if actor == nil {
+		return ErrForbidden
+	}
+	if !secretFields[field] {
+		return fmt.Errorf("%w: unknown sensitive field", ErrPayloadInvalid)
+	}
+	row, err := s.repo.getItem(ctx, s.db, itemID)
+	if err != nil {
+		return ErrNotFound
+	}
+	if row.DeletedAt.Valid || !Can(Role(actor.Role), actor.UserID, row.policyView(), ActionRead) {
+		return ErrNotFound
+	}
+	name := audit.EventVaultSecretRevealed
+	if kind == "copy" {
+		name = audit.EventVaultSecretCopied
+	} else if kind != "reveal" {
+		return fmt.Errorf("%w: unknown secret event kind", ErrPayloadInvalid)
+	}
+	if err := s.audit.Record(ctx, s.db, audit.Event{
+		Name: name, ActorID: actor.UserID,
+		TargetType: audit.TargetItem, TargetID: itemID, Result: audit.ResultSuccess,
+	}); err != nil {
+		return err
+	}
+	return nil
 }

@@ -141,6 +141,27 @@ func registerItems(api *http.ServeMux, deps ItemsDeps) {
 		writeJSON(w, http.StatusOK, report)
 	}))
 
+	// Sensitive-field interaction audits (design §6.4): the workspace calls
+	// these when a value is revealed or copied; only the field category is
+	// recorded.
+	recordSecret := func(kind string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			var input struct {
+				Field string `json:"field"`
+			}
+			if !decodeJSONBody(w, r, &input, authMaxBodyBytes) {
+				return
+			}
+			if err := deps.Service.RecordSecretEvent(r.Context(), CurrentPrincipal(r.Context()), r.PathValue("itemId"), kind, input.Field); err != nil {
+				writeItemsError(w, r, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}
+	api.Handle("POST /api/v1/items/{itemId}/reveal", guarded(recordSecret("reveal")))
+	api.Handle("POST /api/v1/items/{itemId}/copy", guarded(recordSecret("copy")))
+
 	// Favorite and tags are item writes (D06): personal owner or shared
 	// creator only, revision-locked like any other update.
 	api.Handle("PUT /api/v1/items/{itemId}/favorite", guarded(func(w http.ResponseWriter, r *http.Request) {

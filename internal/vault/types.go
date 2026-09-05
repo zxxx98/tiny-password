@@ -75,15 +75,21 @@ func (e *RevisionConflictError) Error() string {
 	return "vault: item was updated concurrently"
 }
 
-// Meta is the plaintext metadata view of an item: exactly what the
-// database already stores in the clear. Payloads and tags are excluded.
+// Meta is the plaintext metadata view of an item plus the decrypted title.
+// The database columns only ever hold policy metadata and ciphertext; the
+// title is decrypted per page at request time and never stored in the clear.
 type Meta struct {
 	ID        string  `json:"id"`
+	Title     string  `json:"title"`
 	ItemType  string  `json:"item_type"`
 	Scope     string  `json:"vault_scope"`
 	OwnerID   *string `json:"owner_id,omitempty"`
 	CreatorID *string `json:"creator_id,omitempty"`
-	Favorite  bool    `json:"favorite"`
+	// CreatorName is the shared creator's display username, resolved for
+	// shared items so the workspace can sign them (design §12). Personal
+	// items never carry a name: only their owner can read them.
+	CreatorName string  `json:"creator_name,omitempty"`
+	Favorite    bool    `json:"favorite"`
 	Revision  uint64  `json:"revision"`
 	CreatedAt string  `json:"created_at"`
 	UpdatedAt string  `json:"updated_at"`
@@ -111,6 +117,25 @@ type storedPayload struct {
 	CreditCard *CreditCardPayload `json:"credit_card,omitempty"`
 	Identity   *IdentityPayload   `json:"identity,omitempty"`
 	SecureNote *SecureNotePayload `json:"secure_note,omitempty"`
+}
+
+// TitleOf extracts the display title from a decrypted payload. Every type
+// carries a Name field (design §6.2).
+func TitleOf(payload any) string {
+	switch p := payload.(type) {
+	case *LoginPayload:
+		return p.Name
+	case *SSHKeyPayload:
+		return p.Name
+	case *CreditCardPayload:
+		return p.Name
+	case *IdentityPayload:
+		return p.Name
+	case *SecureNotePayload:
+		return p.Name
+	default:
+		return ""
+	}
 }
 
 // policyItem renders the ownership view the authorization policy decides on.

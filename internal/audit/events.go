@@ -31,6 +31,10 @@ const (
 	EventVaultItemRestored        = "vault.item.restored"
 	EventVaultItemPurged          = "vault.item.purged"
 	EventVaultItemHistoryRestored = "vault.item.history_restored"
+	// Sensitive-field interaction events (design §6.4, §7.3): the field
+	// category is recorded, never the value.
+	EventVaultSecretRevealed = "vault.secret.revealed"
+	EventVaultSecretCopied   = "vault.secret.copied"
 )
 
 var allowlist = map[string]bool{
@@ -53,6 +57,8 @@ var allowlist = map[string]bool{
 	EventVaultItemRestored:        true,
 	EventVaultItemPurged:          true,
 	EventVaultItemHistoryRestored: true,
+	EventVaultSecretRevealed:      true,
+	EventVaultSecretCopied:        true,
 }
 
 // Results are restricted to the database CHECK constraint's domain.

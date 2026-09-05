@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -19,8 +20,10 @@ import (
 	"github.com/tiny-password/tiny-password/internal/idempotency"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
+	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 	"github.com/tiny-password/tiny-password/internal/users"
 	"github.com/tiny-password/tiny-password/internal/vault"
+	"github.com/tiny-password/tiny-password/migrations"
 )
 
 // itemsHarness wires the vault item endpoints on top of the auth harness.
@@ -1070,5 +1073,59 @@ func TestUserDeleteCascadeWithRealItems(t *testing.T) {
 	}
 	if strings.Contains(raw, "doomed") {
 		t.Fatal("audit stores username snapshots")
+	}
+}
+
+// TestItemRestartDecryption proves the M3 exit gate: a freshly opened
+// process (new SQLite handle, new vault service, same database file and
+// master key) decrypts every payload written by the previous one.
+func TestItemRestartDecryption(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+
+	personal := h.mustCreateItem(t, alice, "personal", "login", payloadFixtureWithoutReference("login"), nil)
+	shared := h.mustCreateItem(t, alice, "shared", "secure_note", map[string]any{"name": "shared", "body": "SYNSECRET-after-restart"}, nil)
+	// One update so history exists too.
+	update := map[string]any{"revision": 1, "payload": map[string]any{"name": "n", "username": "u", "password": "p-after-restart"}}
+	expectStatus(t, h.request(t, "PUT", "/items/"+personal["id"].(string), update, alice), 200)
+
+	// "Restart": reopen the same database file and rebuild the service.
+	reopened, err := sqlite.Open(h.db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := sqlite.Migrate(reopened.DB, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := vault.NewService(reopened.DB, mustMasterKey(t), vault.Options{Audit: audit.NewService(audit.Options{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	aliceID := h.lookupUserID(t, "alice")
+	for _, id := range []string{personal["id"].(string), shared["id"].(string)} {
+		detail, err := restarted.Get(ctx, &auth.Principal{UserID: aliceID, Role: "member"}, id)
+		if err != nil {
+			t.Fatalf("restart read %s: %v", id, err)
+		}
+		if detail.Payload == nil {
+			t.Fatalf("restart read %s: empty payload", id)
+		}
+	}
+	// The updated login decrypts to the new content under the new revision.
+	detail, err := restarted.Get(ctx, &auth.Principal{UserID: aliceID, Role: "member"}, personal["id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := detail.Payload.(*vault.LoginPayload).Password; got != "p-after-restart" {
+		t.Fatalf("post-restart payload: %q", got)
+	}
+	// History survives and decrypts after the restart too.
+	entries, err := restarted.ListHistory(ctx, &auth.Principal{UserID: aliceID, Role: "member"}, personal["id"].(string), "", 10)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("post-restart history: %v %v", entries, err)
 	}
 }

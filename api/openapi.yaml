@@ -692,6 +692,40 @@ paths:
               schema: { $ref: "#/components/schemas/ItemDetail" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+  /items/{itemId}/reveal:
+    post:
+      tags: [items]
+      summary: Audit one sensitive-field reveal (design §6.4)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [field]
+              properties:
+                field: { type: string, enum: [password, key_passphrase, private_key, cvv, pin, number] }
+      responses:
+        "204": { description: audited }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /items/{itemId}/copy:
+    post:
+      tags: [items]
+      summary: Audit one sensitive-field copy (design §6.4); the value is never recorded
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [field]
+              properties:
+                field: { type: string, enum: [password, key_passphrase, private_key, cvv, pin, number] }
+      responses:
+        "204": { description: audited }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /items/{itemId}/favorite:
     put:
       tags: [items]
@@ -1223,6 +1257,10 @@ components:
       required: [id, item_type, vault_scope, revision, created_at, updated_at]
       properties:
         id: { $ref: "#/components/schemas/OpaqueId" }
+        title:
+          type: string
+          maxLength: 256
+          description: decrypted per page at request time; never stored in the clear
         item_type: { $ref: "#/components/schemas/ItemType" }
         vault_scope: { $ref: "#/components/schemas/VaultScope" }
         owner_id:

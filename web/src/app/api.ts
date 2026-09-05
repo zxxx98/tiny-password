@@ -61,6 +61,8 @@ function handleAuthFailure(status: number): void {
 
 export type RequestOptions = {
   csrfToken?: string;
+  /** Idempotency-Key header for safe create retries. */
+  idempotencyKey?: string;
   /** Observes the raw response before the ok-check (e.g. rotated CSRF header). */
   onResponse?: (response: Response) => void;
   /** Aborts this single request; the global in-flight registry still applies. */
@@ -87,6 +89,9 @@ export async function request<T>(method: string, url: string, body?: unknown, op
   }
   if (options?.csrfToken && method !== "GET" && method !== "HEAD") {
     headers["X-CSRF-Token"] = options.csrfToken;
+  }
+  if (options?.idempotencyKey) {
+    headers["Idempotency-Key"] = options.idempotencyKey;
   }
   const controller = new AbortController();
   inFlight.add(controller);

@@ -127,7 +127,9 @@ func (s *Service) scanMatches(ctx context.Context, where string, args []any, mat
 				return nil, err
 			}
 			if match(row, typed, envelope.Tags) {
-				matched = append(matched, row.toMeta())
+				meta := row.toMeta()
+				meta.Title = TitleOf(typed)
+				matched = append(matched, meta)
 			}
 			cursorUpdated, cursorID = row.UpdatedAt, row.ID
 		}
