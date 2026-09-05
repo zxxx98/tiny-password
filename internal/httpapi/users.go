@@ -109,6 +109,10 @@ func (d UsersDeps) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if d.Idempotency == nil && r.Header.Get("Idempotency-Key") != "" {
+		writeError(w, r, http.StatusServiceUnavailable, "MAINTENANCE", "idempotency is unavailable")
+		return
+	}
 	var claim *idempotency.Claim
 	if d.Idempotency != nil {
 		key, present, invalid := IdempotencyKey(r)
@@ -139,8 +143,12 @@ func (d UsersDeps) create(w http.ResponseWriter, r *http.Request) {
 					writeError(w, r, http.StatusConflict, "CONFLICT", "idempotency record is unavailable")
 					return
 				}
-				u, err := d.Service.GetByID(r.Context(), admin, resourceID)
+				u, err := d.Service.ReplayCreated(r.Context(), admin, resourceID)
 				if err != nil {
+					if !errors.Is(err, users.ErrNotFound) {
+						writeUsersError(w, r, err)
+						return
+					}
 					writeError(w, r, http.StatusConflict, "CONFLICT", "the original resource no longer exists")
 					return
 				}
@@ -164,6 +172,8 @@ func (d UsersDeps) create(w http.ResponseWriter, r *http.Request) {
 
 func writeUsersError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, auth.ErrUnauthorized):
+		writeAuthError(w, r, err)
 	case errors.Is(err, users.ErrForbidden):
 		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "administrator role required")
 	case errors.Is(err, users.ErrNotFound):

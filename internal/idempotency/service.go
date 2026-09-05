@@ -64,8 +64,7 @@ type Options struct {
 	// Now is injectable for expiry tests.
 	Now func() time.Time
 	// MACKey is the server-side secret for request fingerprints. It must be
-	// unpredictable; with a per-process random key fingerprints cannot be
-	// forged across restarts.
+	// unpredictable and stable across restarts while persisted claims exist.
 	MACKey []byte
 	// PendingTTL bounds how long a claimed-but-unfinished request blocks the
 	// key (default 10m).

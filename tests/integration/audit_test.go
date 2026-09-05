@@ -498,3 +498,23 @@ func (h *auditHarness) directAdmin(t *testing.T) authClient {
 	expectStatus(t, resp, 200)
 	return c
 }
+
+func TestAuditCursorBindsEventFilter(t *testing.T) {
+	h := newAuditHarness(t)
+	h.user(t, "gina", false)
+	for i := 0; i < 3; i++ {
+		_, r := h.login(t, "gina", validPassword)
+		expectStatus(t, r, 200)
+	}
+	admin := h.directAdmin(t)
+	r := h.request(t, "GET", "/admin/audit?limit=1&event=auth.login.success", nil, admin)
+	b := decodeBody(t, r)
+	cursor := b["next_cursor"].(string)
+	r = h.request(t, "GET", "/admin/audit?limit=1&event=auth.login.failure&cursor="+url.QueryEscape(cursor), nil, admin)
+	status := r.StatusCode
+	b = decodeBody(t, r)
+	t.Logf("changed event with original cursor: status=%d body=%v", status, b)
+	if status != 400 {
+		t.Fatal("cursor not bound to event filter")
+	}
+}

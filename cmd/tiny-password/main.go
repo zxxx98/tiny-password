@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -96,16 +97,11 @@ func run(logger *slog.Logger) error {
 	}
 	proxy := httpapi.ProxyConfig{Trusted: proxyCIDRs}
 
-	// Per-process HMAC secrets for idempotency fingerprints and pagination
-	// cursors. Outstanding cursors do not survive restarts (transient state).
-	idemKey, err := httpapi.NewCursorMACKey()
-	if err != nil {
-		return fmt.Errorf("idempotency key: %w", err)
-	}
-	idempotencyService, err := idempotency.NewService(db.DB, idempotency.Options{MACKey: idemKey})
+	idempotencyService, err := newIdempotencyService(db.DB, masterKey)
 	if err != nil {
 		return fmt.Errorf("idempotency service: %w", err)
 	}
+	// Pagination cursors are transient and intentionally expire on restart.
 	cursorKey, err := httpapi.NewCursorMACKey()
 	if err != nil {
 		return fmt.Errorf("cursor key: %w", err)
@@ -175,4 +171,13 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// A missing master key still permits health/readiness diagnostics, but cannot
+// enable persisted request fingerprints with a replacement random secret.
+func newIdempotencyService(db *sql.DB, key *crypto.MasterKey) (*idempotency.Service, error) {
+	if key == nil {
+		return nil, nil
+	}
+	return idempotency.NewService(db, idempotency.Options{MACKey: key.IdempotencyMACKey()})
 }

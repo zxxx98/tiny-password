@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -449,7 +450,7 @@ func TestLastAdminProtection(t *testing.T) {
 		switch {
 		case err == nil:
 			okCount++
-		case !strings.Contains(err.Error(), "last administrator"):
+		case !errors.Is(err, auth.ErrUnauthorized) && !strings.Contains(err.Error(), "last administrator"):
 			t.Fatalf("unexpected concurrent delete error: %v", err)
 		}
 	}
@@ -494,11 +495,11 @@ func (h *usersHarness) insertAdmin(t *testing.T, name string) {
 
 func (h *usersHarness) adminPrincipal(t *testing.T, name string) *auth.Principal {
 	t.Helper()
-	var id string
-	if err := h.db.QueryRow(`SELECT id FROM users WHERE username_norm=?`, name).Scan(&id); err != nil {
+	result, err := h.svc.Login(t.Context(), name, validPassword, "test")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return &auth.Principal{UserID: id, Username: name, Role: "admin"}
+	return &result.Principal
 }
 
 func (h *authHarness) lookupUserID(t *testing.T, display string) string {

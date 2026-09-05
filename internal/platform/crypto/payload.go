@@ -147,3 +147,11 @@ func (k *MasterKey) DecryptEncoded(blob []byte, aad AAD) ([]byte, error) {
 	}
 	return k.Decrypt(p, aad)
 }
+
+// IdempotencyMACKey derives a stable secret used only for request fingerprints.
+// This domain must never be reused for public markers or payload encryption.
+func (k *MasterKey) IdempotencyMACKey() []byte {
+	mac := hmac.New(sha256.New, k.key[:])
+	mac.Write([]byte("tiny-password/idempotency-fingerprint-key/v1"))
+	return mac.Sum(nil)
+}

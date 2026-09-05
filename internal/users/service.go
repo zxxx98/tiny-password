@@ -129,6 +129,29 @@ func requireAdmin(p *auth.Principal) error {
 	return nil
 }
 
+// authorizeWrite acquires the SQLite writer lock before checking live authority.
+// The public session ID comes from Authenticate, never from a request DTO.
+// Revocation and member mutations therefore serialize on the same writer lock.
+func (s *Service) authorizeWrite(ctx context.Context, tx *sql.Tx, p *auth.Principal) error {
+	at := s.now().UTC().Format(TimestampFormat)
+	res, err := tx.ExecContext(ctx, `UPDATE users SET id=id
+ WHERE id=? AND role='admin' AND status='active' AND must_change_password=0
+ AND EXISTS (SELECT 1 FROM sessions WHERE public_id=? AND user_id=users.id
+ AND revoked_at IS NULL AND absolute_expires_at>? AND idle_expires_at>?)`,
+		p.UserID, p.Session.ID, at, at)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return auth.ErrUnauthorized
+	}
+	return nil
+}
+
 // CreateInput carries the member creation payload.
 type CreateInput struct {
 	Username        string
@@ -160,6 +183,9 @@ func (s *Service) Create(ctx context.Context, admin *auth.Principal, input Creat
 		return User{}, err
 	}
 	defer tx.Rollback()
+	if err := s.authorizeWrite(ctx, tx, admin); err != nil {
+		return User{}, err
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO users (id, username_norm, username_display, role, status, must_change_password, password_hash, created_at, updated_at)
@@ -187,7 +213,29 @@ func (s *Service) Create(ctx context.Context, admin *auth.Principal, input Creat
 	return User{ID: id, Username: input.Username, Role: roleMember, Status: StatusMustChangePassword, CreatedAt: at}, nil
 }
 
-// GetByID renders one member (used for idempotent replay and by admin UIs).
+// ReplayCreated revalidates the actor and renders a completed creation under
+// one transaction, so a body delayed past revocation cannot replay data.
+func (s *Service) ReplayCreated(ctx context.Context, admin *auth.Principal, id string) (User, error) {
+	if err := requireAdmin(admin); err != nil {
+		return User{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	if err := s.authorizeWrite(ctx, tx, admin); err != nil {
+		return User{}, err
+	}
+	u, err := scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return u, err
+}
+
+// GetByID renders one member for already-authorized member operations.
+// HTTP idempotency replays must use ReplayCreated to recheck live authority.
 func (s *Service) GetByID(ctx context.Context, admin *auth.Principal, id string) (User, error) {
 	if err := requireAdmin(admin); err != nil {
 		return User{}, err
@@ -241,6 +289,9 @@ func (s *Service) Disable(ctx context.Context, admin *auth.Principal, targetID s
 		return User{}, err
 	}
 	defer tx.Rollback()
+	if err := s.authorizeWrite(ctx, tx, admin); err != nil {
+		return User{}, err
+	}
 
 	// The conditional update is the sole race-safe guard: the last-admin
 	// subquery is evaluated while this transaction holds the writer lock.
@@ -258,7 +309,10 @@ func (s *Service) Disable(ctx context.Context, admin *auth.Principal, targetID s
 		return User{}, err
 	}
 	if affected != 1 {
-		return User{}, s.disableBlockReason(ctx, targetID)
+		if err := s.disableBlockReason(ctx, tx, targetID); err != nil {
+			return User{}, err
+		}
+		return scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id=?`, targetID))
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, at, targetID); err != nil {
@@ -278,9 +332,9 @@ func (s *Service) Disable(ctx context.Context, admin *auth.Principal, targetID s
 
 // disableBlockReason distinguishes unknown target, already-disabled and
 // last-admin cases after the conditional update matched nothing.
-func (s *Service) disableBlockReason(ctx context.Context, targetID string) error {
+func (s *Service) disableBlockReason(ctx context.Context, tx *sql.Tx, targetID string) error {
 	var role, status string
-	err := s.db.QueryRowContext(ctx, `SELECT role, status FROM users WHERE id=?`, targetID).Scan(&role, &status)
+	err := tx.QueryRowContext(ctx, `SELECT role, status FROM users WHERE id=?`, targetID).Scan(&role, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -291,7 +345,7 @@ func (s *Service) disableBlockReason(ctx context.Context, targetID string) error
 		return nil // already disabled: idempotent no-op
 	}
 	var otherAdmins int
-	if err := s.db.QueryRowContext(ctx,
+	if err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM users WHERE role='admin' AND status='active' AND id != ?`, targetID).Scan(&otherAdmins); err != nil {
 		return err
 	}
@@ -313,6 +367,9 @@ func (s *Service) Enable(ctx context.Context, admin *auth.Principal, targetID st
 		return User{}, err
 	}
 	defer tx.Rollback()
+	if err := s.authorizeWrite(ctx, tx, admin); err != nil {
+		return User{}, err
+	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE users SET status='active', updated_at=? WHERE id=? AND status='disabled'`, at, targetID)
 	if err != nil {
@@ -324,7 +381,7 @@ func (s *Service) Enable(ctx context.Context, admin *auth.Principal, targetID st
 	}
 	if affected != 1 {
 		var status string
-		err := s.db.QueryRowContext(ctx, `SELECT status FROM users WHERE id=?`, targetID).Scan(&status)
+		err := tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=?`, targetID).Scan(&status)
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
@@ -332,7 +389,7 @@ func (s *Service) Enable(ctx context.Context, admin *auth.Principal, targetID st
 			return User{}, err
 		}
 		if status == StatusActive {
-			return s.GetByID(ctx, admin, targetID) // idempotent no-op
+			return scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id=?`, targetID)) // idempotent no-op
 		}
 		return User{}, ErrNotFound
 	}
@@ -363,6 +420,9 @@ func (s *Service) RevokeSessions(ctx context.Context, admin *auth.Principal, tar
 		return 0, err
 	}
 	defer tx.Rollback()
+	if err := s.authorizeWrite(ctx, tx, admin); err != nil {
+		return 0, err
+	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, at, targetID)
 	if err != nil {
@@ -417,6 +477,9 @@ func (s *Service) Delete(ctx context.Context, admin *auth.Principal, targetID st
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.authorizeWrite(ctx, tx, admin); err != nil {
+		return err
+	}
 
 	// The conditional delete re-checks last-admin protection under the
 	// writer lock; sessions cascade via the foreign key.

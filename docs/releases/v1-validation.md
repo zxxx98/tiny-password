@@ -110,7 +110,7 @@
   - `go test ./tests/integration -run 'TestSetupIdempotent|TestSetupRejectsMalformed|TestIdempotentCreate' -v`：通过（setup 幂等重放 200 非 409、同键不同内容 409 IDEMPOTENCY_KEY_CONFLICT、合成路由跨用户隔离、撤销会话后重放 401、并发恰好一个资源）。
   - `go vet ./...`、`go test -race -count=1 ./...`、`git diff --check`：通过。
 - 证据路径：`internal/httpapi/{middleware,origin,errors,cursor,idempotency}.go`、`internal/idempotency/service.go`、`internal/requestid/requestid.go`、`tests/integration/{http_security_test,idempotency_test}.go`。
-- 未解决问题：幂等/游标 HMAC 密钥为进程内随机，重启后未过期幂等记录无法匹配指纹（返回 IDEMPOTENCY_KEY_CONFLICT 直至过期）；V1 单进程可接受，多进程部署前需改为共享密钥（当前无此需求）。
+- 原验收遗留问题（已在本文件 M2 审查修复节处理）：幂等指纹曾使用进程内随机密钥，单进程重启也会导致旧请求冲突；当前改由主密钥域隔离派生。游标仍为短期进程内密钥。旧随机密钥创建的记录只能等待原到期时间。
 
 ## T08 · 审计基础与个人活动
 
@@ -169,3 +169,16 @@
   - `git diff --check`：通过。
 - 未运行检查：前端 Vitest/Playwright 未在本轮宿主机单独执行（未触及前端源码；镜像构建内含前端构建链）；真实 R2/浏览器 E2E 属后续里程碑范围。
 - M2 退出门槛判定：**满足**——会话即时撤销、完整策略矩阵通过、成员生命周期与最后管理员保护经真实 API 验收；真实条目 API 防越权按计划留待 M3（T11/T17 清单见上）。
+
+## M2 · 审查修复
+
+- 日期：2026-09-05；本节记录 M2 最终验收后的四项修复。
+- 成员写操作在事务首条语句获取 SQLite 写锁并重验当前会话、绝对/闲置期限、账号状态、首次改密限制及管理员角色。创建请求和幂等重放在读取请求体期间遭会话撤销均返回 401；失效主体不能创建、启用、禁用、撤销会话或删除成员。
+- 重复禁用从当前事务读取完整 User；重复启用也从当前事务读取，避免持锁时另取连接查询。
+- 系统审计游标的签名上下文包含 event；跨事件筛选复用游标返回 400。
+- 幂等指纹密钥由实例主密钥以独立 HMAC 域派生；关闭并重新打开数据库、重建主密钥与服务后，相同请求仍重放原资源，不同请求仍冲突。缺少主密钥时不生成随机替代密钥，成员创建携带幂等键返回 503。
+- 兼容边界：旧随机密钥生成的记录无法恢复指纹匹配，继续返回冲突直到原记录过期（默认成功记录 24 小时、未完成记录 10 分钟）；分页游标仍在进程重启后失效。重启回归覆盖数据库重开与服务重建，未在本轮重新运行容器重启测试。
+- 验证：定向回归、`go test ./... -count=1`、`go vet ./...` 、`go test -race -count=1 ./...`、Go 格式检查与 `git diff --check` 全部通过（race 集成测试耗时 376.795 秒）。
+- 回归有效性：在 `git archive HEAD` 创建的独立临时副本中运行新增测试，旧实现分别出现跨事件游标返回 200、重复禁用返回空 User、读取请求体期间撤销后仍创建成功（201）；当前修复版本的对应测试全部通过。
+- 证据路径：`cmd/tiny-password/idempotency_test.go`、`tests/integration/users_revocation_test.go`、`tests/integration/audit_test.go`、`tests/integration/users_test.go`。
+- 本轮未运行：Docker 构建/容器 E2E、前端测试及浏览器测试。

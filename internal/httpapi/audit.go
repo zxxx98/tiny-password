@@ -48,7 +48,8 @@ func registerAudit(api *http.ServeMux, deps AuditDeps) {
 			return
 		}
 		p := CurrentPrincipal(r.Context())
-		beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, deps.Cursor, p.UserID, systemFilters)
+		filters := systemFilters + ":event=" + event
+		beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, deps.Cursor, p.UserID, filters)
 		if !ok {
 			return
 		}
@@ -57,7 +58,7 @@ func registerAudit(api *http.ServeMux, deps AuditDeps) {
 			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the audit query failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, CursorPageResponse(deps.Cursor, p.UserID, systemFilters, page.Entries, page.LastCreated, page.LastID))
+		writeJSON(w, http.StatusOK, CursorPageResponse(deps.Cursor, p.UserID, filters, page.Entries, page.LastCreated, page.LastID))
 	})))
 }
 
