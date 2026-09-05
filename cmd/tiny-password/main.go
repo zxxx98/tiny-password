@@ -89,7 +89,7 @@ func run(logger *slog.Logger) error {
 			Ready: ready,
 			Setup: &httpapi.SetupDeps{
 				Service:   bootService,
-				CSRF:      httpapi.NewPreAuthCSRF(),
+				CSRF:      httpapi.NewPreAuthCSRF(config.AllowInsecureCookies()),
 				Logger:    logger,
 				RateLimit: setupRateLimit,
 			},

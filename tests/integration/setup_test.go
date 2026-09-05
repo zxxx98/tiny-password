@@ -100,7 +100,7 @@ func newSetupHarnessWithLimit(t *testing.T, db *sqlite.DB, rateLimit int) *setup
 		SPA: webassets.SPAHandler(),
 		Setup: &httpapi.SetupDeps{
 			Service:   svc,
-			CSRF:      httpapi.NewPreAuthCSRF(),
+			CSRF:      httpapi.NewPreAuthCSRF(false),
 			Logger:    slogLogger,
 			RateLimit: rateLimit,
 		},

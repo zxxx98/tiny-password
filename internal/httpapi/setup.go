@@ -91,6 +91,8 @@ func registerSetup(api *http.ServeMux, deps SetupDeps) {
 			})
 		case errors.Is(err, bootstrap.ErrAlreadyInitialized):
 			writeJSONError(w, http.StatusConflict, "SETUP_ALREADY_DONE", "this instance is already initialized")
+		case errors.Is(err, bootstrap.ErrMasterKeyUnavailable):
+			writeJSONError(w, http.StatusServiceUnavailable, "MAINTENANCE", "master key unavailable; initialization cannot proceed")
 		case errors.Is(err, bootstrap.ErrSetupTokenInvalid):
 			writeJSONError(w, http.StatusUnauthorized, "SETUP_TOKEN_INVALID", "the setup token is wrong or was already used")
 		case errors.Is(err, bootstrap.ErrUsernameTaken):

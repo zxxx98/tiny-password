@@ -19,8 +19,9 @@ const (
 // requests (decision D07): setup and login. The cookie holds an opaque
 // context id; the server keeps only the token digest in memory.
 type PreAuthCSRF struct {
-	mu      sync.Mutex
-	entries map[string]preAuthEntry
+	mu                   sync.Mutex
+	entries              map[string]preAuthEntry
+	allowInsecureCookies bool
 }
 
 type preAuthEntry struct {
@@ -28,8 +29,10 @@ type preAuthEntry struct {
 	expires     time.Time
 }
 
-func NewPreAuthCSRF() *PreAuthCSRF {
-	return &PreAuthCSRF{entries: map[string]preAuthEntry{}}
+// NewPreAuthCSRF permits insecure cookies only for explicit development use.
+// The backend's transport does not describe the browser's connection behind TLS proxies.
+func NewPreAuthCSRF(allowInsecureCookies bool) *PreAuthCSRF {
+	return &PreAuthCSRF{entries: map[string]preAuthEntry{}, allowInsecureCookies: allowInsecureCookies}
 }
 
 // Issue creates (or re-uses) the pre-auth context for the request's cookie
@@ -58,7 +61,7 @@ func (c *PreAuthCSRF) Issue(w http.ResponseWriter, r *http.Request) string {
 		Value:    base64.RawURLEncoding.EncodeToString(ctxID),
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   !c.allowInsecureCookies,
 		SameSite: http.SameSiteLaxMode,
 	})
 	return token

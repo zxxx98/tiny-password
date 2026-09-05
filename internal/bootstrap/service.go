@@ -118,6 +118,9 @@ func (s *Service) Initialize(input InitializeInput) (*InitializeResult, error) {
 	if s.Initialized() {
 		return nil, ErrAlreadyInitialized
 	}
+	if s.masterKey == nil {
+		return nil, ErrMasterKeyUnavailable
+	}
 	if !s.token.Matches(input.Token) {
 		s.auditFailure(EventSetupFailure)
 		return nil, ErrSetupTokenInvalid
@@ -167,13 +170,11 @@ func (s *Service) Initialize(input InitializeInput) (*InitializeResult, error) {
 		return nil, ErrUsernameTaken
 	}
 
-	if s.masterKey != nil {
-		if _, err := tx.Exec(
-			"INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-			MasterKeyMarkerName(), s.masterKey.Marker(), now,
-		); err != nil {
-			return nil, err
-		}
+	if _, err := tx.Exec(
+		"INSERT INTO system_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+		MasterKeyMarkerName(), s.masterKey.Marker(), now,
+	); err != nil {
+		return nil, err
 	}
 
 	if _, err := tx.Exec(

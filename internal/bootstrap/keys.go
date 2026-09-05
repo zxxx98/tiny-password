@@ -15,6 +15,9 @@ const systemStateMasterKeyMarker = "master_key_marker"
 // marker recorded in the database.
 var ErrMasterKeyMismatch = errors.New("mounted master key does not match this instance")
 
+// ErrMasterKeyUnavailable prevents initialization without a loaded secret.
+var ErrMasterKeyUnavailable = errors.New("master key unavailable")
+
 // MasterKeyCheck returns a /readyz validator for the master key. A key
 // loading failure (missing secret, wrong size, permissions) fails readiness;
 // once a marker exists in system_state, a key change also fails readiness.
@@ -24,12 +27,22 @@ func MasterKeyCheck(db *sql.DB, key *crypto.MasterKey, loadErr error) func() err
 		if loadErr != nil {
 			return loadErr
 		}
+		if key == nil {
+			return ErrMasterKeyUnavailable
+		}
 		var marker sql.NullString
 		err := db.QueryRow(
 			"SELECT value FROM system_state WHERE key = ?", systemStateMasterKeyMarker,
 		).Scan(&marker)
 		if errors.Is(err, sql.ErrNoRows) {
-			// Instance not yet initialized: a present, valid key is enough.
+			initialized, err := isInitialized(db)
+			if err != nil {
+				return err
+			}
+			if initialized {
+				return ErrMasterKeyMismatch
+			}
+			// Only an empty instance may lack the marker.
 			return nil
 		}
 		if err != nil {

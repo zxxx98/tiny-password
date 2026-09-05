@@ -22,13 +22,14 @@ export TP_TEST_DATA_DIR="$(mktemp -d /tmp/tiny-password-e2e.XXXXXX)"
 chmod 0777 "$TP_TEST_DATA_DIR"
 # Synthetic master key lives outside the data dir (test only, never committed).
 KEY_DIR="$(mktemp -d /tmp/tiny-password-key.XXXXXX)"
+REQUEST_DIR="$(mktemp -d /tmp/tiny-password-requests.XXXXXX)"
 KEY_FILE="$KEY_DIR/master_key"
 head -c 32 /dev/urandom > "$KEY_FILE"
 chmod 0644 "$KEY_FILE"  # container reads as UID 10001; synthetic key only
 CONTAINER_NAME="tiny-password-e2e"
 cleanup() {
   $DOCKER rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  rm -rf "$TP_TEST_DATA_DIR" "$KEY_DIR"
+  rm -rf "$TP_TEST_DATA_DIR" "$KEY_DIR" "$REQUEST_DIR"
 }
 trap cleanup EXIT
 
@@ -39,6 +40,7 @@ $DOCKER run -d --name "$CONTAINER_NAME" \
   -v "$KEY_FILE:/run/secrets/master_key:ro" \
   --tmpfs /tmp:mode=700,uid=10001,gid=10001 \
   -e TP_SETUP_RATE_LIMIT_PER_MIN=200 \
+  -e TP_ALLOW_INSECURE_COOKIES=1 \
   "$IMAGE" >/dev/null
 
 for i in $(seq 1 30); do
@@ -73,18 +75,19 @@ token="$($DOCKER logs "$CONTAINER_NAME" 2>&1 | grep -o '"msg":"setup_token_issue
 [ -n "$token" ] || { echo "e2e: no setup token found in container logs"; exit 1; }
 echo "e2e: setup token retrieved from logs (${#token} chars)"
 
-init_count() { # init_count <username> -> HTTP status code
-  csrf="$(curl -s -c /tmp/tp-e2e-cookies -X POST $BASE/api/v1/csrf | grep -o '"csrf_token":"[^"]*"' | cut -d'"' -f4)"
-  curl -s -o /tmp/tp-e2e-body -w '%{http_code}' -b /tmp/tp-e2e-cookies \
+init_count() ( # init_count <username> -> HTTP status code; isolate each caller
+  request_dir="$(mktemp -d "$REQUEST_DIR/request.XXXXXX")"
+  csrf="$(curl -fsS -c "$request_dir/cookies" -X POST $BASE/api/v1/csrf | grep -o '"csrf_token":"[^"]*"' | cut -d'"' -f4)"
+  curl -sS -o "$request_dir/body" -w '%{http_code}' -b "$request_dir/cookies" \
     -H "Content-Type: application/json" \
     -H "X-CSRF-Token: $csrf" \
     -H "Origin: $BASE" \
     -d "{\"token\":\"$token\",\"username\":\"$1\",\"password\":\"correct horse battery 42\"}" \
     $BASE/api/v1/setup/init
-}
+)
 
 code="$(init_count admin)"
-[ "$code" = "200" ] || { echo "e2e: setup init returned $code: $(cat /tmp/tp-e2e-body)"; exit 1; }
+[ "$code" = "200" ] || { echo "e2e: setup init returned $code, want 200"; exit 1; }
 status="$(curl -s $BASE/api/v1/setup/status)"
 echo "$status" | grep -q '"initialized":true' || { echo "e2e: status after init: $status"; exit 1; }
 echo "e2e: one-time initialization succeeded"
@@ -115,6 +118,7 @@ $DOCKER run -d --name "$CONTAINER_NAME" \
   -v "$KEY_FILE:/run/secrets/master_key:ro" \
   --tmpfs /tmp:mode=700,uid=10001,gid=10001 \
   -e TP_SETUP_RATE_LIMIT_PER_MIN=200 \
+  -e TP_ALLOW_INSECURE_COOKIES=1 \
   "$IMAGE" >/dev/null
 for i in $(seq 1 30); do
   curl -fsS $BASE/healthz >/dev/null 2>&1 && break
@@ -123,16 +127,24 @@ for i in $(seq 1 30); do
 done
 token="$($DOCKER logs "$CONTAINER_NAME" 2>&1 | grep -o '"msg":"setup_token_issued","token":"[^"]*"' | head -1 | sed 's/.*"token":"//; s/"$//')"
 oks=0
-other=0
+conflicts=0
+pids=()
 for i in $(seq 1 8); do
-  ( code="$(init_count "race$i")"; if [ "$code" = "200" ]; then echo OK >> /tmp/tp-e2e-race; else echo "$code" >> /tmp/tp-e2e-race; fi ) &
+  init_count "race$i" > "$REQUEST_DIR/race$i.status" &
+  pids+=("$!")
 done
-wait
-for line in $(cat /tmp/tp-e2e-race); do
-  if [ "$line" = "OK" ]; then oks=$((oks+1)); else other=$((other+1)); fi
+for pid in "${pids[@]}"; do
+  wait "$pid"
 done
-rm -f /tmp/tp-e2e-race /tmp/tp-e2e-cookies /tmp/tp-e2e-body
-[ "$oks" = "1" ] || { echo "e2e: concurrent init produced $oks successes, want exactly 1"; exit 1; }
-echo "e2e: concurrent initialization: exactly 1 success among 8 racers ($other rejected)"
+for i in $(seq 1 8); do
+  code="$(cat "$REQUEST_DIR/race$i.status")"
+  case "$code" in
+    200) oks=$((oks+1)) ;;
+    409) conflicts=$((conflicts+1)) ;;
+    *) echo "e2e: racer $i returned $code, want 200 or 409"; exit 1 ;;
+  esac
+done
+[ "$oks" = "1" ] && [ "$conflicts" = "7" ] || { echo "e2e: concurrent init produced $oks successes and $conflicts conflicts, want 1 and 7"; exit 1; }
+echo "e2e: concurrent initialization: exactly 1 success and 7 conflicts"
 
 echo "e2e: PASS"

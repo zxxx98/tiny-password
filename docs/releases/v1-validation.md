@@ -65,3 +65,18 @@
 - 未解决问题：
   - `/api/v1/csrf` 与 setup 共用限流器曾导致并发验收被 429 干扰 → 已拆分为独立限流器（csrf 30/min、setup 10/min，后者可经 `TP_SETUP_RATE_LIMIT_PER_MIN` 调整）。
   - 预认证 CSRF 上下文存于进程内存，多进程部署不适用（V1 单进程单容器，与设计一致）。
+
+## M1 review 修复 · 主密钥、Cookie 与并发验收
+
+- 日期：2026-09-05；基于 `b68b7fd` 的工作区修复，尚未提交。
+- 主密钥缺失时初始化返回 `503 MAINTENANCE`，不创建用户、不写成功审计、不关闭入口；挂载有效密钥重启后可正常初始化。已初始化但缺少 marker 的实例拒绝 ready，不自动补写 marker 或接受替代密钥。
+- 预认证 Cookie 默认带 `Secure`，包括 TLS 反代后的 HTTP 后端连接；仅 `TP_ALLOW_INSECURE_COOKIES=1` 允许开发/评估模式关闭。容器 HTTP 测试显式开启此开关，生产保持未设置。
+- 容器并发请求各自使用受限临时目录保存 Cookie 和响应，结果不再共用全局文件；严格要求 1 个 200 和 7 个 409，任何 403/429/500 均使验收失败。
+- 回归证据：新增测试在修复前复现无密钥初始化成功、缺 marker 仍接受密钥、HTTP Cookie 不带 Secure；修复后全部通过。
+- 验证命令与结果：
+  - `go vet ./...`、`go test -race -count=1 ./...`：全部通过。
+  - 前端 `typecheck`、`test -- --run`（6/6）、`build`：全部通过。
+  - `bash -n scripts/test-e2e.sh`、`git diff --check`：通过。
+  - `sudo -n docker build -t tiny-password:review-fixes .`：成功。
+  - `IMAGE=tiny-password:review-fixes bash scripts/test-e2e.sh`：PASS；初始化成功，重启后仍返回 409 且不重发令牌，并发结果恰好 1 个 200、7 个 409。
+- 证据路径：`tests/integration/setup_key_test.go`、`internal/httpapi/csrf_test.go`、`internal/platform/config/http_test.go`、`scripts/test-e2e.sh`。
