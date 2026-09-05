@@ -182,3 +182,23 @@
 - 回归有效性：在 `git archive HEAD` 创建的独立临时副本中运行新增测试，旧实现分别出现跨事件游标返回 200、重复禁用返回空 User、读取请求体期间撤销后仍创建成功（201）；当前修复版本的对应测试全部通过。
 - 证据路径：`cmd/tiny-password/idempotency_test.go`、`tests/integration/users_revocation_test.go`、`tests/integration/audit_test.go`、`tests/integration/users_test.go`。
 - 本轮未运行：Docker 构建/容器 E2E、前端测试及浏览器测试。
+## T11 · 五类加密条目 CRUD
+
+- 日期：2026-09-05
+- 提交：`77c6f1f`（变基自 `71290b1`，worktree `tiny-password-m03`，分支 `m03-personal-vault`，基线 master `ddd60bd`）
+- 执行环境：Ubuntu（linux/arm64），Go 工具链 go1.26.8
+- 实现要点：
+  - `internal/vault/`：types（DTO/加密封套/错误）、payloads（五类字段结构 + 上限校验）、validation（payload 分发解码、标签去重、封套 256 KiB 上限、引用提取）、repository（分列密文存取、键集分页、CAS 更新 + 同事务历史归档）、service（策略先行再解密、创建幂等 claim 同事务完成、审计 created/updated/viewed）。
+  - 标签存于加密封套内（设计 §6.1），无明文列；列表只返回元数据，`tag` 筛选参数显式 400（属 T13 解密筛选管线）。
+  - 越权语义：不可读目标一律 404（读/写皆然，无存在性预言）；可读不可写 403；密文篡改 500 INTERNAL 且响应不含明文。
+  - crypto 包新增 `DecryptColumns`（version/nonce/ciphertext 三列组装解密，nonce 长度校验失败关闭）。
+- 命令与结果：
+  1. `go test ./tests/integration -run 'TestItem|TestUserDeleteCascade|TestUnauthorizedDecrypt' -v` → **10/10 通过**：五类有效 fixture（UUIDv7、revision=1、payload 逐字段往返、DB 明文列形状）与 24 个无效用例；幂等（重放同 ID、异内容 409、跨用户不互撞、8 并发恰 1 成功且 alice 恰 2 条个人条目）；越权（bob/管理员读个人条目 404、共享读 200/写 403、无 CSRF 403）；篡改密文 500 无泄漏；列表分页（默认序 (updated_at,id) 倒序、limit=3 走完 8 条、scope/type/favorite 筛选、跨用户与筛选不匹配游标 400）；更新（stale revision 409 带 current_revision、并发恰一成功、无变化不 bump 不写历史、tags 缺省保留、归属/类型走私 400、历史旧行按旧 AAD 可解密）；地址引用（本人 identity 201、他人个人/共享→个人/未知/空串/非 identity 统一 409、null 清除引用 201）；审计（created→updated→viewed 顺序、actor 为内部 ID、无 SYNSECRET 无用户名）；用户删除级联（真实 DELETE API 后 vault_items/item_versions 清空、他人读 404、审计保留内部 ID 且无用户名快照）。
+  2. `go vet ./...` → 通过；`go test ./... -count=1` → 10 包全部通过；`go test -race -count=1 ./...` → 全部通过；`git diff --check` → 通过。
+  3. 明文扫查：`SYNSECRET-pw-7f3a`/`-key`/`-note` 标记在 `app.db` 与 `app.db-wal` 原始字节中均不出现；审计表 GROUP_CONCAT 扫查无敏感内容。
+- 证据路径：`internal/vault/`、`internal/httpapi/items.go`、`tests/integration/items_test.go`、`internal/audit/events.go`
+- 未解决问题：
+  - 列表 `tag` 筛选（OpenAPI 已声明）按计划归 T13 解密筛选管线，T11 显式拒绝；T13 接入后移除该限制。
+  - 历史保留最近 10 版、回收站/恢复/清理入口属 T12；T11 更新已同事务归档旧版本，T12 的 12 连更用例将在其上验证保留策略。
+  - M2 遗留清单（管理员读成员个人条目 404、猜 ID、批量探测、删除级联真实 API）本轮已全部覆盖并关闭。
+
