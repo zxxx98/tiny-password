@@ -30,6 +30,7 @@ func (c *authClock) Advance(d time.Duration) { c.mu.Lock(); c.value = c.value.Ad
 type authHarness struct {
 	db     *sqlite.DB
 	svc    *auth.Service
+	boot   *bootstrap.Service
 	server *httptest.Server
 	clock  *authClock
 }
@@ -54,7 +55,7 @@ func newAuthHarness(t *testing.T) *authHarness {
 		Auth:  &httpapi.AuthDeps{Service: svc, CSRF: csrf},
 	}))
 	t.Cleanup(srv.Close)
-	return &authHarness{db: db, svc: svc, server: srv, clock: clock}
+	return &authHarness{db: db, svc: svc, boot: boot, server: srv, clock: clock}
 }
 func (h *authHarness) user(t *testing.T, id string, force bool) {
 	t.Helper()

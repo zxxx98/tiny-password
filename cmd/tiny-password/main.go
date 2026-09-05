@@ -19,6 +19,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/bootstrap"
 	"github.com/tiny-password/tiny-password/internal/httpapi"
+	"github.com/tiny-password/tiny-password/internal/idempotency"
 	"github.com/tiny-password/tiny-password/internal/platform/config"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
@@ -88,17 +89,41 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("auth service: %w", err)
 	}
 	csrf := httpapi.NewPreAuthCSRF(config.AllowInsecureCookies())
+
+	// Trusted proxy networks come from explicit configuration only; with no
+	// configuration every forwarded header is ignored.
+	proxyCIDRs, err := config.TrustedProxyCIDRs()
+	if err != nil {
+		return fmt.Errorf("trusted proxy configuration: %w", err)
+	}
+	proxy := httpapi.ProxyConfig{Trusted: proxyCIDRs}
+
+	// Per-process HMAC secrets for idempotency fingerprints and pagination
+	// cursors. Outstanding cursors do not survive restarts (transient state).
+	idemKey, err := httpapi.NewCursorMACKey()
+	if err != nil {
+		return fmt.Errorf("idempotency key: %w", err)
+	}
+	idempotencyService, err := idempotency.NewService(db.DB, idempotency.Options{MACKey: idemKey})
+	if err != nil {
+		return fmt.Errorf("idempotency service: %w", err)
+	}
+
 	server := &http.Server{
 		Addr: addr,
 		Handler: httpapi.New(httpapi.Options{
-			SPA:   webassets.SPAHandler(),
-			Ready: ready,
-			Auth:  &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies()},
+			SPA:     webassets.SPAHandler(),
+			Ready:   ready,
+			Logger:  logger,
+			Proxy:   proxy,
+			Auth:    &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
 			Setup: &httpapi.SetupDeps{
-				Service:   bootService,
-				CSRF:      csrf,
-				Logger:    logger,
-				RateLimit: setupRateLimit,
+				Service:     bootService,
+				CSRF:        csrf,
+				Logger:      logger,
+				RateLimit:   setupRateLimit,
+				Proxy:       proxy,
+				Idempotency: idempotencyService,
 			},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,

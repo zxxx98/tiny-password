@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tiny-password/tiny-password/internal/auth"
+	"github.com/tiny-password/tiny-password/internal/idempotency"
 	tpcrypto "github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
 	tpsqlite "github.com/tiny-password/tiny-password/internal/platform/sqlite"
@@ -97,11 +99,14 @@ func (s *Service) Initialized() bool {
 // TokenRequired reports whether a setup token exists (uninitialized instance).
 func (s *Service) TokenRequired() bool { return s.token != nil }
 
-// InitializeInput carries the setup form values.
+// InitializeInput carries the setup form values. Claim, when non-nil, is a
+// claimed idempotency key that is completed inside the same transaction as
+// the administrator creation.
 type InitializeInput struct {
 	Token    string
 	Username string
 	Password string
+	Claim    *idempotency.Claim
 }
 
 // InitializeResult reports the created administrator.
@@ -185,6 +190,14 @@ func (s *Service) Initialize(input InitializeInput) (*InitializeResult, error) {
 		return nil, err
 	}
 
+	// The idempotency completion rides the same transaction: a crash between
+	// user creation and record completion cannot leave one without the other.
+	if input.Claim != nil {
+		if err := input.Claim.Complete(context.Background(), tx, userID); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -193,6 +206,14 @@ func (s *Service) Initialize(input InitializeInput) (*InitializeResult, error) {
 	s.token.Destroy()
 	s.logger.Info("administrator created; setup entry point permanently closed")
 	return &InitializeResult{UserID: userID, Username: input.Username}, nil
+}
+
+// UsernameByID resolves the display username for idempotent replay rendering.
+// The error is deliberately opaque: callers report a generic conflict.
+func (s *Service) UsernameByID(id string) (string, error) {
+	var display string
+	err := s.db.QueryRow("SELECT username_display FROM users WHERE id = ?", id).Scan(&display)
+	return display, err
 }
 
 func (s *Service) auditFailure(event string) {

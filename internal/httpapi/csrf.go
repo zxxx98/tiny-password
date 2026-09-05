@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -124,15 +123,7 @@ func (c *PreAuthCSRF) pruneLocked() {
 	}
 }
 
-// originAllowed validates the Origin header when present: same-origin only.
-func originAllowed(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-	// Reject anything whose host does not exactly match the request host.
-	return strings.HasSuffix(origin, "/"+r.Host) || origin == "https://"+r.Host || origin == "http://"+r.Host
-}
+// originAllowed lives in origin.go; it enforces the strict same-origin rule.
 
 // RateLimiter is a minimal fixed-window in-memory limiter for pre-auth
 // endpoints. Full login/session rate limiting arrives with T06.

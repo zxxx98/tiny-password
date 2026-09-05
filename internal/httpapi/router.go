@@ -3,10 +3,11 @@
 package httpapi
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+
+	"github.com/tiny-password/tiny-password/internal/requestid"
 )
 
 // Options wires the API router to its collaborators. Dependencies grow per
@@ -20,10 +21,16 @@ type Options struct {
 	// instance without a setup entry point.
 	Setup *SetupDeps
 	Auth  *AuthDeps
+	// Logger receives one structured access-log record per request; nil
+	// disables access logging (tests).
+	Logger *slog.Logger
+	// Proxy describes the trusted proxy networks used to resolve the client
+	// address and protocol. An empty config trusts nothing (default).
+	Proxy ProxyConfig
 }
 
-// New returns the top-level HTTP handler: /healthz plus the /api/v1 tree are
-// owned here; everything else falls through to the SPA handler.
+// New returns the top-level HTTP handler wrapped in the security middleware
+// chain: request ID → access log → security headers → panic recovery.
 func New(opts Options) http.Handler {
 	api := http.NewServeMux()
 	registerAPIRoutes(api, opts)
@@ -33,8 +40,8 @@ func New(opts Options) http.Handler {
 	if opts.Ready != nil {
 		mux.Handle("GET /readyz", handleReady(opts.Ready))
 	} else {
-		mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
-			writeJSONError(w, http.StatusServiceUnavailable, "MAINTENANCE", "readiness not configured")
+		mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, r, http.StatusServiceUnavailable, "MAINTENANCE", "readiness not configured")
 		})
 	}
 	mux.Handle("/api/", api)
@@ -44,16 +51,21 @@ func New(opts Options) http.Handler {
 		spa = http.NotFoundHandler()
 	}
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/healthz", r.URL.Path == "/readyz":
-			mux.ServeHTTP(w, r)
-		case hasPrefixPath(r.URL.Path, "/api/"):
+		case r.URL.Path == "/healthz", r.URL.Path == "/readyz", hasPrefixPath(r.URL.Path, "/api/"):
 			mux.ServeHTTP(w, r)
 		default:
 			spa.ServeHTTP(w, r)
 		}
 	})
+
+	return chain(root,
+		withRequestID,
+		func(next http.Handler) http.Handler { return withAccessLog(opts.Logger, opts.Proxy, next) },
+		func(next http.Handler) http.Handler { return withSecurityHeaders(opts.Proxy, next) },
+		withRecovery,
+	)
 }
 
 // registerAPIRoutes mounts versioned endpoints as milestones deliver them.
@@ -66,7 +78,7 @@ func registerAPIRoutes(api *http.ServeMux, opts Options) {
 		registerAuth(api, *opts.Auth)
 	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "resource not found")
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "resource not found")
 	})
 }
 
@@ -74,12 +86,13 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// writeJSONError emits the stable error envelope shared by all API handlers.
+// writeJSONError is retained for call sites outside a request scope (health
+// fallback); request-scoped handlers must use writeError.
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{
 		"code":       code,
 		"message":    message,
-		"request_id": NewRequestID(),
+		"request_id": requestid.New(),
 	})
 }
 
@@ -92,13 +105,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func hasPrefixPath(path, prefix string) bool {
 	return len(path) >= len(prefix) && path[:len(prefix)] == prefix
-}
-
-// NewRequestID returns an opaque correlation id. It never encodes secrets.
-func NewRequestID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "req-unknown"
-	}
-	return hex.EncodeToString(b[:])
 }
