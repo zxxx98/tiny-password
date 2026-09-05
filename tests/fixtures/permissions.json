@@ -1,0 +1,683 @@
+{
+  "comment": "Authoritative expectation matrix for internal/vault/policy.go. Rules: personal items are owner-only (administrators have no privilege); shared items are readable by every member but writable only by the creator (D06); exports carry own personal and own-created shared items (D10); scope/owner/creator are immutable after creation.",
+  "actions": [
+    "read",
+    "update",
+    "delete",
+    "restore",
+    "purge",
+    "history",
+    "history_restore",
+    "favorite",
+    "tag",
+    "export"
+  ],
+  "matrix": [
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "read",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "update",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "delete",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "restore",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "purge",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "history",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "history_restore",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "favorite",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "tag",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "self",
+      "action": "export",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "read",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "update",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "delete",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "restore",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "purge",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "history",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "history_restore",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "favorite",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "tag",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "relation": "other",
+      "action": "export",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "read",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "update",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "delete",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "restore",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "purge",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "history",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "history_restore",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "favorite",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "tag",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "self",
+      "action": "export",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "read",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "update",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "delete",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "restore",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "purge",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "history",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "history_restore",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "favorite",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "tag",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "relation": "other",
+      "action": "export",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "read",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "update",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "delete",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "restore",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "purge",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "history",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "history_restore",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "favorite",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "tag",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "self",
+      "action": "export",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "read",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "update",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "delete",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "restore",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "purge",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "history",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "history_restore",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "favorite",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "tag",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "relation": "other",
+      "action": "export",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "read",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "update",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "delete",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "restore",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "purge",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "history",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "history_restore",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "favorite",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "tag",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "self",
+      "action": "export",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "read",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "update",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "delete",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "restore",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "purge",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "history",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "history_restore",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "favorite",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "tag",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "relation": "other",
+      "action": "export",
+      "allowed": false
+    }
+  ],
+  "create": [
+    {
+      "role": "admin",
+      "scope": "personal",
+      "claim": "own",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "personal",
+      "claim": "foreign",
+      "allowed": false
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "claim": "own",
+      "allowed": true
+    },
+    {
+      "role": "admin",
+      "scope": "shared",
+      "claim": "foreign",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "claim": "own",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "personal",
+      "claim": "foreign",
+      "allowed": false
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "claim": "own",
+      "allowed": true
+    },
+    {
+      "role": "member",
+      "scope": "shared",
+      "claim": "foreign",
+      "allowed": false
+    }
+  ],
+  "reference": [
+    {
+      "source": "personal",
+      "target": "personal",
+      "target_owner": "actor",
+      "allowed": true
+    },
+    {
+      "source": "personal",
+      "target": "personal",
+      "target_owner": "other",
+      "allowed": false
+    },
+    {
+      "source": "personal",
+      "target": "shared",
+      "target_owner": "other",
+      "allowed": true
+    },
+    {
+      "source": "shared",
+      "target": "shared",
+      "target_owner": "other",
+      "allowed": true
+    },
+    {
+      "source": "shared",
+      "target": "personal",
+      "target_owner": "actor",
+      "allowed": false
+    },
+    {
+      "source": "shared",
+      "target": "personal",
+      "target_owner": "other",
+      "allowed": false
+    }
+  ],
+  "immutable_ownership": [
+    {
+      "change": "scope",
+      "allowed": false
+    },
+    {
+      "change": "owner",
+      "allowed": false
+    },
+    {
+      "change": "creator",
+      "allowed": false
+    },
+    {
+      "change": "none",
+      "allowed": true
+    }
+  ]
+}
