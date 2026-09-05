@@ -22,6 +22,11 @@ const (
 	EventUserEnabled         = "user.enabled"
 	EventUserDeleted         = "user.deleted"
 	EventUserSessionsRevoked = "user.sessions.revoked"
+	// Item lifecycle events (design §7.3). Field reveals and copies are
+	// recorded by the workspace milestone; trash/purge follow in T12.
+	EventVaultItemCreated = "vault.item.created"
+	EventVaultItemUpdated = "vault.item.updated"
+	EventVaultItemViewed  = "vault.item.viewed"
 )
 
 var allowlist = map[string]bool{
@@ -37,6 +42,9 @@ var allowlist = map[string]bool{
 	EventUserEnabled:         true,
 	EventUserDeleted:         true,
 	EventUserSessionsRevoked: true,
+	EventVaultItemCreated:    true,
+	EventVaultItemUpdated:    true,
+	EventVaultItemViewed:     true,
 }
 
 // Results are restricted to the database CHECK constraint's domain.
@@ -49,6 +57,7 @@ const (
 const (
 	TargetUser    = "user"
 	TargetSession = "session"
+	TargetItem    = "item"
 )
 
 // Anonymous marks an unresolved actor (e.g. failed login for an unknown

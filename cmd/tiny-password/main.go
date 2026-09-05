@@ -26,6 +26,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 	"github.com/tiny-password/tiny-password/internal/users"
+	"github.com/tiny-password/tiny-password/internal/vault"
 	"github.com/tiny-password/tiny-password/internal/webassets"
 	"github.com/tiny-password/tiny-password/migrations"
 )
@@ -118,6 +119,22 @@ func run(logger *slog.Logger) error {
 	}
 	usersService := users.NewService(db.DB, users.Options{Audit: auditService})
 
+	// Vault item endpoints need the master key to seal payloads; an instance
+	// without a key stays healthy but exposes no vault surface.
+	var itemsDeps *httpapi.ItemsDeps
+	if masterKey != nil {
+		vaultService, err := vault.NewService(db.DB, masterKey, vault.Options{Audit: auditService})
+		if err != nil {
+			return fmt.Errorf("vault service: %w", err)
+		}
+		itemsDeps = &httpapi.ItemsDeps{
+			Service:     vaultService,
+			Session:     authService,
+			Cursor:      cursorCodec,
+			Idempotency: idempotencyService,
+		}
+	}
+
 	server := &http.Server{
 		Addr: addr,
 		Handler: httpapi.New(httpapi.Options{
@@ -128,6 +145,7 @@ func run(logger *slog.Logger) error {
 			Auth:   &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
 			Audit:  &httpapi.AuditDeps{Service: auditService, DB: db, Cursor: cursorCodec, Session: authService},
 			Users:  &httpapi.UsersDeps{Service: usersService, Session: authService, Cursor: cursorCodec, Idempotency: idempotencyService},
+			Items:  itemsDeps,
 			Setup: &httpapi.SetupDeps{
 				Service:     bootService,
 				CSRF:        csrf,

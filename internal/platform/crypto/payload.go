@@ -148,6 +148,18 @@ func (k *MasterKey) DecryptEncoded(blob []byte, aad AAD) ([]byte, error) {
 	return k.Decrypt(p, aad)
 }
 
+// DecryptColumns opens a payload stored as separate version/nonce/ciphertext
+// columns (design §9 keeps the pieces apart). The nonce length is enforced
+// here so a corrupted row fails closed instead of mis-sealing.
+func (k *MasterKey) DecryptColumns(version uint16, nonce, ciphertext []byte, aad AAD) ([]byte, error) {
+	if len(nonce) != nonceSize {
+		return nil, fmt.Errorf("nonce must be %d bytes, got %d", nonceSize, len(nonce))
+	}
+	var n [nonceSize]byte
+	copy(n[:], nonce)
+	return k.Decrypt(EncryptedPayload{Version: version, Nonce: n, Ciphertext: ciphertext}, aad)
+}
+
 // IdempotencyMACKey derives a stable secret used only for request fingerprints.
 // This domain must never be reused for public markers or payload encryption.
 func (k *MasterKey) IdempotencyMACKey() []byte {

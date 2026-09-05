@@ -25,6 +25,8 @@ type Options struct {
 	Audit *AuditDeps
 	// Users wires the admin member-management endpoints.
 	Users *UsersDeps
+	// Items wires the encrypted vault item endpoints.
+	Items *ItemsDeps
 	// Logger receives one structured access-log record per request; nil
 	// disables access logging (tests).
 	Logger *slog.Logger
@@ -86,6 +88,9 @@ func registerAPIRoutes(api *http.ServeMux, opts Options) {
 	}
 	if opts.Users != nil {
 		registerUsers(api, *opts.Users)
+	}
+	if opts.Items != nil {
+		registerItems(api, *opts.Items)
 	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "resource not found")
