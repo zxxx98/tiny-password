@@ -411,8 +411,8 @@ func TestHealthClassifiesReadableLogins(t *testing.T) {
 }
 
 func TestSearchPerformanceBaseline(t *testing.T) {
-	if testing.Short() {
-		t.Skip("performance baseline skipped with -short")
+	if testing.Short() || raceDetector {
+		t.Skip("performance baseline skipped with -short or under -race (dedicated T30 scripts measure P95)")
 	}
 	h := newItemsHarness(t)
 	h.bootstrapAdmin(t)
