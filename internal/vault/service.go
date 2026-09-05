@@ -156,7 +156,7 @@ func (s *Service) Create(ctx context.Context, actor *auth.Principal, input Creat
 	if err := tx.Commit(); err != nil {
 		return Detail{}, err
 	}
-	return Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: payload}, nil
+	return s.decorateDetail(ctx, s.db, Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: payload}), nil
 }
 
 // checkReference validates one address reference: the target must exist, be
@@ -199,9 +199,10 @@ func (s *Service) Get(ctx context.Context, actor *auth.Principal, id string) (De
 	}); err != nil {
 		return Detail{}, err
 	}
-	meta := row.toMeta()
-	s.attachCreatorNames(ctx, s.db, []Meta{meta})
-	return Detail{Meta: meta, Tags: envelope.Tags, Payload: typed}, nil
+	detail := Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: typed}
+	detail.Title = TitleOf(typed)
+	s.attachCreatorNames(ctx, s.db, []Meta{detail.Meta})
+	return detail, nil
 }
 
 // ListFilter narrows the caller-readable candidate set. Tags live inside
@@ -587,6 +588,16 @@ func (s *Service) attachCreatorNames(ctx context.Context, q Queryer, metas []Met
 			metas[i].CreatorName = names[*metas[i].CreatorID]
 		}
 	}
+}
+
+// decorateDetail fills the response-side derived fields (title from the
+// typed payload, creator display name) on one detail response.
+func (s *Service) decorateDetail(ctx context.Context, q Queryer, detail Detail) Detail {
+	if typed, ok := detail.Payload.(any); ok {
+		detail.Title = TitleOf(typed)
+	}
+	s.attachCreatorNames(ctx, q, []Meta{detail.Meta})
+	return detail
 }
 
 // AADFor assembles the row-bound additional authenticated data. Exactly one

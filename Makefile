@@ -39,9 +39,16 @@ docker-build:
 	docker build -t $(IMAGE) .
 
 ## test-e2e: run the isolated test compose against an empty database and
-## synthetic secrets; cleans up on exit (browser E2E specs arrive with T15+)
-test-e2e: docker-build
+## synthetic secrets; cleans up on exit.
+## With E2E_SPEC=<file>, run that browser spec against a locally built
+## server instead (Playwright; see scripts/test-browser-e2e.sh).
+test-e2e:
+ifeq ($(strip $(E2E_SPEC)),)
+	$(MAKE) docker-build
 	bash scripts/test-e2e.sh
+else
+	bash scripts/test-browser-e2e.sh $(E2E_SPEC)
+endif
 
 tidy:
 	go mod tidy

@@ -124,6 +124,8 @@ export function VaultPage({ section }: { section?: "trash" }) {
     async (detail: ItemDetailData) => {
       setSelected(detail);
       setEditing(false);
+      setCreating(false);
+      setHistoryFor(null);
       await loadPage(null, false);
     },
     [loadPage],
@@ -319,7 +321,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
 
         {/* Route-driven full-page detail for tablet/mobile viewports. */}
         {routeItemId && (
-          <div className="lg:hidden">
+          <div className="lg:hidden" data-testid="mobile-detail">
             <div className="p-4">
               <Button variant="ghost" onClick={() => { setSelected(null); navigate("/vault"); }}>
                 ← 返回列表

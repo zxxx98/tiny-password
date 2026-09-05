@@ -97,7 +97,10 @@ func (s *Service) RestoreTrashed(ctx context.Context, actor *auth.Principal, ite
 	if err != nil {
 		return Detail{}, err
 	}
-	return Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: typed}, nil
+	out := Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: typed}
+	out.Title = TitleOf(typed)
+	s.attachCreatorNames(ctx, s.db, []Meta{out.Meta})
+	return out, nil
 }
 
 // Purge permanently removes a trashed item and its archived versions. This

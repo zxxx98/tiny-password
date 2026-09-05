@@ -22,3 +22,5 @@ internal/webassets/dist/*
 # editor/OS noise
 .DS_Store
 *.swp
+test-results/
+playwright-report/

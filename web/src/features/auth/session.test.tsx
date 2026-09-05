@@ -88,13 +88,15 @@ describe("LoginPage", () => {
 });
 
 describe("SessionBoundary", () => {
-  it("shows the login page without a session", () => {
+  it("shows the login page without a session", async () => {
+    // The silent session restore fails (no valid cookie) and login shows.
+    vi.stubGlobal("fetch", stubFetch([{ status: 401, body: { code: "UNAUTHORIZED", message: "x", request_id: "r" } }]));
     render(
       <SessionBoundary>
         <p>受保护内容</p>
       </SessionBoundary>,
     );
-    expect(screen.getByRole("heading", { name: "登录" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "登录" })).toBeInTheDocument();
     expect(screen.queryByText("受保护内容")).not.toBeInTheDocument();
   });
 

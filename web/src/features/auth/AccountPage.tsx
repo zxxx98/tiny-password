@@ -71,7 +71,7 @@ export function AccountPage() {
       setBanner(entry.current ? "当前会话已退出。" : "该会话已撤销。");
       if (entry.current) {
         sessionStore.clear();
-        navigate("/login");
+        navigate("/");
         return;
       }
       await loadSessions();
@@ -90,7 +90,7 @@ export function AccountPage() {
       // The server session may already be gone; clear locally regardless.
     }
     sessionStore.clear();
-    navigate("/login");
+    navigate("/");
   };
 
   const saveIdleTimeout = async (minutes: number) => {

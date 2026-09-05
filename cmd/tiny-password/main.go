@@ -113,7 +113,15 @@ func run(logger *slog.Logger) error {
 	}
 	auditService := audit.NewService(audit.Options{})
 
-	authService, err := auth.NewService(db.DB, auth.Options{Audit: auditService, Logger: logger})
+	// Login rate limits follow the production defaults; test harnesses may
+	// raise the username window explicitly (mirrors TP_SETUP_RATE_LIMIT_PER_MIN).
+	authLimits := auth.Limits{}
+	if v := os.Getenv("TP_AUTH_LOGIN_LIMIT_PER_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			authLimits = auth.Limits{Username: n, Source: n * 5, Global: n * 50}
+		}
+	}
+	authService, err := auth.NewService(db.DB, auth.Options{Audit: auditService, Logger: logger, Limits: authLimits})
 	if err != nil {
 		return fmt.Errorf("auth service: %w", err)
 	}

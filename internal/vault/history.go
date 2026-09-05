@@ -123,5 +123,7 @@ func (s *Service) RestoreHistory(ctx context.Context, actor *auth.Principal, ite
 	meta := row.toMeta()
 	meta.Revision = row.Revision + 1
 	meta.UpdatedAt = updatedAt
-	return Detail{Meta: meta, Tags: envelope.Tags, Payload: typed}, nil
+	out := Detail{Meta: meta, Tags: envelope.Tags, Payload: typed}
+	out.Title = TitleOf(typed)
+	return out, nil
 }
