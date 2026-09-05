@@ -1,0 +1,1251 @@
+# Tiny Password V1 API contract.
+# Authoritative for T01; endpoints for milestones M2+ are contract-level
+# definitions that later tasks implement against. M1 endpoints (health,
+# setup, csrf) are fully detailed and tested.
+openapi: 3.1.0
+info:
+  title: Tiny Password API
+  version: 1.0.0
+  description: |
+    Same-origin REST API served by the Go single binary at `/api/v1`.
+
+    Conventions:
+    - JSON request/response bodies. Archive download/upload use streaming bodies.
+    - Authentication is a `tiny_password_session` HttpOnly cookie (SameSite=Lax,
+      Secure in production). Long-lived tokens never enter Local Storage.
+    - Every write request requires header `X-CSRF-Token`. A short-lived
+      pre-authentication CSRF context (D07) covers setup and login; it is
+      rotated after setup/login success.
+    - Error envelope is always `{"code", "message", "request_id"}` plus
+      optional detail fields. Codes are stable; messages are safe for display
+      and never reveal underlying database or crypto failures.
+    - Pagination uses an opaque cursor bound to the requesting user, filter
+      set, ordering and an expiry; cursors are rejected across users or
+      altered filters.
+    - Create endpoints accept an optional `Idempotency-Key` header (<=128
+      chars, printable ASCII). Same user + operation + key + fingerprint
+      returns the original result. A different fingerprint under the same key
+      returns 409 IDEMPOTENCY_KEY_CONFLICT.
+    - All timestamps are RFC 3339 UTC.
+servers:
+  - url: /api/v1
+    description: same-origin
+
+tags:
+  - name: system
+  - name: setup
+  - name: auth
+  - name: users
+  - name: items
+  - name: generators
+  - name: transfer
+  - name: admin
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      summary: Liveness probe; touches no sensitive dependency
+      security: []
+      responses:
+        "200":
+          description: process alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+  /readyz:
+    get:
+      tags: [system]
+      summary: Readiness probe; checks migrations, database and master key
+      security: []
+      responses:
+        "200":
+          description: ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadyState" }
+        "503":
+          description: not ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadyState" }
+
+  /setup/status:
+    get:
+      tags: [setup]
+      summary: Whether the instance still needs one-time initialization
+      security: []
+      responses:
+        "200":
+          description: current setup state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [initialized]
+                properties:
+                  initialized: { type: boolean }
+  /setup/init:
+    post:
+      tags: [setup]
+      summary: Create the first administrator; permanently closed afterwards
+      description: |
+        Requires the one-time setup token printed to the container log
+        (`setup_token_issued`, D01). Exactly one concurrent request succeeds;
+        the rest receive 409 SETUP_ALREADY_DONE. After success the endpoint is
+        permanently closed, including across restarts and environment changes.
+      operationId: setupInit
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, username, password]
+              properties:
+                token:
+                  type: string
+                  maxLength: 256
+                  description: one-time setup token
+                username:
+                  $ref: "#/components/schemas/Username"
+                password:
+                  $ref: "#/components/schemas/NewPassword"
+      responses:
+        "200":
+          description: administrator created; setup permanently closed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetupResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: wrong or missing setup token (SETUP_TOKEN_INVALID)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: already initialized or concurrent setup lost (SETUP_ALREADY_DONE)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /csrf:
+    post:
+      tags: [auth]
+      summary: Issue or rotate the CSRF context (pre-auth included, D07)
+      security: []
+      responses:
+        "200":
+          description: CSRF token bound to the current anonymous/session cookie
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [csrf_token]
+                properties:
+                  csrf_token: { type: string, maxLength: 128 }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Password login; identical error for unknown user and wrong password
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { $ref: "#/components/schemas/Username" }
+                password: { type: string, maxLength: 1024 }
+      responses:
+        "200":
+          description: session established (Set-Cookie); body reports whether a
+            first-login password change is still required
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [must_change_password]
+                properties:
+                  must_change_password: { type: boolean }
+                  password_expires_at: { type: string, format: date-time, nullable: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: account disabled (ACCOUNT_DISABLED)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the current session
+      responses:
+        "204": { description: revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/password:
+    post:
+      tags: [auth]
+      summary: Self-service password change (requires current password)
+      description: On success all other sessions of the user are revoked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, maxLength: 1024 }
+                new_password: { $ref: "#/components/schemas/NewPassword" }
+      responses:
+        "204": { description: changed; sessions rotated }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /auth/sessions:
+    get:
+      tags: [auth]
+      summary: List the current user's own sessions
+      responses:
+        "200":
+          description: sessions of the caller only
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/SessionInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /auth/sessions/{sessionId}:
+    delete:
+      tags: [auth]
+      summary: Revoke one of the caller's own sessions
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "204": { description: revoked }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /auth/activity:
+    get:
+      tags: [auth]
+      summary: Redacted audit events of the current user only (D08)
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: own events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AuditEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /users:
+    get:
+      tags: [users]
+      summary: List members (admin only)
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: members
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/UserInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [users]
+      summary: Create a member with a one-time initial password (admin only)
+      description: The initial password is shown once; the member must change it
+        at first login. Admins can never read a member's current password.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, initial_password]
+              properties:
+                username: { $ref: "#/components/schemas/Username" }
+                initial_password: { $ref: "#/components/schemas/NewPassword" }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserInfo" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: username already exists (USERNAME_TAKEN)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /users/{userId}/disable:
+    post:
+      tags: [users]
+      summary: Disable a member; all sessions revoked immediately (admin only)
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserInfo" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: LAST_ADMIN_PROTECTED
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /users/{userId}/enable:
+    post:
+      tags: [users]
+      summary: Re-enable a member (admin only); old sessions stay revoked
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: enabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserInfo" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /users/{userId}:
+    delete:
+      tags: [users]
+      summary: Permanently delete a member and their data (admin only)
+      description: |
+        Irreversible. The request body must repeat the member's display
+        username exactly. The transaction revokes sessions and deletes the
+        member's personal items, histories, trash, and shared items created by
+        them. Audit events survive, attributed to the opaque internal ID.
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_username]
+              properties:
+                confirm_username: { $ref: "#/components/schemas/Username" }
+      responses:
+        "204": { description: deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: LAST_ADMIN_PROTECTED or confirmation mismatch (CONFIRMATION_MISMATCH)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /items:
+    get:
+      tags: [items]
+      summary: List items across vaults the caller may read
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: scope
+          in: query
+          schema: { $ref: "#/components/schemas/VaultScope" }
+        - name: type
+          in: query
+          schema: { $ref: "#/components/schemas/ItemType" }
+        - name: favorite
+          in: query
+          schema: { type: boolean }
+        - name: tag
+          in: query
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: metadata list; payloads are not included
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ItemMeta" }
+    post:
+      tags: [items]
+      summary: Create an item (personal or shared)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ItemCreate" }
+      responses:
+        "201":
+          description: created; revision = 1
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: address reference rule violated (REFERENCE_FORBIDDEN)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+  /items/search:
+    post:
+      tags: [items]
+      summary: In-memory decrypted search within authorized scope (POST keeps the
+        query term out of URLs)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string, maxLength: 256 }
+                scope: { $ref: "#/components/schemas/VaultScope" }
+                type: { $ref: "#/components/schemas/ItemType" }
+                tag: { type: string, maxLength: 64 }
+                cursor: { $ref: "#/components/schemas/Cursor" }
+                limit: { $ref: "#/components/schemas/LimitValue" }
+      responses:
+        "200":
+          description: matches; unauthorized records are invisible, total counts
+            never leak other members' data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ItemMeta" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /items/{itemId}:
+    get:
+      tags: [items]
+      summary: Item detail with decrypted payload (authorization precedes decryption)
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "200":
+          description: detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [items]
+      summary: Update with optimistic locking on revision
+      description: Each effective update archives one encrypted history version
+        (max 10 retained). Scope, owner/creator and type are immutable.
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ItemUpdate" }
+      responses:
+        "200":
+          description: updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemDetail" }
+        "409":
+          description: revision conflict
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevisionConflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+    delete:
+      tags: [items]
+      summary: Move to trash (30-day purge by background task)
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "204": { description: trashed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /items/{itemId}/restore:
+    post:
+      tags: [items]
+      summary: Restore from trash (personal owner or shared creator only)
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "200":
+          description: restored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /items/{itemId}/purge:
+    delete:
+      tags: [items]
+      summary: Permanently delete from trash (personal owner or shared creator only)
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      responses:
+        "204": { description: purged }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /items/{itemId}/history:
+    get:
+      tags: [items]
+      summary: Encrypted history versions (readable by whoever can read the item)
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: history entries, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/ItemHistoryEntry" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /items/{itemId}/history/{revision}/restore:
+    post:
+      tags: [items]
+      summary: Restore a history version as a new current revision
+      description: Creates a new revision with fresh nonce/AAD; never re-uses old
+        ciphertext as the current version.
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+        - name: revision
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: new current revision created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ItemDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /items/{itemId}/favorite:
+    put:
+      tags: [items]
+      summary: Set favorite state (personal owner or shared creator only, D06)
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [favorite]
+              properties:
+                favorite: { type: boolean }
+      responses:
+        "204": { description: updated }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /items/{itemId}/tags:
+    put:
+      tags: [items]
+      summary: Replace the tag list (personal owner or shared creator only, D06)
+      parameters:
+        - $ref: "#/components/parameters/ItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tags]
+              properties:
+                tags:
+                  type: array
+                  maxItems: 32
+                  items: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        "204": { description: updated }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /items/health:
+    get:
+      tags: [items]
+      summary: Password health over the caller's readable login items
+      description: Computed on demand; no password fingerprints are stored.
+      responses:
+        "200":
+          description: weak/duplicate/expired findings within the caller's scope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  weak: { type: integer }
+                  reused: { type: integer }
+                  expired: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [item_id, reasons]
+                      properties:
+                        item_id: { $ref: "#/components/schemas/OpaqueId" }
+                        reasons:
+                          type: array
+                          items: { type: string, enum: [weak, reused, expired] }
+
+  /generators/password:
+    post:
+      tags: [generators]
+      summary: Generate a password with OS CSPRNG
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                length: { type: integer, minimum: 8, maximum: 128, default: 20 }
+                lowercase: { type: boolean, default: true }
+                uppercase: { type: boolean, default: true }
+                digits: { type: boolean, default: true }
+                symbols: { type: boolean, default: true }
+                exclude_ambiguous: { type: boolean, default: false }
+      responses:
+        "200":
+          description: generated value; never persisted or logged
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneratedSecret" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /generators/passphrase:
+    post:
+      tags: [generators]
+      summary: Generate a multi-word passphrase from the bundled wordlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                words: { type: integer, minimum: 3, maximum: 10, default: 5 }
+                separator: { type: string, maxLength: 8, default: "-" }
+                capitalize: { type: boolean, default: false }
+      responses:
+        "200":
+          description: generated passphrase
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneratedSecret" }
+  /generators/ssh-key:
+    post:
+      tags: [generators]
+      summary: Generate an Ed25519 (default) or RSA-4096 keypair
+      description: Results are returned once and are only persisted when the
+        client saves them as an item; cancellation leaves nothing behind.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                algorithm: { type: string, enum: [ed25519, rsa4096], default: ed25519 }
+                passphrase: { type: string, maxLength: 1024, default: "" }
+                comment: { type: string, maxLength: 256, default: "" }
+      responses:
+        "200":
+          description: key material
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [algorithm, public_key, private_key, fingerprint]
+                properties:
+                  algorithm: { type: string, enum: [ed25519, rsa4096] }
+                  public_key: { type: string }
+                  private_key: { type: string }
+                  fingerprint: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /transfer/export:
+    post:
+      tags: [transfer]
+      summary: Stream a personal encrypted 7z archive
+      description: |
+        Contains the caller's personal items and shared items created by the
+        caller (current versions, no history/trash; D10). The archive password
+        is provided in the body, never stored, and must exclude LF/CR (D04).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [passphrase, passphrase_confirm]
+              properties:
+                passphrase: { type: string, minLength: 12, maxLength: 1024 }
+                passphrase_confirm: { type: string, minLength: 12, maxLength: 1024 }
+      responses:
+        "200":
+          description: application/x-7z-compressed stream
+          content:
+            application/x-7z-compressed:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Busy" }
+  /transfer/import/preview:
+    post:
+      tags: [transfer]
+      summary: Upload a personal archive and get a preview; zero database writes
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [archive, passphrase]
+              properties:
+                archive: { type: string, format: binary }
+                passphrase: { type: string, maxLength: 1024 }
+      responses:
+        "200":
+          description: counts per type, conflicts and reference gaps; preview token
+            valid for a short window and bound to the caller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportPreview" }
+        "400":
+          description: VALIDATION_ERROR, BAD_ARCHIVE or WRONG_PASSPHRASE
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /transfer/import/confirm:
+    post:
+      tags: [transfer]
+      summary: Commit a previewed import in a single transaction
+      description: Re-validates identity and preview freshness. Conflicting IDs
+        become new UUIDv7 items; existing data is never overwritten.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preview_token]
+              properties:
+                preview_token: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: import summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported_count]
+                properties:
+                  imported_count: { type: integer }
+                  remapped_references: { type: integer }
+        "400":
+          description: preview expired, already consumed, or archive invalid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /admin/backups/jobs:
+    get:
+      tags: [admin]
+      summary: List backup job configuration (admin only)
+      responses:
+        "200": { description: jobs, content as defined by T21–T24 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [admin]
+      summary: Update job configuration from an explicit non-sensitive whitelist
+      responses:
+        "200": { description: updated }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/backups/runs:
+    get:
+      tags: [admin]
+      summary: Backup run history per target (admin only)
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": { description: runs; content as defined by T21–T24 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/backups/run:
+    post:
+      tags: [admin]
+      summary: Trigger a manual backup run (admin only)
+      responses:
+        "202": { description: run started; independent local/R2 results reported via runs }
+        "409": { description: BACKUP_BUSY (mutual exclusion) }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/audit:
+    get:
+      tags: [admin]
+      summary: System audit query (admin only)
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: event
+          in: query
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: redacted events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/AuditEvent" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /admin/settings:
+    get:
+      tags: [admin]
+      summary: Non-sensitive system settings and runtime state (admin only)
+      responses:
+        "200": { description: settings; secrets are never included or echoed }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [admin]
+      summary: Update settings from an explicit non-sensitive whitelist
+      responses:
+        "200": { description: updated }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: tiny_password_session
+  responses:
+    BadRequest:
+      description: malformed or invalid input (VALIDATION_ERROR)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: missing, invalid, expired or revoked session (UNAUTHORIZED)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: authenticated but not allowed by the authorization policy (FORBIDDEN)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: resource absent or outside the caller's authorized scope (NOT_FOUND)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: body or expanded payload exceeds the configured limit (PAYLOAD_TOO_LARGE)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: too many attempts (RATE_LIMITED)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Busy:
+      description: resource temporarily at concurrency limit (MAINTENANCE or BACKUP_BUSY)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema: { type: string, minLength: 16, maxLength: 128, pattern: "[A-Za-z0-9_-]+" }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { $ref: "#/components/schemas/Cursor" }
+    Limit:
+      name: limit
+      in: query
+      schema: { $ref: "#/components/schemas/LimitValue" }
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/OpaqueId" }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/OpaqueId" }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/OpaqueId" }
+  schemas:
+    OpaqueId:
+      type: string
+      maxLength: 64
+      description: opaque resource identifier (UUIDv7 internally, never guessed by clients)
+    Username:
+      type: string
+      minLength: 3
+      maxLength: 64
+      pattern: "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+      description: display form is preserved; uniqueness is enforced on a normalized form
+    NewPassword:
+      type: string
+      minLength: 12
+      maxLength: 1024
+      description: ">=12 characters, <=1024 UTF-8 bytes, full Unicode allowed, NUL rejected"
+    LimitValue:
+      type: integer
+      minimum: 1
+      maximum: 100
+      default: 50
+    Cursor:
+      type: string
+      maxLength: 512
+      description: opaque; bound to user, filters, ordering and expiry
+    VaultScope:
+      type: string
+      enum: [personal, shared]
+    ItemType:
+      type: string
+      enum: [login, ssh_key, credit_card, identity, secure_note]
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - CONFLICT
+            - REVISION_CONFLICT
+            - USERNAME_TAKEN
+            - ACCOUNT_DISABLED
+            - LAST_ADMIN_PROTECTED
+            - CONFIRMATION_MISMATCH
+            - IDEMPOTENCY_KEY_CONFLICT
+            - REFERENCE_FORBIDDEN
+            - PAYLOAD_TOO_LARGE
+            - BAD_ARCHIVE
+            - WRONG_PASSPHRASE
+            - SETUP_TOKEN_INVALID
+            - SETUP_ALREADY_DONE
+            - RATE_LIMITED
+            - BACKUP_BUSY
+            - DATABASE_BUSY
+            - MAINTENANCE
+            - INTERNAL
+        message:
+          type: string
+          description: safe for display; never contains secrets or stack traces
+        request_id: { $ref: "#/components/schemas/OpaqueId" }
+        current_revision:
+          type: integer
+          description: present only for REVISION_CONFLICT
+    RevisionConflict:
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          required: [code, current_revision]
+          properties:
+            code: { type: string, const: REVISION_CONFLICT }
+            current_revision: { type: integer, minimum: 1 }
+    CursorPage:
+      type: object
+      required: [items]
+      properties:
+        next_cursor:
+          allOf: [{ $ref: "#/components/schemas/Cursor" }]
+          nullable: true
+    ReadyState:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        checks:
+          type: object
+          properties:
+            database: { type: boolean }
+            migrations: { type: boolean }
+            master_key: { type: boolean }
+    SetupResult:
+      type: object
+      required: [initialized, username]
+      properties:
+        initialized: { type: boolean, const: true }
+        username: { $ref: "#/components/schemas/Username" }
+    UserInfo:
+      type: object
+      required: [id, username, role, status]
+      properties:
+        id: { $ref: "#/components/schemas/OpaqueId" }
+        username: { $ref: "#/components/schemas/Username" }
+        role: { type: string, enum: [admin, member] }
+        status: { type: string, enum: [active, disabled, must_change_password] }
+        created_at: { type: string, format: date-time }
+    SessionInfo:
+      type: object
+      required: [id, created_at, expires_at, current]
+      properties:
+        id: { $ref: "#/components/schemas/OpaqueId" }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        idle_expires_at: { type: string, format: date-time }
+        current: { type: boolean }
+    AuditEvent:
+      type: object
+      required: [id, event, result, created_at]
+      properties:
+        id: { $ref: "#/components/schemas/OpaqueId" }
+        event:
+          type: string
+          description: stable constant from the audit event list (design §7.3)
+        actor_id:
+          allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
+          nullable: true
+        target_type: { type: string, maxLength: 32 }
+        target_id:
+          allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
+          nullable: true
+        result: { type: string, enum: [success, failure] }
+        request_id:
+          allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
+          nullable: true
+        created_at: { type: string, format: date-time }
+    EncryptedPayload:
+      type: object
+      required: [payload_version, nonce, ciphertext]
+      properties:
+        payload_version: { type: integer, minimum: 1, maximum: 65535 }
+        nonce: { type: string, format: byte, maxLength: 44, description: 24-byte XChaCha20 nonce, base64 }
+        ciphertext: { type: string, format: byte, description: base64; plaintext JSON <=256 KiB (D09) }
+    ItemMeta:
+      type: object
+      required: [id, item_type, vault_scope, revision, created_at, updated_at]
+      properties:
+        id: { $ref: "#/components/schemas/OpaqueId" }
+        item_type: { $ref: "#/components/schemas/ItemType" }
+        vault_scope: { $ref: "#/components/schemas/VaultScope" }
+        owner_id:
+          allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
+          nullable: true
+          description: present for personal items only
+        creator_id:
+          allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
+          nullable: true
+          description: present for shared items only
+        favorite: { type: boolean }
+        revision: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at:
+          allOf: [{ type: string, format: date-time }]
+          nullable: true
+    ItemCreate:
+      type: object
+      required: [item_type, vault_scope, payload]
+      properties:
+        item_type: { $ref: "#/components/schemas/ItemType" }
+        vault_scope: { $ref: "#/components/schemas/VaultScope" }
+        tags:
+          type: array
+          maxItems: 32
+          items: { type: string, minLength: 1, maxLength: 64 }
+        favorite: { type: boolean, default: false }
+        payload: { $ref: "#/components/schemas/ItemPayload" }
+    ItemUpdate:
+      type: object
+      required: [revision, payload]
+      properties:
+        revision: { type: integer, minimum: 1 }
+        tags:
+          type: array
+          maxItems: 32
+          items: { type: string, minLength: 1, maxLength: 64 }
+        favorite: { type: boolean }
+        payload: { $ref: "#/components/schemas/ItemPayload" }
+    ItemDetail:
+      allOf:
+        - $ref: "#/components/schemas/ItemMeta"
+        - type: object
+          required: [payload]
+          properties:
+            tags: { type: array, items: { type: string } }
+            payload: { $ref: "#/components/schemas/ItemPayload" }
+    ItemPayload:
+      oneOf:
+        - $ref: "#/components/schemas/LoginPayload"
+        - $ref: "#/components/schemas/SshKeyPayload"
+        - $ref: "#/components/schemas/CreditCardPayload"
+        - $ref: "#/components/schemas/IdentityPayload"
+        - $ref: "#/components/schemas/SecureNotePayload"
+    LoginPayload:
+      type: object
+      required: [name, username, password]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 256 }
+        username: { type: string, maxLength: 256 }
+        password: { type: string, maxLength: 1024 }
+        urls:
+          type: array
+          minItems: 0
+          maxItems: 16
+          items: { type: string, maxLength: 2048 }
+        notes: { type: string, maxLength: 10000 }
+        password_updated_at: { type: string, format: date, nullable: true }
+        password_expires_at: { type: string, format: date, nullable: true }
+    SshKeyPayload:
+      type: object
+      required: [name, algorithm, public_key, private_key]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 256 }
+        algorithm: { type: string, enum: [ed25519, rsa4096] }
+        public_key: { type: string, maxLength: 8192 }
+        private_key: { type: string, maxLength: 16384 }
+        key_passphrase: { type: string, maxLength: 1024 }
+        comment: { type: string, maxLength: 256 }
+        fingerprint: { type: string, maxLength: 128 }
+        notes: { type: string, maxLength: 10000 }
+    CreditCardPayload:
+      type: object
+      required: [name, cardholder, number, exp_month, exp_year]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 256 }
+        cardholder: { type: string, maxLength: 256 }
+        number: { type: string, maxLength: 64 }
+        exp_month: { type: integer, minimum: 1, maximum: 12 }
+        exp_year: { type: integer, minimum: 2000, maximum: 9999 }
+        cvv: { type: string, maxLength: 8 }
+        pin: { type: string, maxLength: 16 }
+        billing_address_item_id:
+          allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
+          nullable: true
+          description: must reference an identity item readable by the actor and
+            compatible with the shared/personal visibility of this item
+        notes: { type: string, maxLength: 10000 }
+    IdentityPayload:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 256 }
+        full_name: { type: string, maxLength: 256 }
+        company: { type: string, maxLength: 256 }
+        phone: { type: string, maxLength: 64 }
+        email: { type: string, maxLength: 320 }
+        country: { type: string, maxLength: 96 }
+        state: { type: string, maxLength: 96 }
+        city: { type: string, maxLength: 96 }
+        district: { type: string, maxLength: 96 }
+        address_line: { type: string, maxLength: 512 }
+        postal_code: { type: string, maxLength: 32 }
+        notes: { type: string, maxLength: 10000 }
+    SecureNotePayload:
+      type: object
+      required: [name, body]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 256 }
+        body: { type: string, maxLength: 65536 }
+    ItemHistoryEntry:
+      type: object
+      required: [revision, updated_at]
+      properties:
+        revision: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    GeneratedSecret:
+      type: object
+      required: [value]
+      properties:
+        value: { type: string, maxLength: 2048 }
+    ImportPreview:
+      type: object
+      required: [preview_token, counts]
+      properties:
+        preview_token: { type: string, maxLength: 128 }
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: item type -> count
+        conflicts: { type: integer, description: items whose IDs already exist and will be re-issued }
+        missing_references:
+          type: array
+          items: { type: string }
+          description: address references pointing outside the archive; user must fill these in
