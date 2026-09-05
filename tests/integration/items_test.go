@@ -32,6 +32,7 @@ type itemsHarness struct {
 	boot        *bootstrap.Service
 	setupLogger *capturedHandler
 	admin       authClient
+	decrypts    *decryptRecorder
 }
 
 func newItemsHarness(t *testing.T) *itemsHarness {
@@ -56,11 +57,15 @@ func newItemsHarness(t *testing.T) *itemsHarness {
 	h.svc = authSvc
 
 	auditSvc := audit.NewService(audit.Options{})
-	vsvc, err := vault.NewService(h.db.DB, key, vault.Options{Now: h.clock.Now, Audit: auditSvc})
+	decrypts := &decryptRecorder{}
+	vsvc, err := vault.NewService(h.db.DB, key, vault.Options{
+		Now: h.clock.Now, Audit: auditSvc, DecryptHook: decrypts.record,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ih.vault = vsvc
+	ih.decrypts = decrypts
 	ih.usersSvc = users.NewService(h.db.DB, users.Options{Now: h.clock.Now, Audit: auditSvc})
 
 	cursor, err := httpapi.NewCursorCodec(bytes.Repeat([]byte{0x44}, 32), 0)
@@ -126,6 +131,17 @@ func (h *itemsHarness) itemClient(t *testing.T, name string) authClient {
 	client, resp := h.login(t, name, validPassword)
 	expectStatus(t, resp, 200)
 	return client
+}
+
+// listCount returns the number of items a client sees on one list page.
+func (h *itemsHarness) listCount(t *testing.T, client authClient, query string) int {
+	t.Helper()
+	resp := h.request(t, "GET", query, nil, client)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("%s: %d", query, resp.StatusCode)
+	}
+	return len(decodeBody(t, resp)["items"].([]any))
 }
 
 func itemCreateBody(scope, typ string, payload map[string]any, tags []string, favorite bool) map[string]any {
