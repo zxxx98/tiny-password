@@ -218,3 +218,21 @@
   2. `go vet ./...`、`go test ./... -count=1`、`go test -race ./tests/integration -count=1`（536 s）、`git diff --check` → 全部通过。
 - 证据路径：`internal/vault/history.go`、`internal/vault/trash.go`、`internal/vault/repository.go`、`internal/httpapi/items.go`、`tests/integration/item_lifecycle_test.go`
 - 未解决问题：无阻塞项；后台清理的调度接入在 T23 完成。
+
+## T13 · 搜索、标签、收藏与密码健康
+
+- 日期：2026-09-05
+- 提交：`92468a0`（worktree `tiny-password-m03`，分支 `m03-personal-vault`）
+- 实现要点：
+  - `internal/vault/search.go`：SQL 先限定授权候选集（deleted_at IS NULL + 范围/类型），再按 200 条/批解密筛选（标题/用户名/网址/标签/备注，大小写不敏感；secure_note body 参与），按 (updated_at, id) 稳定倒序；游标绑定查询词 + 筛选 + 操作者；无总数泄露；`DecryptHook` 仅测试注入，生产为 nil。
+  - `GET /items?tag=` 由 T11 的显式 400 换为解密筛选管线，tag 进入游标筛选身份。
+  - `PUT /items/{id}/favorite`、`PUT /items/{id}/tags`：与普通更新同一乐观锁路径（D06：收藏/标签属于条目）——同事务归档旧版本、bump revision、记审计；无效变更不写。
+  - `internal/vault/health.go`：按需计算可读 login 的弱（<12 码点，本地规则）/重复（完全相同密码跨 ≥2 条）/过期（password_expires_at 早于今日 UTC）——不存指纹、无外部调用；共享条目参与本人结果，他人个人条目不可见。
+  - `internal/vault/seed.go` + `tests/fixtures/seed.go`：仅用于基准/压测的合成直插通道（绕过策略与审计，不出现在任何请求路径）。
+- 命令与结果：
+  1. `go test ./internal/vault -run 'TestMatchQuery|TestWeakPassword|TestExpiredPassword' -v` → 单元测试全过（匹配字段矩阵、密码不参与搜索、码点弱密码边界、日期过期边界）。
+  2. `go test ./tests/integration -run 'TestSearch|TestHealth|TestItemListTagFilter|TestFavoriteAndTags' -v` → **8/8 通过**：授权字段命中 + 他人个人条目不可见 + 无 payload/总数泄露；用户名/URL/备注/标签可搜、密码不可搜；类型/范围/标签组合筛选与分页（7 条 3 页 3+3+1）；跨查询/跨用户游标 400；解密计数断言（搜索恰解密 3 个授权候选，他人个人条目 0 次解密）；列表 tag 筛选 + 游标绑定；favorite/tags 端点策略与校验（bob 403、admin 404、回收站条目 404）；健康统计 weak=1/reused=3/expired=1 且他人个人条目不出现。
+  3. `TestSearchPerformanceBaseline`：单用户 10,000 条合成记录，全文解密扫描搜索 **2.90 s**，解密调用恰 10000 次（等于授权候选集）；P95 目标（≤300 ms）按计划由 T30 专用脚本在受控环境测量。
+  4. `go vet ./...`、`go test ./... -count=1`、`go test -race ./internal/vault`、`go test -race ./tests/integration -run 'TestSearch|TestHealth|TestItem'`、`git diff --check` → 全部通过。另修复 T12 遗留 flaky（map 迭代顺序导致的顺序更新偶发 409，改为确定性切片）。
+- 证据路径：`internal/vault/search.go`、`internal/vault/health.go`、`internal/vault/seed.go`、`internal/httpapi/items.go`、`tests/fixtures/seed.go`、`tests/integration/search_test.go`
+- 未解决问题：单用户 10k 搜索均值 2.9 s，距 T30 的 P95 ≤300 ms 目标有明确差距；T30 将以专用脚本测量并按计划优先测量后优化既有方案（候选批大小、字段投影）。
