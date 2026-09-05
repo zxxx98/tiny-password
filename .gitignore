@@ -1,0 +1,24 @@
+# keep git from shipping build artifacts and local state
+node_modules/
+web/node_modules/
+
+# frontend build output (embedded via go:embed at compile time)
+internal/webassets/dist/*
+!internal/webassets/dist/.keep
+
+# local runtime state
+/bin/
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# secrets and synthetic test material (never commit)
+/secrets/
+*.pem
+*.key
+
+# editor/OS noise
+.DS_Store
+*.swp

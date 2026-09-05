@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+/*
+ * Newsprint design tokens (style.md). Four colors, zero radius, four
+ * typefaces (self-hosted fonts land with T14; system fallbacks until then).
+ */
+@theme {
+  --color-paper: #f9f9f7;
+  --color-ink: #111111;
+  --color-divider: #e5e5e0;
+  --color-accent: #cc0000;
+
+  --font-display: "Playfair Display", "Times New Roman", serif;
+  --font-body: "Lora", Georgia, serif;
+  --font-ui: "Inter", "Helvetica Neue", sans-serif;
+  --font-mono: "JetBrains Mono", "Courier New", monospace;
+
+  --radius-*: initial;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-ui);
+}

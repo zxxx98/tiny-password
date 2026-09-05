@@ -1,0 +1,16 @@
+# Test-only compose: empty data directory, synthetic secrets, loopback port.
+# Used by scripts/test-e2e.sh; never point this at real data.
+services:
+  app:
+    image: tiny-password:dev
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - ${TP_TEST_DATA_DIR:?set TP_TEST_DATA_DIR to an empty temp dir}:/data
+    tmpfs:
+      - /tmp:mode=700,uid=10001,gid=10001
+    environment:
+      TP_TESTING: "1"
+
+volumes:
+  app-data:

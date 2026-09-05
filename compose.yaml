@@ -1,0 +1,18 @@
+# Tiny Password base deployment: single application container.
+# Optional Cloudflare Tunnel profile and LAN overrides are delivered by T29.
+services:
+  app:
+    build: .
+    image: tiny-password:dev
+    # Bind to loopback only; LAN/Tunnel deployments are covered in T29 docs.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - app-data:/data
+    tmpfs:
+      # Restricted scratch space for sensitive temporary files (D11).
+      - /tmp:mode=700,uid=10001,gid=10001
+    restart: unless-stopped
+
+volumes:
+  app-data:

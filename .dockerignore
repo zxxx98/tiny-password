@@ -1,0 +1,10 @@
+.git
+node_modules
+web/node_modules
+web/dist
+internal/webassets/dist
+/data
+/bin
+/secrets
+*.md
+!web/README.md
