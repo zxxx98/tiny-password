@@ -45,7 +45,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata wget \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 app \
-    && useradd -u 10001 -g 10001 -M -d /nonexistent -s /usr/sbin/nologin app
+    && useradd -u 10001 -g 10001 -M -d /nonexistent -s /usr/sbin/nologin app \
+    && mkdir -p /data \
+    && chown app:app /data \
+    && chmod 0750 /data
 COPY --from=go /out/tiny-password /usr/local/bin/tiny-password
 COPY --from=go /out/7zz /usr/local/bin/7zz
 USER app

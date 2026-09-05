@@ -14,6 +14,8 @@ import (
 type Options struct {
 	// SPA serves the built frontend for non-API routes.
 	SPA http.Handler
+	// Ready powers /readyz; nil means the endpoint reports 503.
+	Ready *ReadyChecker
 }
 
 // New returns the top-level HTTP handler: /healthz plus the /api/v1 tree are
@@ -24,6 +26,13 @@ func New(opts Options) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
+	if opts.Ready != nil {
+		mux.Handle("GET /readyz", handleReady(opts.Ready))
+	} else {
+		mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSONError(w, http.StatusServiceUnavailable, "MAINTENANCE", "readiness not configured")
+		})
+	}
 	mux.Handle("/api/", api)
 
 	spa := opts.SPA
@@ -32,11 +41,14 @@ func New(opts Options) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || hasPrefixPath(r.URL.Path, "/api/") {
+		switch {
+		case r.URL.Path == "/healthz", r.URL.Path == "/readyz":
 			mux.ServeHTTP(w, r)
-			return
+		case hasPrefixPath(r.URL.Path, "/api/"):
+			mux.ServeHTTP(w, r)
+		default:
+			spa.ServeHTTP(w, r)
 		}
-		spa.ServeHTTP(w, r)
 	})
 }
 

@@ -18,6 +18,8 @@ fi
 
 IMAGE="${IMAGE:-tiny-password:dev}"
 export TP_TEST_DATA_DIR="$(mktemp -d /tmp/tiny-password-e2e.XXXXXX)"
+# The container runs as UID 10001; a throwaway test dir may be world-writable.
+chmod 0777 "$TP_TEST_DATA_DIR"
 CONTAINER_NAME="tiny-password-e2e"
 cleanup() {
   $DOCKER rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true

@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,7 +16,9 @@ import (
 	"time"
 
 	"github.com/tiny-password/tiny-password/internal/httpapi"
+	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 	"github.com/tiny-password/tiny-password/internal/webassets"
+	"github.com/tiny-password/tiny-password/migrations"
 )
 
 var version = "dev"
@@ -38,9 +41,19 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	db, err := sqlite.Open(filepath.Join(dataDir, "tiny-password.db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := sqlite.Migrate(db.DB, migrations.FS); err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
+	}
+
+	ready := &httpapi.ReadyChecker{DB: db}
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.New(httpapi.Options{SPA: webassets.SPAHandler()}),
+		Handler:           httpapi.New(httpapi.Options{SPA: webassets.SPAHandler(), Ready: ready}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      120 * time.Second,
