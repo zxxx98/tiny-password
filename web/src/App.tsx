@@ -1,9 +1,27 @@
+import { AccountPage } from "./features/auth/AccountPage";
+import { ActivityPage } from "./features/auth/ActivityPage";
 import { AppShell } from "./app/AppShell";
 import { Router } from "./app/router";
+import { SessionBoundary } from "./features/auth/SessionBoundary";
 import { SetupPage } from "./features/auth/SetupPage";
+import { UsersPage } from "./features/admin/UsersPage";
+import { GeneratorPlaceholder } from "./features/generator/GeneratorPlaceholder";
+import { VaultPlaceholder } from "./features/vault/VaultPlaceholder";
 
-// Route table; grows with T15 (auth/account/admin) and T16 (vault workspace).
+function protectedRoute(element: React.ReactNode, requireAdmin?: boolean) {
+  // The shell frames the login/rotation views too: the masthead stays while
+  // the boundary decides which main content is allowed.
+  return (
+    <AppShell>
+      <SessionBoundary requireAdmin={requireAdmin}>{element}</SessionBoundary>
+    </AppShell>
+  );
+}
+
+// Route table. Protected routes pass through SessionBoundary: no session →
+// login; first login → forced password rotation; expiry → back to login.
 const routes = [
+  { path: "/", element: protectedRoute(<VaultPlaceholder />) },
   {
     path: "/setup",
     element: (
@@ -18,12 +36,14 @@ const routes = [
       </div>
     ),
   },
+  { path: "/vault", element: protectedRoute(<VaultPlaceholder />) },
+  { path: "/vault/:itemId", element: protectedRoute(<VaultPlaceholder />) },
+  { path: "/generator", element: protectedRoute(<GeneratorPlaceholder />) },
+  { path: "/account", element: protectedRoute(<AccountPage />) },
+  { path: "/account/activity", element: protectedRoute(<ActivityPage />) },
+  { path: "/admin/users", element: protectedRoute(<UsersPage />, true) },
 ];
 
 export function App() {
-  return (
-    <AppShell>
-      <Router routes={routes} />
-    </AppShell>
-  );
+  return <Router routes={routes} />;
 }

@@ -61,7 +61,23 @@ function handleAuthFailure(status: number): void {
 
 export type RequestOptions = {
   csrfToken?: string;
+  /** Observes the raw response before the ok-check (e.g. rotated CSRF header). */
+  onResponse?: (response: Response) => void;
+  /** Aborts this single request; the global in-flight registry still applies. */
+  signal?: AbortSignal;
 };
+
+// In-flight request registry. Locking or logging out aborts everything so a
+// late response can never repopulate cleared UI state (design §12.4).
+const inFlight = new Set<AbortController>();
+
+export function abortInFlightRequests(): number {
+  const count = inFlight.size;
+  for (const controller of inFlight) {
+    controller.abort();
+  }
+  return count;
+}
 
 export async function request<T>(method: string, url: string, body?: unknown, options?: RequestOptions): Promise<T> {
   const headers: Record<string, string> = {};
@@ -72,12 +88,29 @@ export async function request<T>(method: string, url: string, body?: unknown, op
   if (options?.csrfToken && method !== "GET" && method !== "HEAD") {
     headers["X-CSRF-Token"] = options.csrfToken;
   }
-  const response = await fetch(url, {
-    method,
-    credentials: "same-origin",
-    headers,
-    body: sendBody ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  inFlight.add(controller);
+  if (options?.signal) {
+    // Compose the caller's signal with the global registry: either aborts.
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+  }
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      credentials: "same-origin",
+      headers,
+      body: sendBody ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } finally {
+    inFlight.delete(controller);
+  }
+  options?.onResponse?.(response);
   if (!response.ok) {
     handleAuthFailure(response.status);
     throw await parseError(response);
