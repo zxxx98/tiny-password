@@ -98,3 +98,74 @@
   - OpenAPI YAML 与全部本地 `$ref` 解析、`git diff --check`：通过。
 - 证据路径：`internal/auth/concurrency_test.go`、`tests/integration/auth_test.go`、`tests/integration/auth_migration_test.go`、`scripts/test-auth-http.py`。
 - 后续范围：登录/首次改密页面在 T15；通用 HTTP 安全与幂等在 T07；登录/退出/改密审计接入在 T08。会话列表当前返回全部本人有效会话，GET 查询不延长期限。
+
+## T07 · HTTP 安全、中间件与幂等基础
+
+- 日期：2026-09-05；提交 `311b287`；执行环境为当前 Linux 工作区（linux/arm64）。
+- 交付：安全中间件链（CSP、HSTS 仅 TLS/可信代理 https、nosniff、Referrer-Policy、frame 限制、API no-store、panic 恢复 500 信封）、X-Request-ID 关联、路由模板访问日志、严格同源校验（修复旧后缀匹配可被 `https://evil.com//host` 绕过）+ Sec-Fetch-Site、可信代理网段解析（`TP_TRUSTED_PROXY_CIDRS`，默认不信任任何转发头）、413 体积上限、事务化幂等引擎与认证游标编解码器。
+- 本轮裁决（合同/计划与实现的冲突）：幂等存储 SQL 放入 `internal/idempotency`（httpapi 不直接操作 SQL 的架构约束优先于 T07 文件清单的 `httpapi/idempotency.go`）；幂等 scope 内嵌操作者 ID 使跨用户命中结构上不可能；失败的创建释放键、成功的创建同事务固定键；回放先经 RequireSession/RequireAdmin 重验再按不透明资源 ID 渲染；游标 HMAC 密钥为进程内随机，重启后游标失效（瞬态分页状态，已文档化）；Origin 接受 http/https 两种 scheme（D02 允许 TLS 反代不经可信代理配置，后端无法可靠判定浏览器 scheme；Secure Cookie 完整性不受影响），主机必须精确匹配。
+- 验证命令与结果：
+  - `go test ./tests/integration -run 'TestSecurityHeaders|TestHSTS|TestOrigin|TestSecFetch|TestRequestBody|TestAccessLog|TestRequestID' -v`：通过（含 TLS/可信代理/伪造 XFP 的 HSTS 三态、9 组 Origin 用例、Sec-Fetch-Site、413 PAYLOAD_TOO_LARGE、日志含路由模板且无查询词/秘密/路径 ID/UA、请求 ID 头-信封-日志一致）。
+  - `go test ./internal/idempotency ./internal/httpapi -v`：通过（fresh/complete/replay/conflict/in-flight/过期回收/跨用户不命中/claim 消失回滚/游标篡改-跨用户-过期-超长拒绝/代理解析多跳与伪造拒绝/panic 恢复不泄密）。
+  - `go test ./tests/integration -run 'TestSetupIdempotent|TestSetupRejectsMalformed|TestIdempotentCreate' -v`：通过（setup 幂等重放 200 非 409、同键不同内容 409 IDEMPOTENCY_KEY_CONFLICT、合成路由跨用户隔离、撤销会话后重放 401、并发恰好一个资源）。
+  - `go vet ./...`、`go test -race -count=1 ./...`、`git diff --check`：通过。
+- 证据路径：`internal/httpapi/{middleware,origin,errors,cursor,idempotency}.go`、`internal/idempotency/service.go`、`internal/requestid/requestid.go`、`tests/integration/{http_security_test,idempotency_test}.go`。
+- 未解决问题：幂等/游标 HMAC 密钥为进程内随机，重启后未过期幂等记录无法匹配指纹（返回 IDEMPOTENCY_KEY_CONFLICT 直至过期）；V1 单进程可接受，多进程部署前需改为共享密钥（当前无此需求）。
+
+## T08 · 审计基础与个人活动
+
+- 日期：2026-09-05；提交 `1d98bf9`。
+- 交付：`internal/audit` 集中事件常量（setup/auth/user 家族，12 个允许列表事件）、字段上限与 fail-closed 校验、可注入故障的写入服务；登录成功/退出/会话撤销/改密与业务同事务提交（注入审计写失败 → 业务变更一并回滚，测试证明无孤儿会话）；登录失败独立记录已解析用户 ID 或 `anonymous`；`GET /auth/activity` 个人活动与 `GET /admin/audit` 系统审计（事件过滤经允许列表校验），均用 T07 认证游标分页（固定宽度 UTC 时间戳保证键集比较可靠）。
+- 验证命令与结果：
+  - `go test ./internal/audit -v`：允许列表拒绝未知事件名（含 `setup_token_issued` 类日志事件）、结果域限制、字段超限、故障注入、空 actor 归匿名。
+  - `go test ./tests/integration -run TestAudit -v`：通过——登录成败/退出/撤销/改密审计与同事务完整性（含审计故障回滚）、个人活动只含本人事件、成员 403 系统审计、游标翻页无重叠且跨用户/篡改拒绝、删除用户后审计保留（用“内部 ID ≠ 用户名”夹具证明无用户名快照）、SYNSECRET 标记不出现在审计表与日志、初始化令牌全程仅出现 1 次且仅命中专用事件。
+  - `go vet ./...`、`go test -race -count=1 ./...`、`git diff --check`：通过。
+- 证据路径：`internal/audit/{events,service}.go`、`internal/httpapi/audit.go`、`tests/integration/audit_test.go`。
+- 未解决问题：`audit_events.created_at` 存在 T08 之前的 RFC3339Nano 整秒行（仅 setup 事件），与新的固定宽度格式混排时键集排序对这些旧行不保证严格单调；仅影响历史少量行，不泄露、不丢数据，暂不迁移。
+
+## T09 · 成员生命周期与最后管理员保护
+
+- 日期：2026-09-05；提交 `70d4669`。
+- 交付：`internal/users` 服务（创建/列表/禁用/启用/撤销会话/删除）+ `internal/httpapi/users.go` 管理端点；创建强制 member 角色、must_change_password=1、共享用户名规则与密码策略；最后管理员保护为写锁内的条件化单语句（禁用/删除同款），并发删除/禁用不能移除最后一个活跃管理员；禁止删除自己（先于确认比较）；删除要求精确匹配展示用户名，事务内级联会话（FK）、个人与本人创建共享条目（含 item_versions）、操作者绑定幂等记录，审计保留不透明 ID；新增 `POST /users/{id}/revoke-sessions` 并同步 OpenAPI；不提供角色变更、管理员重置密码或读取当前密码接口。
+- 验证命令与结果：
+  - `go test ./tests/integration -run 'TestUsers|TestMemberFirstLogin|TestLastAdmin' -v`：通过——member 访问全部管理端点 403、未认证 401、创建校验与大小写归一冲突 409、幂等创建重放同 ID/同键异内容 409/并发同键恰好 1 个成员、首登限制与改密解锁、禁用即时 401/禁用后登录 403/启用旧会话不复活、最后管理员自禁 409 LAST_ADMIN_PROTECTED、自删 403、服务级并发互删恰好 1 成功且剩 1 个活跃管理员、删除确认错误/大小写敏感 409、审计故障注入删除整体回滚、级联精确（被删者条目/历史/幂等清除，他人条目保留，审计保留且无用户名快照）、revoke-sessions 只杀会话不改状态。
+  - `go vet ./...`、`go test -race -count=1 ./...`、`git diff --check`：通过。
+- 证据路径：`internal/users/service.go`、`internal/httpapi/users.go`、`tests/integration/users_test.go`。
+- 后续范围：删除页面的导出提示与用户名确认 UI 在 T15；真实条目 API 级联回归记入 T11（本轮用合成夹具）。
+
+## T10 · 集中权限策略与完整矩阵
+
+- 日期：2026-09-05；提交 `3f67f9c`。
+- 交付：`internal/vault/policy.go` 集中策略——读写分离（`CanReadItem`/`Can`），个人条目属主独占（管理员无特权），共享条目全员可读但一切变更（update/trash/restore/purge/favorite/tag/history_restore）与 export 仅创建者（D06/D10）；创建归属声明必须与操作者一致；`ValidateImmutableOwnership` 拒绝更新转移 scope/owner/creator；`CanReference` 要求引用目标可读且可见性兼容（共享源只能引用共享目标）。`tests/fixtures/permissions.json` 为独立于实现推导的期望矩阵：80 行动作 × 角色/范围/关系、8 行创建、6 行引用、4 行不可变归属；`policy_test.go` 逐行断言（103 个子用例），并显式测试管理员对他人个人条目全动作拒绝。
+- 验证命令与结果：`go test ./internal/vault -run TestPolicy -v` 全部通过；`go vet ./...`、全量 race 通过。
+- 证据路径：`internal/vault/policy.go`、`internal/vault/policy_test.go`、`tests/fixtures/permissions.json`。
+- **留给 T11/T17 的真实 API 越权回归（策略单元测试不替代 API 验收）：**
+  1. T11：管理员调用 `GET /items/{memberItemId}`（个人）必须 NOT_FOUND；`PUT/DELETE /items/{id}`、history/history_restore、favorite、tags、purge 越权 403/404；猜 ID 批量探测不可区分存在性；创建时伪造 owner/creator/scope 被 `CanCreate`/服务层拒绝；更新 DTO 携带归属变更被拒；地址引用指向他人个人 identity 或个人条目引用不可读目标 → REFERENCE_FORBIDDEN。
+  2. T17：成员 B/C 读取共享条目 ✓ 但 update/delete/restore/purge/favorite/tag/history_restore/export 创建者外全 403；管理员对他人共享条目同样不能写；批量操作与禁用创建者（数据保留、不可变更）、删除创建者（级联清除）下的权限一致性。
+
+## M2 · 最终验收
+
+- 日期：2026-09-05；提交序列 `311b287`（T07）→ `1d98bf9`（T08）→ `70d4669`（T09）→ `3f67f9c`（T10）→ 本文档提交。
+- 验收项逐条结果：
+  1. 从初始化管理员出发经真实 API 创建成员 ✓（`scripts/test-admin-http.py`：POST /users 201）。
+  2. 成员首登必须改密 ✓（must_change_password=true；`/auth/activity` 403 PASSWORD_CHANGE_REQUIRED；`/auth/session` 放行；改密后解锁）。
+  3. 管理员禁用成员立即使旧会话失效 ✓（disable 后成员会话 401，登录 403 ACCOUNT_DISABLED）。
+  4. 启用后旧会话仍失效，必须重新登录 ✓（enable 后旧会话 401，新登录 200）。
+  5. 普通成员不能管理用户或读取系统审计 ✓（GET/POST /users、GET /admin/audit 均 403）。
+  6. 成员只能读取本人活动 ✓（activity 全部行 actor_id == 本人）。
+  7. 成员创建幂等、权限撤销后回放拒绝 ✓（同键重放 201 同 ID；创建会话注销后重放 401；同键异内容 409 IDEMPOTENCY_KEY_CONFLICT）。
+  8. 用户删除的确认、级联、审计与失败回滚 ✓（确认不符/大小写 409 CONFIRMATION_MISMATCH；审计故障注入 500 后用户与条目原样保留；正确删除后会话级联失效、审计保留不透明 ID 且无用户名快照）。
+  9. 最后管理员并发保护 ✓（自禁 409 LAST_ADMIN_PROTECTED、自删 403；服务级并发互删恰好 1 成功、余 1 个活跃管理员）。
+  10. 权限策略矩阵完整通过 ✓（103 子用例）。
+  11. 合成秘密检查 ✓（SYNSECRET 标记注入请求体；容器日志、数据库与 WAL 文件、审计行、成员列表响应均无泄漏；初始化令牌仅 1 次专用事件）。
+  12. M1/T06 既有测试继续通过 ✓（全量套件包含 setup/auth/migration/health 集成测试与容器 E2E 重启/并发验收）。
+- 验证命令与结果（M2 收尾全量）：
+  - `go vet ./...`：通过。
+  - `go test ./... -count=1`：10 个包全部通过。
+  - `go test -race -count=1 ./...`：全部通过。
+  - OpenAPI 校验：`api/openapi.yaml` 解析通过；40 路径、30 schemas、195 处 `$ref` 全部可解析（新增 revoke-sessions 端点）。
+  - `sudo -n docker build -t tiny-password:m2 .`：成功（包含前端 npm ci/typecheck/test/build 链路，本轮未改动前端源码）。
+  - `IMAGE=tiny-password:m2 bash scripts/test-e2e.sh`：PASS——M1 初始化/重启/并发验收 + T06 认证流 + T09/M2 管理流 + 秘密扫描 + 并发初始化 1×200/7×409。
+  - `git diff --check`：通过。
+- 未运行检查：前端 Vitest/Playwright 未在本轮宿主机单独执行（未触及前端源码；镜像构建内含前端构建链）；真实 R2/浏览器 E2E 属后续里程碑范围。
+- M2 退出门槛判定：**满足**——会话即时撤销、完整策略矩阵通过、成员生命周期与最后管理员保护经真实 API 验收；真实条目 API 防越权按计划留待 M3（T11/T17 清单见上）。

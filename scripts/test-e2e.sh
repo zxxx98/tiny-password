@@ -112,6 +112,22 @@ echo "e2e: setup stays closed after restart; no new token issued"
 # T06: exercise the compiled authentication service before resetting the instance.
 python3 scripts/test-auth-http.py "$BASE"
 
+# M2 acceptance: member lifecycle, last-admin protection, deletion cascade,
+# idempotent member creation — all over the real API.
+python3 scripts/test-admin-http.py "$BASE"
+
+# Synthetic secrets transit request bodies during the acceptance flows; they
+# must never reach the container logs or the database/WAL files.
+if $DOCKER logs "$CONTAINER_NAME" 2>&1 | grep -q "SYNSECRET"; then
+  echo "e2e: synthetic secret found in container logs"; exit 1
+fi
+for dbfile in tiny-password.db tiny-password.db-wal tiny-password.db-shm; do
+  if [ -f "$TP_TEST_DATA_DIR/$dbfile" ] && grep -aq "SYNSECRET" "$TP_TEST_DATA_DIR/$dbfile"; then
+    echo "e2e: synthetic secret found in $dbfile"; exit 1
+  fi
+done
+echo "e2e: no synthetic secrets in logs or database"
+
 # Concurrency: exactly one of N racing inits may succeed.
 $DOCKER rm -f "$CONTAINER_NAME" >/dev/null
 rm -rf "$TP_TEST_DATA_DIR"; mkdir -p "$TP_TEST_DATA_DIR"; chmod 0777 "$TP_TEST_DATA_DIR"
