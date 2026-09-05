@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,6 +72,46 @@ func (c *CursorCodec) Encode(actor, filters string, sort []string) string {
 // contract caps cursors at 512 characters, this allows headroom for legitimate
 // encodings while rejecting abusive payloads.
 const maxCursorTokenBytes = 4 << 10
+
+const (
+	defaultPageSize  = 50
+	maxPageSize      = 100
+	pageSizeTooLarge = "limit must be between 1 and 100"
+)
+
+// DecodeCursorParams validates limit/cursor query parameters against the
+// actor and the endpoint's filter identity and returns the keyset position.
+// It writes the stable error envelope and returns ok=false on rejection.
+func DecodeCursorParams(w http.ResponseWriter, r *http.Request, codec *CursorCodec, actor, filters string) (beforeCreated, beforeID string, limit int, ok bool) {
+	limit = defaultPageSize
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > maxPageSize {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", pageSizeTooLarge)
+			return "", "", 0, false
+		}
+		limit = n
+	}
+	if token := r.URL.Query().Get("cursor"); token != "" {
+		sort, err := codec.Decode(token, actor, filters)
+		if err != nil || len(sort) != 2 {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid or expired cursor")
+			return "", "", 0, false
+		}
+		beforeCreated, beforeID = sort[0], sort[1]
+	}
+	return beforeCreated, beforeID, limit, true
+}
+
+// CursorPageResponse renders one keyset page, sealing the next cursor when
+// the page is full.
+func CursorPageResponse(codec *CursorCodec, actor, filters string, items any, lastCreated, lastID string) map[string]any {
+	var next any
+	if lastCreated != "" {
+		next = codec.Encode(actor, filters, []string{lastCreated, lastID})
+	}
+	return map[string]any{"items": items, "next_cursor": next}
+}
 
 // Decode verifies the MAC, expiry, actor binding and filter binding, then
 // returns the stored sort position.

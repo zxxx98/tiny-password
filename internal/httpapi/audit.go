@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
@@ -20,45 +19,16 @@ type AuditDeps struct {
 	Session *auth.Service
 }
 
-const defaultPageSize = 50
-
-// cursorParams extracts the decoded keyset position and effective page size.
-// Cursor decoding is bound to the actor and the endpoint's filter identity.
-func (d AuditDeps) cursorParams(w http.ResponseWriter, r *http.Request, actor, filters string) (beforeCreated, beforeID string, limit int, ok bool) {
-	limit = defaultPageSize
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > 100 {
-			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "limit must be between 1 and 100")
-			return "", "", 0, false
-		}
-		limit = n
-	}
-	if token := r.URL.Query().Get("cursor"); token != "" {
-		sort, err := d.Cursor.Decode(token, actor, filters)
-		if err != nil || len(sort) != 2 {
-			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid or expired cursor")
-			return "", "", 0, false
-		}
-		beforeCreated, beforeID = sort[0], sort[1]
-	}
-	return beforeCreated, beforeID, limit, true
-}
-
-func pageResponse(codec *CursorCodec, actor, filters string, page audit.Page) map[string]any {
-	var next any
-	if page.LastCreated != "" {
-		next = codec.Encode(actor, filters, []string{page.LastCreated, page.LastID})
-	}
-	return map[string]any{"items": page.Entries, "next_cursor": next}
-}
+const (
+	activityFilters = "v1:activity"
+	systemFilters   = "v1:system"
+)
 
 func registerAudit(api *http.ServeMux, deps AuditDeps) {
 	// Personal activity: the caller's own redacted events only (D08).
 	api.Handle("GET /api/v1/auth/activity", RequireSession(deps.Session, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := CurrentPrincipal(r.Context())
-		const filters = "v1:activity"
-		beforeCreated, beforeID, limit, ok := deps.cursorParams(w, r, p.UserID, filters)
+		beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, deps.Cursor, p.UserID, activityFilters)
 		if !ok {
 			return
 		}
@@ -67,19 +37,18 @@ func registerAudit(api *http.ServeMux, deps AuditDeps) {
 			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the activity query failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, pageResponse(deps.Cursor, p.UserID, filters, page))
+		writeJSON(w, http.StatusOK, CursorPageResponse(deps.Cursor, p.UserID, activityFilters, page.Entries, page.LastCreated, page.LastID))
 	})))
 
 	// System audit: admin only (design §5.2).
 	api.Handle("GET /api/v1/admin/audit", RequireAdmin(deps.Session, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const filters = "v1:system"
 		event := r.URL.Query().Get("event")
 		if event != "" && !audit.ValidEventName(event) {
 			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "unknown event filter")
 			return
 		}
 		p := CurrentPrincipal(r.Context())
-		beforeCreated, beforeID, limit, ok := deps.cursorParams(w, r, p.UserID, filters)
+		beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, deps.Cursor, p.UserID, systemFilters)
 		if !ok {
 			return
 		}
@@ -88,7 +57,7 @@ func registerAudit(api *http.ServeMux, deps AuditDeps) {
 			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the audit query failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, pageResponse(deps.Cursor, p.UserID, filters, page))
+		writeJSON(w, http.StatusOK, CursorPageResponse(deps.Cursor, p.UserID, systemFilters, page.Entries, page.LastCreated, page.LastID))
 	})))
 }
 

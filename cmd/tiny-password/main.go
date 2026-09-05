@@ -24,6 +24,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/platform/config"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
+	"github.com/tiny-password/tiny-password/internal/users"
 	"github.com/tiny-password/tiny-password/internal/webassets"
 	"github.com/tiny-password/tiny-password/migrations"
 )
@@ -119,6 +120,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("auth service: %w", err)
 	}
+	usersService := users.NewService(db.DB, users.Options{Audit: auditService})
 
 	server := &http.Server{
 		Addr: addr,
@@ -129,6 +131,7 @@ func run(logger *slog.Logger) error {
 			Proxy:  proxy,
 			Auth:   &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
 			Audit:  &httpapi.AuditDeps{Service: auditService, DB: db, Cursor: cursorCodec, Session: authService},
+			Users:  &httpapi.UsersDeps{Service: usersService, Session: authService, Cursor: cursorCodec, Idempotency: idempotencyService},
 			Setup: &httpapi.SetupDeps{
 				Service:     bootService,
 				CSRF:        csrf,
