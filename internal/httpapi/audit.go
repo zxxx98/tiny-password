@@ -47,13 +47,18 @@ func registerAudit(api *http.ServeMux, deps AuditDeps) {
 			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "unknown event filter")
 			return
 		}
+		result := r.URL.Query().Get("result")
+		if result != "" && result != "success" && result != "failure" {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "unknown result filter")
+			return
+		}
 		p := CurrentPrincipal(r.Context())
-		filters := systemFilters + ":event=" + event
+		filters := systemFilters + ":event=" + event + ":result=" + result
 		beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, deps.Cursor, p.UserID, filters)
 		if !ok {
 			return
 		}
-		page, err := deps.Service.System(r.Context(), deps.DB.DB, event, beforeCreated, beforeID, limit)
+		page, err := deps.Service.System(r.Context(), deps.DB.DB, event, result, beforeCreated, beforeID, limit)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the audit query failed")
 			return

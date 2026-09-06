@@ -18,6 +18,9 @@ type ReadyChecker struct {
 	Timeout        time.Duration
 }
 
+// Run exposes the readiness checks to the admin settings endpoint.
+func (rc *ReadyChecker) Run(ctx context.Context) (map[string]bool, bool) { return rc.run(ctx) }
+
 func (rc *ReadyChecker) run(ctx context.Context) (map[string]bool, bool) {
 	checks := map[string]bool{}
 	ok := true

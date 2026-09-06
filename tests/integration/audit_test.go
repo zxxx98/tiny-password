@@ -88,7 +88,7 @@ func (auditFaultError) Error() string { return "injected audit failure" }
 // auditRows returns all audit rows, newest first.
 func (h *auditHarness) auditRows(t *testing.T) []audit.Entry {
 	t.Helper()
-	page, err := h.auditSvc.System(t.Context(), h.db.DB, "", "", "", 1000)
+	page, err := h.auditSvc.System(t.Context(), h.db.DB, "", "", "", "", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

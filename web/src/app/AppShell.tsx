@@ -17,7 +17,12 @@ const baseNavItems: NavItem[] = [
   { to: "/account", label: "账户" },
 ];
 
-const adminNavItems: NavItem[] = [{ to: "/admin/users", label: "管理" }];
+const adminNavItems: NavItem[] = [
+  { to: "/admin/users", label: "成员" },
+  { to: "/admin/backups", label: "备份" },
+  { to: "/admin/audit", label: "审计" },
+  { to: "/admin/settings", label: "系统" },
+];
 
 export function navItemsFor(role: "admin" | "member" | null): NavItem[] {
   return role === "admin" ? [...baseNavItems, ...adminNavItems] : [...baseNavItems];

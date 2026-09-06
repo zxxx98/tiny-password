@@ -132,11 +132,20 @@ func (s *Service) Activity(ctx context.Context, db *sql.DB, actorID, beforeCreat
 
 // System returns all events (admin only), optionally filtered by exact event
 // name. The filter string is server-checked against the allowlist upstream.
-func (s *Service) System(ctx context.Context, db *sql.DB, event, beforeCreated, beforeID string, limit int) (Page, error) {
+// System queries the redacted audit trail for admins. event and result
+// (success|failure) are optional filters (T27 audit page).
+func (s *Service) System(ctx context.Context, db *sql.DB, event, result, beforeCreated, beforeID string, limit int) (Page, error) {
+	predicate := `1 = 1`
+	var args []any
 	if event != "" {
-		return s.query(ctx, db, `event = ?`, []any{event}, beforeCreated, beforeID, limit)
+		predicate += ` AND event = ?`
+		args = append(args, event)
 	}
-	return s.query(ctx, db, `1 = 1`, nil, beforeCreated, beforeID, limit)
+	if result != "" {
+		predicate += ` AND result = ?`
+		args = append(args, result)
+	}
+	return s.query(ctx, db, predicate, args, beforeCreated, beforeID, limit)
 }
 
 func (s *Service) query(ctx context.Context, db *sql.DB, predicate string, predArgs []any, beforeCreated, beforeID string, limit int) (Page, error) {

@@ -49,7 +49,7 @@ describe("AppShell", () => {
         <p>内容</p>
       </AppShell>,
     );
-    expect(screen.queryByRole("link", { name: "管理" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "成员" })).not.toBeInTheDocument();
     unmount();
 
     sessionStore.set({
@@ -67,7 +67,10 @@ describe("AppShell", () => {
         <p>内容</p>
       </AppShell>,
     );
-    expect(screen.getAllByRole("link", { name: "管理" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: "成员" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: "备份" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: "审计" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("link", { name: "系统" }).length).toBeGreaterThan(0);
   });
 });
 

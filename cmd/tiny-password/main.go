@@ -29,6 +29,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/platform/objectstore"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 	"github.com/tiny-password/tiny-password/internal/scheduler"
+	"github.com/tiny-password/tiny-password/internal/settings"
 	"github.com/tiny-password/tiny-password/internal/transfer"
 	"github.com/tiny-password/tiny-password/internal/users"
 	"github.com/tiny-password/tiny-password/internal/vault"
@@ -230,6 +231,23 @@ func run(logger *slog.Logger) error {
 	sched.Start(context.WithoutCancel(context.Background()))
 	defer sched.Stop()
 
+	// Admin backup/settings endpoints (T27). The manual passphrase and
+	// delivery configuration live in the runner options; the R2 non-
+	// sensitive half is persisted in the settings service.
+	settingsService := settings.NewService(db.DB)
+	var backupsDeps *httpapi.BackupsDeps
+	if backupRunner != nil {
+		backupsDeps = &httpapi.BackupsDeps{
+			Runner:     backupRunner,
+			DB:         db,
+			LocalDir:   envOr("TP_BACKUP_DIR", filepath.Join(dataDir, "backups")),
+			R2:         scheduledR2,
+			Passphrase: readOptionalSecret("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase"),
+			Session:    authService,
+			Cursor:     cursorCodec,
+		}
+	}
+
 	server := &http.Server{
 		Addr: addr,
 		Handler: httpapi.New(httpapi.Options{
@@ -243,6 +261,14 @@ func run(logger *slog.Logger) error {
 			Items:      itemsDeps,
 			Generators: &httpapi.GeneratorsDeps{Session: authService},
 			Transfer:   transferDeps,
+			Backups:    backupsDeps,
+			Settings: &httpapi.SettingsDeps{
+				Settings:  settingsService,
+				Session:   authService,
+				Scheduler: sched,
+				Version:   version,
+				Ready:     func() (map[string]bool, bool) { return ready.Run(context.Background()) },
+			},
 			Setup: &httpapi.SetupDeps{
 				Service:     bootService,
 				CSRF:        csrf,

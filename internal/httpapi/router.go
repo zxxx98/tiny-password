@@ -31,6 +31,10 @@ type Options struct {
 	Generators *GeneratorsDeps
 	// Transfer wires the personal import/export endpoints.
 	Transfer *TransferDeps
+	// Backups wires the admin backup endpoints (jobs, runs, manual run).
+	Backups *BackupsDeps
+	// Settings wires the admin system-settings endpoints.
+	Settings *SettingsDeps
 	// Logger receives one structured access-log record per request; nil
 	// disables access logging (tests).
 	Logger *slog.Logger
@@ -101,6 +105,12 @@ func registerAPIRoutes(api *http.ServeMux, opts Options) {
 	}
 	if opts.Transfer != nil {
 		registerTransfer(api, *opts.Transfer)
+	}
+	if opts.Backups != nil {
+		registerBackups(api, *opts.Backups)
+	}
+	if opts.Settings != nil {
+		registerSettings(api, *opts.Settings)
 	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "resource not found")

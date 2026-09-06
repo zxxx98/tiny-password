@@ -6,6 +6,9 @@ import { SessionBoundary } from "./features/auth/SessionBoundary";
 import { SetupPage } from "./features/auth/SetupPage";
 import { TransferPage } from "./features/transfer/TransferPage";
 import { UsersPage } from "./features/admin/UsersPage";
+import { BackupsPage } from "./features/admin/BackupsPage";
+import { AuditPage } from "./features/admin/AuditPage";
+import { SettingsPage } from "./features/admin/SettingsPage";
 import { GeneratorPage } from "./features/generator/GeneratorPage";
 import { VaultPage } from "./features/vault/VaultPage";
 
@@ -45,6 +48,9 @@ const routes = [
   { path: "/account", element: protectedRoute(<AccountPage />) },
   { path: "/account/activity", element: protectedRoute(<ActivityPage />) },
   { path: "/admin/users", element: protectedRoute(<UsersPage />, true) },
+  { path: "/admin/backups", element: protectedRoute(<BackupsPage />, true) },
+  { path: "/admin/audit", element: protectedRoute(<AuditPage />, true) },
+  { path: "/admin/settings", element: protectedRoute(<SettingsPage />, true) },
 ];
 
 export function App() {

@@ -76,6 +76,135 @@ func LoadJobConfigs(db *sql.DB) ([]JobConfig, error) {
 	return configs, rows.Err()
 }
 
+// JobUpdate is the whitelisted, non-sensitive configuration one target's
+// job accepts from the admin API (T27). Credentials are never part of it.
+type JobUpdate struct {
+	Target           Target
+	Enabled          bool
+	ScheduleTime     string // "HH:MM" or empty (disabled schedule)
+	ScheduleTimezone string // IANA name; empty = UTC
+	RetentionDaily   int
+	RetentionWeekly  int
+	RetentionMonthly int
+}
+
+var jobUpdateTarget = map[Target]bool{TargetLocal: true, TargetR2: true}
+
+// UpdateJobConfig validates and upserts one target's job row.
+func UpdateJobConfig(db *sql.DB, u JobUpdate) error {
+	if !jobUpdateTarget[u.Target] {
+		return fmt.Errorf("backup: unsupported target %q", u.Target)
+	}
+	if u.ScheduleTime != "" {
+		if _, _, err := scheduler.ParseDailyTime(u.ScheduleTime); err != nil {
+			return err
+		}
+	}
+	if _, err := scheduler.LoadLocation(u.ScheduleTimezone); err != nil {
+		return fmt.Errorf("backup: invalid timezone: %w", err)
+	}
+	for _, n := range []int{u.RetentionDaily, u.RetentionWeekly, u.RetentionMonthly} {
+		if n < 0 || n > 999 {
+			return fmt.Errorf("backup: retention counts must be 0-999")
+		}
+	}
+	enabled := 0
+	if u.Enabled {
+		enabled = 1
+	}
+	_, err := db.Exec(
+		`INSERT INTO backup_jobs (id, target, enabled, schedule_time, schedule_timezone, retention_daily, retention_weekly, retention_monthly, updated_at)
+		 VALUES ('job-' || ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(target) DO UPDATE SET
+		   enabled = excluded.enabled, schedule_time = excluded.schedule_time,
+		   schedule_timezone = excluded.schedule_timezone,
+		   retention_daily = excluded.retention_daily,
+		   retention_weekly = excluded.retention_weekly,
+		   retention_monthly = excluded.retention_monthly,
+		   updated_at = excluded.updated_at`,
+		string(u.Target), string(u.Target), enabled, nullIfEmpty(u.ScheduleTime),
+		nullIfEmpty(u.ScheduleTimezone), u.RetentionDaily, u.RetentionWeekly, u.RetentionMonthly,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("store backup job: %w", err)
+	}
+	return nil
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// RunRow is one backup_runs entry for the admin history listing.
+type RunRow struct {
+	ID          string  `json:"id"`
+	Target      string  `json:"target"`
+	Status      string  `json:"status"`
+	TriggeredBy string  `json:"triggered_by"`
+	StartedAt   string  `json:"started_at"`
+	FinishedAt  *string `json:"finished_at,omitempty"`
+	SizeBytes   *int64  `json:"size_bytes,omitempty"`
+	SHA256      *string `json:"sha256,omitempty"`
+	ErrorCode   *string `json:"error_code,omitempty"`
+}
+
+// ListRuns pages through run history (newest first), optionally filtered
+// by target.
+func ListRuns(db *sql.DB, target, beforeCreated, beforeID string, limit int) ([]RunRow, error) {
+	query := `SELECT id, target, status, triggered_by, started_at, finished_at, size_bytes, sha256, error_code
+	          FROM backup_runs`
+	var args []any
+	if target != "" {
+		query += ` WHERE target = ?`
+		args = append(args, target)
+	}
+	if beforeCreated != "" {
+		if target != "" {
+			query += ` AND`
+		} else {
+			query += ` WHERE`
+		}
+		query += ` (started_at < ? OR (started_at = ? AND id < ?))`
+		args = append(args, beforeCreated, beforeCreated, beforeID)
+	}
+	query += ` ORDER BY started_at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list backup runs: %w", err)
+	}
+	defer rows.Close()
+	var out []RunRow
+	for rows.Next() {
+		var row RunRow
+		var finished, sha, code sql.NullString
+		var size sql.NullInt64
+		if err := rows.Scan(&row.ID, &row.Target, &row.Status, &row.TriggeredBy,
+			&row.StartedAt, &finished, &size, &sha, &code); err != nil {
+			return nil, err
+		}
+		if finished.Valid {
+			row.FinishedAt = &finished.String
+		}
+		if size.Valid {
+			row.SizeBytes = &size.Int64
+		}
+		if sha.Valid {
+			row.SHA256 = &sha.String
+		}
+		if code.Valid {
+			row.ErrorCode = &code.String
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // ScheduledJobs returns one scheduler job per enabled target that has a
 // daily schedule. The passphrase and delivery configuration come from the
 // runner options (secret files), never from the database.

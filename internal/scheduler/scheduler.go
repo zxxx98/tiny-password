@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -281,6 +282,22 @@ func (s *Scheduler) rememberRun(jobName, runKey string) {
 
 func (s *Scheduler) markerKey(jobName string) string {
 	return s.prefix + ".lastrun." + jobName
+}
+
+// Results snapshots the most recent result of every job (admin API).
+func (s *Scheduler) Results() []Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.lastResult))
+	for name := range s.lastResult {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]Result, 0, len(names))
+	for _, name := range names {
+		out = append(out, s.lastResult[name])
+	}
+	return out
 }
 
 // LastResult reports the most recent result of one job (admin API).

@@ -32,9 +32,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Synthetic master key (test only).
+# Synthetic master key and backup passphrase (test only).
 head -c 32 /dev/urandom > "$WORK/master_key"
 chmod 0600 "$WORK/master_key"
+printf '%s' "e2e-backup-passphrase-1" > "$WORK/backup_passphrase"
+chmod 0600 "$WORK/backup_passphrase"
 
 # A previous failed run may have left the server bound to the port.
 pkill -f "tiny-password-e2e-bin" 2>/dev/null || true
@@ -60,6 +62,7 @@ fi
 TP_ADDR="127.0.0.1:$E2E_PORT" \
 TP_DATA_DIR="$WORK/data" \
 TP_MASTER_KEY_FILE="$WORK/master_key" \
+TP_BACKUP_PASSPHRASE_FILE="$WORK/backup_passphrase" \
 TP_ALLOW_INSECURE_COOKIES="${TP_ALLOW_INSECURE_COOKIES:-1}" \
 TP_AUTH_LOGIN_LIMIT_PER_MIN="${TP_AUTH_LOGIN_LIMIT_PER_MIN:-100}" \
   setsid "$WORK/tiny-password-e2e-bin" > "$WORK/server.log" 2>&1 &

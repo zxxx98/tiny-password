@@ -205,6 +205,64 @@ func (s *RunSummary) Err() error {
 	return errors.Join(errs...)
 }
 
+// ValidateRunInput performs the pre-flight checks shared by Run and
+// RunAsync (T27: the manual-run endpoint refuses misconfiguration with a
+// synchronous error before answering 202).
+func (r *Runner) ValidateRunInput(input RunInput) error {
+	switch input.Trigger {
+	case TriggerManual, TriggerScheduled:
+	default:
+		return fmt.Errorf("backup: invalid trigger %q", input.Trigger)
+	}
+	if len(input.Targets) == 0 {
+		return errors.New("backup: no targets requested")
+	}
+	for _, t := range dedupTargets(input.Targets) {
+		switch t {
+		case TargetLocal:
+			if input.LocalDir == "" {
+				return fmt.Errorf("backup: local dir missing for local target")
+			}
+		case TargetR2:
+			if input.R2 == nil || input.R2.Client == nil {
+				return fmt.Errorf("backup: r2 delivery is not configured")
+			}
+		default:
+			return fmt.Errorf("backup: unsupported target %q", t)
+		}
+	}
+	if input.Passphrase == "" || hasLineBreak(input.Passphrase) {
+		return ErrPassphraseInvalid
+	}
+	return nil
+}
+
+// RunAsync starts a backup in the background when the process mutex is
+// free (T27 manual trigger). It reports started=false when a run is
+// already in progress (HTTP 409 BACKUP_BUSY) and a validation error for
+// misconfiguration.
+func (r *Runner) RunAsync(ctx context.Context, input RunInput) (bool, error) {
+	if err := r.ValidateRunInput(input); err != nil {
+		return false, err
+	}
+	select {
+	case instanceMutex <- struct{}{}:
+	default:
+		return false, nil
+	}
+	// The run outlives the HTTP request: detach the cancellation signal
+	// (values like the request id are preserved) so finishing the response
+	// cannot kill the backup.
+	detached := context.WithoutCancel(ctx)
+	go func() {
+		defer func() { <-instanceMutex }()
+		if _, err := r.run(detached, input); err != nil {
+			r.opts.Logger.Error("async backup run failed", "error", err.Error())
+		}
+	}()
+	return true, nil
+}
+
 // Run executes one backup: consistent snapshot → manifest → encrypted
 // archive → full verification → per-target delivery. Manual and scheduled
 // runs share the process mutex; an overlapping run returns ErrBusy without
@@ -243,7 +301,11 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (*RunSummary, error) {
 	default:
 		return nil, ErrBusy
 	}
+	return r.run(ctx, input)
+}
 
+// run is the lock-free body of Run (the caller holds instanceMutex).
+func (r *Runner) run(ctx context.Context, input RunInput) (*RunSummary, error) {
 	// One lifecycle row per target; they share the archive phase and then
 	// report independently.
 	runIDs := map[Target]string{}
