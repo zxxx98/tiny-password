@@ -390,13 +390,15 @@
 
 **新增：** `internal/backup/{manifest,snapshot,runner,local}.go`、`tests/integration/backup_local_test.go`。
 
-- [ ] 先写持续并发写入期间备份、空间不足、错误密码、损坏校验、取消与互斥测试。
-- [ ] 获取实例内互斥锁；创建 Online Backup 快照，不直接复制活动 SQLite/WAL 文件，也不持有长写事务压缩。
-- [ ] manifest 写格式/应用/schema 版本、ID、UTC 时间、实例 ID、架构以及每个文件的大小/SHA-256。
-- [ ] 归档仅含快照、源主密钥和允许的非敏感配置；不含 R2 凭据、Tunnel token、备份密码、TLS 密钥或运行日志。
-- [ ] 重新打开归档验证全部文件后在本地同文件系统原子发布；失败不生成成功记录，不触发保留清理。
+- [x] 先写持续并发写入期间备份、空间不足、错误密码、损坏校验、取消与互斥测试。（2026-09-06：backup_local_test.go 7 用例；并发写入以 10 行/事务批写并在快照内断言批一致性，错误密码=空口令、损坏=注入篡改钩子、取消/互斥/空间经 Hooks 注入）
+- [x] 获取实例内互斥锁；创建 Online Backup 快照，不直接复制活动 SQLite/WAL 文件，也不持有长写事务压缩。（进程级 instanceMutex（手动/定时/T23 调度共享），重叠返回 BACKUP_BUSY；快照经 sqlite.Snapshot（Online Backup API + journal_mode=DELETE 归一化），归档/验证期间无源库事务）
+- [x] manifest 写格式/应用/schema 版本、ID、UTC 时间、实例 ID、架构以及每个文件的大小/SHA-256。（manifest.go：format_version=1、app_version、schema_version、backup_id（UUIDv7）、created_at（UTC RFC3339Nano）、instance_id（system_state 首用生成）、GOOS/GOARCH、每文件 size+SHA256）
+- [x] 归档仅含快照、源主密钥和允许的非敏感配置；不含 R2 凭据、Tunnel token、备份密码、TLS 密钥或运行日志。（归档=manifest.json + db/tiny-password.db + secrets/master_key(0600) 三文件白名单，验证时逐项核对提取集与清单、多余/缺失即拒；不存在"允许的非敏感配置"文件）
+- [x] 重新打开归档验证全部文件后在本地同文件系统原子发布；失败不生成成功记录，不触发保留清理。（ExtractLimited 复检：白名单/文件数/展开总量/逐文件 SHA256/integrity_check=ok；LocalStore.Publish 复制到目标目录隐藏临时名→fsync→SHA256 复核→同文件系统 rename；失败行 error_code 稳定码且无 succeeded 记录）
 
 **验证：** `go test ./tests/integration -run TestBackupLocal -v`；解出快照完整性为 `ok`，故障后旧备份仍在，tmpfs 工作目录为空。
+
+**完成记录（2026-09-06）：** 7/7 通过（并发写入期间快照批一致性 + integrity ok、空口令拒绝、损坏归档拒绝且旧备份保留、取消清理、进程级互斥 BACKUP_BUSY、空间不足、配置校验）；`go vet ./...`、全量 `go test ./...`（全量包内 items 并发 CAS 用例曾因负载抖动 503 DATABASE_BUSY 一次，隔离与重跑均通过）、`go test -race ./internal/backup ./internal/platform/archive` 与 `-run TestBackup -race` 通过。archive 适配器新增 Limits/ExtractLimited/Timeout（个人迁移默认值不变）；实例归档上限显式配置默认 1 GiB、单次 7z 10 分钟。
 
 **建议提交：** `feat: create verified local instance backups`。
 

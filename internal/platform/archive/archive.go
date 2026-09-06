@@ -39,6 +39,41 @@ const (
 	extractTimeout = 120 * time.Second
 )
 
+// Limits parameterizes the archive size caps and per-invocation budget.
+// Personal import/export uses personalLimits; instance backups pass their
+// own explicitly configured caps (T01: instance archive limits are
+// configuration, not the personal constants).
+type Limits struct {
+	MaxArchiveBytes int64
+	MaxExtractBytes int64
+	MaxFiles        int
+	Timeout         time.Duration
+}
+
+// personalLimits reproduces the personal-archive constants exactly.
+var personalLimits = Limits{
+	MaxArchiveBytes: MaxArchiveBytes,
+	MaxExtractBytes: MaxExtractBytes,
+	MaxFiles:        MaxFiles,
+	Timeout:         extractTimeout,
+}
+
+func (l Limits) withDefaults() Limits {
+	if l.MaxArchiveBytes <= 0 {
+		l.MaxArchiveBytes = MaxArchiveBytes
+	}
+	if l.MaxExtractBytes <= 0 {
+		l.MaxExtractBytes = MaxExtractBytes
+	}
+	if l.MaxFiles <= 0 {
+		l.MaxFiles = MaxFiles
+	}
+	if l.Timeout <= 0 {
+		l.Timeout = extractTimeout
+	}
+	return l
+}
+
 // Errors surfaced to the HTTP layer.
 var (
 	// ErrWrongPassphrase reports a decryption failure (wrong passphrase).
@@ -140,15 +175,20 @@ var sltAttributes = regexp.MustCompile(`(?m)^Attributes = (.{1,40})$`)
 
 var nestedArchiveSuffix = regexp.MustCompile(`(?i)\.(7z|zip|tar|gz|bz2|xz|rar|cab|iso|dmg|jar)$`)
 
-// ValidateEntries enforces the unpack whitelist (plan T19): relative clean
-// paths only, no traversal or absolute paths, no duplicates, no nested
-// archives, no device entries, and the count/total-size limits.
+// ValidateEntries enforces the personal unpack whitelist (plan T19):
+// relative clean paths only, no traversal or absolute paths, no duplicates,
+// no nested archives, no device entries, and the count/total-size limits.
 func ValidateEntries(entries []Entry) error {
+	return validateEntries(entries, personalLimits)
+}
+
+func validateEntries(entries []Entry, limits Limits) error {
+	limits = limits.withDefaults()
 	if len(entries) == 0 {
 		return fmt.Errorf("%w: archive is empty", ErrBadArchive)
 	}
-	if len(entries) > MaxFiles {
-		return fmt.Errorf("%w: more than %d files", ErrTooLarge, MaxFiles)
+	if len(entries) > limits.MaxFiles {
+		return fmt.Errorf("%w: more than %d files", ErrTooLarge, limits.MaxFiles)
 	}
 	seen := make(map[string]bool, len(entries))
 	var total int64
@@ -178,8 +218,8 @@ func ValidateEntries(entries []Entry) error {
 			total += e.Size
 		}
 	}
-	if total > MaxExtractBytes {
-		return fmt.Errorf("%w: extracted size beyond %d bytes", ErrTooLarge, MaxExtractBytes)
+	if total > limits.MaxExtractBytes {
+		return fmt.Errorf("%w: extracted size beyond %d bytes", ErrTooLarge, limits.MaxExtractBytes)
 	}
 	return nil
 }
@@ -225,6 +265,8 @@ type CreateOptions struct {
 	// WorkDir is the restricted scratch base (tmpfs in deployment).
 	WorkDir    string
 	Passphrase string
+	// Timeout bounds the 7zz invocation; zero uses the personal default.
+	Timeout time.Duration
 }
 
 // Create packs SourceDir's files into one header-encrypted 7z archive and
@@ -246,7 +288,11 @@ func Create(ctx context.Context, opts CreateOptions) (string, error) {
 	// an UNENCRYPTED archive). -mhe encrypts the file names; running inside
 	// the source dir keeps archived paths relative.
 	args := []string{"a", "-t7z", "-mhe=on", "-p", archivePath, "."}
-	ctx, cancel := context.WithTimeout(ctx, extractTimeout)
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = extractTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, err := run(ctx, opts.SourceDir, args, opts.Passphrase+"\n")
 	if err != nil {
@@ -280,20 +326,27 @@ func List(ctx context.Context, archivePath, passphrase, workDir string) ([]Entry
 
 // Extract unpacks the archive into a fresh 0700 directory after validating
 // the file table, then re-verifies the extracted tree on disk. Returns the
-// destination directory; the caller owns cleanup.
+// destination directory; the caller owns cleanup. Personal-archive limits
+// apply.
 func Extract(ctx context.Context, archivePath, passphrase, workDir string) (string, []Entry, error) {
+	return ExtractLimited(ctx, archivePath, passphrase, workDir, personalLimits)
+}
+
+// ExtractLimited is Extract with explicit limits (instance backups).
+func ExtractLimited(ctx context.Context, archivePath, passphrase, workDir string, limits Limits) (string, []Entry, error) {
+	limits = limits.withDefaults()
 	info, err := os.Stat(archivePath)
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: unreadable archive", ErrBadArchive)
 	}
-	if info.Size() > MaxArchiveBytes {
+	if info.Size() > limits.MaxArchiveBytes {
 		return "", nil, ErrTooLarge
 	}
 	entries, err := List(ctx, archivePath, passphrase, workDir)
 	if err != nil {
 		return "", nil, err
 	}
-	if err := ValidateEntries(entries); err != nil {
+	if err := validateEntries(entries, limits); err != nil {
 		return "", nil, err
 	}
 	dest, err := tempWorkspace(workDir)
@@ -301,7 +354,7 @@ func Extract(ctx context.Context, archivePath, passphrase, workDir string) (stri
 		return "", nil, err
 	}
 	args := []string{"x", "-y", archivePath, "-o" + dest}
-	ctx, cancel := context.WithTimeout(ctx, extractTimeout)
+	ctx, cancel := context.WithTimeout(ctx, limits.Timeout)
 	defer cancel()
 	out, runErr := run(ctx, "", args, passphrase+"\n")
 	if runErr != nil {
@@ -309,7 +362,7 @@ func Extract(ctx context.Context, archivePath, passphrase, workDir string) (stri
 		return "", nil, classify(out, runErr)
 	}
 	// Re-verify on disk: header declarations are not trusted.
-	if err := verifyExtracted(dest, entries); err != nil {
+	if err := verifyExtracted(dest, limits); err != nil {
 		os.RemoveAll(dest)
 		return "", nil, err
 	}
@@ -318,7 +371,8 @@ func Extract(ctx context.Context, archivePath, passphrase, workDir string) (stri
 
 // verifyExtracted walks the extracted tree and enforces the same whitelist
 // and size limits against what is actually on disk.
-func verifyExtracted(dest string, entries []Entry) error {
+func verifyExtracted(dest string, limits Limits) error {
+	limits = limits.withDefaults()
 	var files, total int64
 	return filepath.WalkDir(dest, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -336,7 +390,7 @@ func verifyExtracted(dest string, entries []Entry) error {
 		}
 		files++
 		total += info.Size()
-		if files > MaxFiles || total > MaxExtractBytes {
+		if files > int64(limits.MaxFiles) || total > limits.MaxExtractBytes {
 			return ErrTooLarge
 		}
 		_ = path
