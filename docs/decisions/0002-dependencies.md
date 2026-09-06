@@ -41,6 +41,12 @@ Dockerfile 在构建期下载上述 tarball 并校验 SHA256，只把 `7zz` 复�
 | Tailwind CSS | v4（`@tailwindcss/vite` 插件；token 见 `style.md`） |
 | 测试 | Vitest + Testing Library（开发依赖锁定） |
 
+## 对象存储（R2 备份交付）
+
+| 依赖 | 版本/形式 | 说明与验证入口 |
+| --- | --- | --- |
+| R2 S3 客户端 | 无 SDK：`internal/platform/objectstore` 自实现最小 AWS SigV4 REST 子集（仅标准库） | 2026-09-06 核对 Cloudflare 官方文档（`/r2/api/s3/api/`、`/r2/api/s3/tokens/`）：端点 `https://<account>.r2.cloudflarestorage.com`、region `auto`、PutObject/CopyObject/ListObjectsV2 可用、凭据为 S3 Access Key/Secret。签名正确性由独立参考实现测试 + `TestR2Live` 真实服务验收（待凭据）。T22 验证。 |
+
 ## 版本固定规则
 
 1. `go.mod`/`go.sum`、`package-lock.json`、Dockerfile 基础镜像与 7z tarball 摘要是唯一的版本事实来源。

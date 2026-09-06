@@ -27,19 +27,19 @@ func (s LocalStore) Publish(stagedPath, name string) (string, int64, string, err
 	}
 	staged, err := os.Open(stagedPath)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("%w: staged archive unreadable", ErrPublish)
+		return "", 0, "", fmt.Errorf("%w: staged archive unreadable: %v", ErrPublish, err)
 	}
 	defer staged.Close()
 
 	wantSum := sha256.New()
 	size, err := io.Copy(wantSum, staged)
 	if err != nil {
-		return "", 0, "", fmt.Errorf("%w: staged archive unreadable", ErrPublish)
+		return "", 0, "", fmt.Errorf("%w: staged archive unreadable: %v", ErrPublish, err)
 	}
 	want := hex.EncodeToString(wantSum.Sum(nil))
 
 	if _, err := staged.Seek(0, io.SeekStart); err != nil {
-		return "", 0, "", fmt.Errorf("%w: staged archive unreadable", ErrPublish)
+		return "", 0, "", fmt.Errorf("%w: staged archive unreadable: %v", ErrPublish, err)
 	}
 	tmpPath := filepath.Join(s.Dir, ".publish-"+randomName())
 	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)

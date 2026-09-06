@@ -63,10 +63,10 @@ func (h *backupHarness) newRunner(t *testing.T, hooks backup.Hooks) *backup.Runn
 	return runner
 }
 
-func (h *backupHarness) run(t *testing.T, runner *backup.Runner) (*backup.RunResult, error) {
+func (h *backupHarness) run(t *testing.T, runner *backup.Runner) (*backup.RunSummary, error) {
 	t.Helper()
 	return runner.Run(context.Background(), backup.RunInput{
-		Target:     backup.TargetLocal,
+		Targets:    []backup.Target{backup.TargetLocal},
 		Trigger:    backup.TriggerManual,
 		Passphrase: "backup-passphrase-1",
 		LocalDir:   h.localDir,
@@ -153,12 +153,13 @@ func TestBackupLocalSuccessDuringConcurrentWrites(t *testing.T) {
 	defer close(stop)
 	time.Sleep(50 * time.Millisecond) // let the writer land some batches
 
-	result, err := h.run(t, h.runner)
+	summary, err := h.run(t, h.runner)
 	if err != nil {
 		t.Fatalf("backup run failed: %v", err)
 	}
-	if result.SizeBytes <= 0 || result.SHA256 == "" {
-		t.Fatalf("run result incomplete: %+v", result)
+	result := summary.For(backup.TargetLocal)
+	if result == nil || result.SizeBytes <= 0 || result.SHA256 == "" {
+		t.Fatalf("run result incomplete: %+v", summary)
 	}
 
 	// Published atomically under the final name; no staging leftovers.
@@ -270,7 +271,7 @@ func TestBackupLocalSuccessDuringConcurrentWrites(t *testing.T) {
 func TestBackupLocalWrongPassphraseRejected(t *testing.T) {
 	h := newBackupHarness(t)
 	_, err := h.runner.Run(context.Background(), backup.RunInput{
-		Target: backup.TargetLocal, Trigger: backup.TriggerManual,
+		Targets: []backup.Target{backup.TargetLocal}, Trigger: backup.TriggerManual,
 		Passphrase: "", LocalDir: h.localDir,
 	})
 	if !errors.Is(err, backup.ErrPassphraseInvalid) {
@@ -329,7 +330,7 @@ func TestBackupLocalCancelCleansUp(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		_, err := runner.Run(ctx, backup.RunInput{
-			Target: backup.TargetLocal, Trigger: backup.TriggerManual,
+			Targets: []backup.Target{backup.TargetLocal}, Trigger: backup.TriggerManual,
 			Passphrase: "backup-passphrase-1", LocalDir: h.localDir,
 		})
 		errCh <- err
@@ -370,7 +371,7 @@ func TestBackupLocalMutualExclusion(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, err := first.Run(context.Background(), backup.RunInput{
-			Target: backup.TargetLocal, Trigger: backup.TriggerManual,
+			Targets: []backup.Target{backup.TargetLocal}, Trigger: backup.TriggerManual,
 			Passphrase: "backup-passphrase-1", LocalDir: h.localDir,
 		})
 		done <- err
@@ -379,7 +380,7 @@ func TestBackupLocalMutualExclusion(t *testing.T) {
 
 	// A second run (same runner or a sibling instance) must see the busy mutex.
 	if _, err := h.runner.Run(context.Background(), backup.RunInput{
-		Target: backup.TargetLocal, Trigger: backup.TriggerManual,
+		Targets: []backup.Target{backup.TargetLocal}, Trigger: backup.TriggerManual,
 		Passphrase: "backup-passphrase-1", LocalDir: h.localDir,
 	}); !errors.Is(err, backup.ErrBusy) {
 		t.Fatalf("want ErrBusy, got %v", err)

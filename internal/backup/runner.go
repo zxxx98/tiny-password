@@ -2,8 +2,11 @@ package backup
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -145,36 +148,84 @@ func InstanceLimits(maxArchiveBytes int64) archive.Limits {
 
 func (r *Runner) limits() archive.Limits { return InstanceLimits(r.opts.MaxArchiveBytes) }
 
-// RunInput describes one backup execution.
+// RunInput describes one backup execution across independent targets
+// (design §11.2: each target executes and reports on its own).
 type RunInput struct {
-	Target     Target
+	Targets    []Target
 	Trigger    Trigger
 	Passphrase string
 	// LocalDir is the publish directory for TargetLocal.
 	LocalDir string
+	// R2 is the delivery configuration for TargetR2.
+	R2 *R2Delivery
 }
 
-// RunResult reports a delivered archive.
-type RunResult struct {
-	RunID     string
-	BackupID  string
-	Path      string
+// TargetResult reports one target's delivery outcome.
+type TargetResult struct {
+	Target    Target
+	Path      string // local file path or object key
 	SizeBytes int64
 	SHA256    string
+	Err       error
+}
+
+// RunSummary reports one Run across all requested targets.
+type RunSummary struct {
+	BackupID string
+	Results  []TargetResult
+}
+
+// For returns the result of one target.
+func (s *RunSummary) For(t Target) *TargetResult {
+	for i := range s.Results {
+		if s.Results[i].Target == t {
+			return &s.Results[i]
+		}
+	}
+	return nil
+}
+
+// Err joins every delivery failure (nil when all targets succeeded).
+func (s *RunSummary) Err() error {
+	var errs []error
+	for _, res := range s.Results {
+		if res.Err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", res.Target, res.Err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Run executes one backup: consistent snapshot → manifest → encrypted
-// archive → full verification → atomic publish. Manual and scheduled runs
-// share the instance mutex; an overlapping run returns ErrBusy without
-// recording anything. Failures record a failed run row and never publish.
-func (r *Runner) Run(ctx context.Context, input RunInput) (*RunResult, error) {
-	if input.Passphrase == "" || hasLineBreak(input.Passphrase) {
-		return nil, r.recordFailure("", input, ErrPassphraseInvalid)
-	}
+// archive → full verification → per-target delivery. Manual and scheduled
+// runs share the process mutex; an overlapping run returns ErrBusy without
+// recording anything. An archive-phase failure fails every requested
+// target's row; a delivery failure never rewrites another target's result.
+func (r *Runner) Run(ctx context.Context, input RunInput) (*RunSummary, error) {
 	switch input.Trigger {
 	case TriggerManual, TriggerScheduled:
 	default:
 		return nil, fmt.Errorf("backup: invalid trigger %q", input.Trigger)
+	}
+	if len(input.Targets) == 0 {
+		return nil, errors.New("backup: no targets requested")
+	}
+	for _, t := range dedupTargets(input.Targets) {
+		switch t {
+		case TargetLocal:
+			if input.LocalDir == "" {
+				return nil, fmt.Errorf("backup: local dir missing for local target")
+			}
+		case TargetR2:
+			if input.R2 == nil || input.R2.Client == nil {
+				return nil, fmt.Errorf("backup: r2 delivery is not configured")
+			}
+		default:
+			return nil, fmt.Errorf("backup: unsupported target %q", t)
+		}
+	}
+	if input.Passphrase == "" || hasLineBreak(input.Passphrase) {
+		return nil, r.recordFailures(input, ErrPassphraseInvalid)
 	}
 
 	select {
@@ -184,40 +235,98 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (*RunResult, error) {
 		return nil, ErrBusy
 	}
 
-	runID := ident.NewUUIDv7()
-	if err := r.insertRunningRow(runID, input); err != nil {
-		return nil, err
+	// One lifecycle row per target; they share the archive phase and then
+	// report independently.
+	runIDs := map[Target]string{}
+	for _, t := range dedupTargets(input.Targets) {
+		runID := ident.NewUUIDv7()
+		if err := r.insertRunningRow(runID, t, input.Trigger); err != nil {
+			return nil, err
+		}
+		runIDs[t] = runID
 	}
-	result, err := r.execute(ctx, runID, input)
+
+	staged, manifest, err := r.buildAndVerifyArchive(ctx, input)
 	if err != nil {
-		r.failRun(runID, errorCode(err))
+		code := errorCode(err)
+		for _, t := range dedupTargets(input.Targets) {
+			r.failRun(runIDs[t], code)
+		}
 		return nil, err
 	}
-	r.succeedRun(runID, result)
-	return result, nil
+	defer staged.cleanup()
+
+	summary := &RunSummary{BackupID: manifest.BackupID}
+	for _, t := range input.Targets {
+		summary.Results = append(summary.Results, r.deliverTarget(ctx, runIDs[t], t, input, staged, manifest))
+	}
+	return summary, summary.Err()
 }
 
-func (r *Runner) execute(ctx context.Context, runID string, input RunInput) (*RunResult, error) {
-	if input.Target != TargetLocal {
-		return nil, fmt.Errorf("backup: unsupported target %q", input.Target)
-	}
-	if input.LocalDir == "" {
-		return nil, fmt.Errorf("%w: local dir missing", ErrPublish)
-	}
+// stagedArchive is the verified archive and its digest; cleanup drops the
+// whole staging area.
+type stagedArchive struct {
+	path      string
+	sizeBytes int64
+	sha256    string
+	cleanup   func()
+}
 
+// deliverTarget publishes the verified archive on one target and closes
+// that target's run row.
+func (r *Runner) deliverTarget(ctx context.Context, runID string, target Target, input RunInput, staged *stagedArchive, manifest *Manifest) TargetResult {
+	result := TargetResult{Target: target, SizeBytes: staged.sizeBytes, SHA256: staged.sha256}
+	var path string
+	var err error
+	switch target {
+	case TargetLocal:
+		path, result.SizeBytes, result.SHA256, err = LocalStore{Dir: input.LocalDir}.Publish(staged.path, manifest.BackupID+".7z")
+	case TargetR2:
+		path, err = input.R2.Deliver(ctx, staged.path, staged.sizeBytes, staged.sha256, manifest.BackupID)
+	default:
+		err = fmt.Errorf("backup: unsupported target %q", target)
+	}
+	if err != nil {
+		r.failRun(runID, errorCode(err))
+		result.Err = err
+		return result
+	}
+	result.Path = path
+	r.succeedRun(runID, result.SizeBytes, result.SHA256)
+	return result
+}
+
+// buildAndVerifyArchive runs the shared phases 1–6 (snapshot, manifest,
+// archive, verification) and computes the staged archive's digest.
+func (r *Runner) buildAndVerifyArchive(ctx context.Context, input RunInput) (*stagedArchive, *Manifest, error) {
 	// Staging lives inside the restricted work dir; everything is dropped
-	// no matter how the run ends (D11).
+	// no matter how the run ends (D11). cleanup also removes the archive
+	// workspace once archive.Create has produced one. Failure paths clean
+	// via the deferred call; on success the ownership moves to the
+	// caller's stagedArchive.cleanup.
 	staging, err := os.MkdirTemp(r.opts.WorkDir, "run-")
 	if err != nil {
-		return nil, fmt.Errorf("%w: staging dir", ErrInternal)
+		return nil, nil, fmt.Errorf("%w: staging dir", ErrInternal)
 	}
-	defer os.RemoveAll(staging)
+	archiveWS := ""
+	cleanup := func() {
+		os.RemoveAll(staging)
+		if archiveWS != "" {
+			os.RemoveAll(archiveWS)
+		}
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			cleanup()
+		}
+	}()
 	if err := os.Chmod(staging, 0o700); err != nil {
-		return nil, fmt.Errorf("%w: staging dir", ErrInternal)
+		return nil, nil, fmt.Errorf("%w: staging dir", ErrInternal)
 	}
 	for _, sub := range []string{filepath.Dir(SnapshotPath), filepath.Dir(MasterKeyPath)} {
 		if err := os.MkdirAll(filepath.Join(staging, sub), 0o700); err != nil {
-			return nil, fmt.Errorf("%w: staging layout", ErrInternal)
+			return nil, nil, fmt.Errorf("%w: staging layout", ErrInternal)
 		}
 	}
 
@@ -225,36 +334,40 @@ func (r *Runner) execute(ctx context.Context, runID string, input RunInput) (*Ru
 	// of the live WAL files, and no long-held write transaction.
 	snapshotPath := filepath.Join(staging, SnapshotPath)
 	if err := r.opts.DB.Snapshot(ctx, snapshotPath); err != nil {
-		return nil, classifyStep(err, CodeSnapshotFailed)
+		return nil, nil, classifyStep(err, CodeSnapshotFailed)
 	}
 	info, err := os.Stat(snapshotPath)
 	if err != nil {
-		return nil, classifyStep(err, CodeSnapshotFailed)
+		return nil, nil, classifyStep(err, CodeSnapshotFailed)
 	}
 
 	// 2. Space gate: the archive, its verification extract, and slack must
-	// fit in the work dir and the target dir.
+	// fit in the work dir and (for local delivery) the target dir.
 	need := info.Size()*3 + 16<<20
 	if err := r.spaceCheck(r.opts.WorkDir, need); err != nil {
-		return nil, classifyStep(err, CodeSpace)
+		return nil, nil, classifyStep(err, CodeSpace)
 	}
-	if err := r.spaceCheck(input.LocalDir, need); err != nil {
-		return nil, classifyStep(err, CodeSpace)
+	for _, t := range dedupTargets(input.Targets) {
+		if t == TargetLocal {
+			if err := r.spaceCheck(input.LocalDir, need); err != nil {
+				return nil, nil, classifyStep(err, CodeSpace)
+			}
+		}
 	}
 
 	// 3. Master key copy (mode 0600, inside the archive only).
 	if err := os.WriteFile(filepath.Join(staging, MasterKeyPath), r.opts.MasterKeyRaw, 0o600); err != nil {
-		return nil, classifyStep(err, CodeInternal)
+		return nil, nil, classifyStep(err, CodeInternal)
 	}
 
 	// 4. Manifest with schema version, ids, and per-file digests.
 	schemaVersion, err := sqlite.SchemaVersion(r.opts.DB.DB)
 	if err != nil {
-		return nil, classifyStep(err, CodeInternal)
+		return nil, nil, classifyStep(err, CodeInternal)
 	}
 	instanceID, err := EnsureInstanceID(r.opts.DB.DB)
 	if err != nil {
-		return nil, classifyStep(err, CodeInternal)
+		return nil, nil, classifyStep(err, CodeInternal)
 	}
 	backupID := ident.NewUUIDv7()
 	manifest := Manifest{
@@ -269,16 +382,17 @@ func (r *Runner) execute(ctx context.Context, runID string, input RunInput) (*Ru
 	for _, p := range []string{SnapshotPath, MasterKeyPath} {
 		entry, err := fileDigest(staging, p)
 		if err != nil {
-			return nil, classifyStep(err, CodeInternal)
+			return nil, nil, classifyStep(err, CodeInternal)
 		}
 		manifest.Files = append(manifest.Files, entry)
 	}
 	if err := writeManifestFile(staging, &manifest); err != nil {
-		return nil, classifyStep(err, CodeInternal)
+		return nil, nil, classifyStep(err, CodeInternal)
 	}
 
 	// 5. Encrypted archive (AES-256, encrypted file names, passphrase via
-	// stdin only).
+	// stdin only). The archive lives in its own workspace under WorkDir;
+	// from here on cleanup must remove that workspace too.
 	archivePath, err := archive.Create(ctx, archive.CreateOptions{
 		SourceDir:  staging,
 		WorkDir:    r.opts.WorkDir,
@@ -286,35 +400,58 @@ func (r *Runner) execute(ctx context.Context, runID string, input RunInput) (*Ru
 		Timeout:    r.opts.Timeout,
 	})
 	if err != nil {
-		return nil, classifyStep(err, CodeArchiveFailed)
+		return nil, nil, classifyStep(err, CodeArchiveFailed)
 	}
-	defer os.RemoveAll(filepath.Dir(archivePath))
+	archiveWS = filepath.Dir(archivePath)
 
 	// 6. Fault-injection point (tests); then full verification: re-open the
 	// archive, check the extracted set against the manifest whitelist, and
 	// re-verify the snapshot integrity.
 	if r.opts.Hooks.AfterArchiveCreated != nil {
 		if err := r.opts.Hooks.AfterArchiveCreated(ctx, archivePath); err != nil {
-			return nil, classifyStep(err, CodeVerifyFailed)
+			return nil, nil, classifyStep(err, CodeVerifyFailed)
 		}
 	}
 	if err := r.verifyArchive(ctx, archivePath, input.Passphrase, &manifest); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	// 7. Atomic publish on the target filesystem.
-	store := LocalStore{Dir: input.LocalDir}
-	finalPath, size, sha, err := store.Publish(archivePath, backupID+".7z")
+	// The verified archive leaves its own workspace: responsibility for
+	// both scratch areas moves to the caller's stagedArchive.cleanup.
+	size, sha, err := fileHash(archivePath)
 	if err != nil {
-		return nil, classifyStep(err, CodePublishFailed)
+		return nil, nil, classifyStep(err, CodeInternal)
 	}
-	return &RunResult{
-		RunID:     runID,
-		BackupID:  backupID,
-		Path:      finalPath,
-		SizeBytes: size,
-		SHA256:    sha,
-	}, nil
+	handedOff = true // the deferred cleanup must not fire on success
+	staged := &stagedArchive{path: archivePath, sizeBytes: size, sha256: sha, cleanup: cleanup}
+	return staged, &manifest, nil
+}
+
+func dedupTargets(targets []Target) []Target {
+	seen := map[Target]bool{}
+	var out []Target
+	for _, t := range targets {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// fileHash streams a file's size and SHA-256.
+func fileHash(path string) (int64, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, "", err
+	}
+	defer f.Close()
+	sum := sha256.New()
+	size, err := io.Copy(sum, f)
+	if err != nil {
+		return 0, "", err
+	}
+	return size, hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 // verifyArchive re-opens the archive under the instance limits and checks
@@ -453,6 +590,10 @@ func errorCode(err error) string {
 		return CodeVerifyFailed
 	case errors.Is(err, ErrPublish):
 		return CodePublishFailed
+	case errors.Is(err, ErrUploadVerify):
+		return CodeUploadVerifyFaild
+	case errors.Is(err, ErrUpload):
+		return CodeUploadFailed
 	default:
 		return CodeInternal
 	}

@@ -406,13 +406,15 @@
 
 **新增：** `internal/platform/objectstore/r2.go`、`internal/backup/r2.go`、`tests/integration/backup_targets_test.go`、`tests/integration/r2_live_test.go`。
 
-- [ ] 实现前核对官方 [S3 API 兼容性](https://developers.cloudflare.com/r2/api/s3/api/) 与 [认证方式](https://developers.cloudflare.com/r2/api/s3/tokens/)，将使用的 SDK 版本与访问日期记入依赖决策。
-- [ ] R2 access key/secret key 从 Secret 文件获取；数据库只存非敏感 bucket/prefix/启用状态等配置，UI 不回显凭据。
-- [ ] 上传唯一临时对象，回读校验归档 SHA-256 后复制到最终 key，再校验最终对象并清理临时对象；S3 不存在文件系统式 rename，不能把 ETag 一概当 SHA-256。
-- [ ] 本地/R2 各自维护 pending/running/succeeded/failed 状态；归档生成共同失败影响两者，单目标交付失败不改写另一目标成功。
-- [ ] 对网络/限流/服务端暂时故障有限退避重试；认证等永久错误立即报告。中断上传与临时对象有后续清理路径。
+- [x] 实现前核对官方 [S3 API 兼容性](https://developers.cloudflare.com/r2/api/s3/api/) 与 [认证方式](https://developers.cloudflare.com/r2/api/s3/tokens/)，将使用的 SDK 版本与访问日期记入依赖决策。（2026-09-06 核对：端点 `https://<account>.r2.cloudflarestorage.com`、region `auto`、PutObject/CopyObject/ListObjectsV2 支持、凭据为 S3 Access Key/Secret；不引入 SDK，`internal/platform/objectstore` 以标准库自实现最小 SigV4，记入 `docs/decisions/0002-dependencies.md`）
+- [x] R2 access key/secret key 从 Secret 文件获取；数据库只存非敏感 bucket/prefix/启用状态等配置，UI 不回显凭据。（凭据由调用方从 Secret 文件读入 objectstore.Client；backup_jobs.config_json 只存非敏感项；T27 接入管理页）
+- [x] 上传唯一临时对象，回读校验归档 SHA-256 后复制到最终 key，再校验最终对象并清理临时对象；S3 不存在文件系统式 rename，不能把 ETag 一概当 SHA-256。（R2Delivery.Deliver：`incoming/<backupID>-<uuid>.7z` 上传（签名含 payload SHA-256）→ GET 流式回读比对 → CopyObject → HEAD 校验 size → 删临时对象；ETag 仅作参考不作完整性依据）
+- [x] 本地/R2 各自维护 pending/running/succeeded/failed 状态；归档生成共同失败影响两者，单目标交付失败不改写另一目标成功。（Runner.Run 改多目标：每目标一行 backup_runs；归档阶段失败为所有目标写同一错误码；交付阶段互相独立——测试双向验证）
+- [x] 对网络/限流/服务端暂时故障有限退避重试；认证等永久错误立即报告。中断上传与临时对象有后续清理路径。（4 次尝试、指数退避+抖动，429/5xx/传输错误可重试，4xx 立即失败；R2Delivery.CleanupIncoming 按 TTL 清扫 incoming/ 前缀，T23 调度接入）
 
 **验证：** `go test ./tests/integration -run TestBackupTargets -v`；故障注入双向验证独立成功。真实 R2 验收用专用测试 prefix 执行 `go test ./tests/integration -run TestR2Live -v`，需测试凭据；缺凭据标记未完成，不以 mock 替代真实验收。
+
+**完成记录（2026-09-06）：** 16/16 通过 + TestR2Live 按规范跳过（无真实凭据，待 T30 前补验）。双向独立：本地成功 R2 失败（BACKUP_UPLOAD_FAILED）与 R2 成功本地失败（BACKUP_PUBLISH_FAILED）各得其所；归档失败两目标同码；429 退避重试后成功、403 单次即败；回读不一致失败后 incoming 临时对象可经 CleanupIncoming 回收。SigV4 签名经独立参考实现校验（曾定位参考实现自身 Credential 段偏移一处）；`go vet ./...`、race 通过。实现要点：PutObject 每次尝试重开 body（http.Client 会关闭请求体）、Content-Length 走 req.ContentLength 字段。
 
 **建议提交：** `feat: add verified r2 backup delivery`。
 
