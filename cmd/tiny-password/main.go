@@ -73,7 +73,12 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	defer db.Close()
-	if err := sqlite.Migrate(db.DB, migrations.FS); err != nil {
+	// The upgrade guard snapshots non-empty databases before touching the
+	// schema; the data-dir lock is already held (no parallel online writes).
+	if presnapshot, err := sqlite.Upgrade(db, migrations.FS, dataDir, time.Now()); err != nil {
+		if presnapshot != "" {
+			return fmt.Errorf("apply migrations: %w (pre-upgrade snapshot: %s)", err, filepath.Base(presnapshot))
+		}
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 

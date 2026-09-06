@@ -465,14 +465,14 @@
 **修改：** `internal/platform/sqlite/migrate.go`、`cmd/tiny-password/main.go`。
 **新增：** `tests/fixtures/schema-v1.sql`、`tests/integration/upgrade_test.go`、`docs/operations/upgrade.md`。
 
-- [ ] 初始化空库无需旧库快照；非空库升级前获取数据目录锁并创建已验证的一致性快照，禁止与在线写入并行迁移。
-- [ ] SQL 迁移事务化；无法单事务处理的步骤记录可恢复状态；升级失败不进入 ready。
-- [ ] 测试旧 schema 升级成功、迁移中断/失败回原库、重复启动和不支持降级的安全拒绝。
-- [ ] 写明旧镜像/数据/主密钥配套回滚步骤；数据库副本本身仍含加密负载，不能依赖它替代含密钥的整实例归档。
+- [x] 初始化空库无需旧库快照；非空库升级前获取数据目录锁并创建已验证的一致性快照，禁止与在线写入并行迁移。（sqlite.Upgrade 启动守卫：pending=0 直接通过；空库（无应用表）免快照；非空库 Snapshot→integrity_check 后才动手；锁由 main.go 服务生命周期持有，测试以同一原语验证）
+- [x] SQL 迁移事务化；无法单事务处理的步骤记录可恢复状态；升级失败不进入 ready。（逐迁移独立事务自 T03 起保持；失败即中止启动（main 返回错误进程退出，不 ready），失败信息附前置快照路径）
+- [x] 测试旧 schema 升级成功、迁移中断/失败回原库、重复启动和不支持降级的安全拒绝。（upgrade_test.go 5 用例：v1 基线（tests/fixtures/schema-v1.sql=发布版 0001 快照）+synthetic 用户行升级后保留、0003 中断性失败整事务回滚且 0002 保留、中断重启补齐、无 pending 不再快照、空库免快照、schema 新于二进制拒绝且零改动）
+- [x] 写明旧镜像/数据/主密钥配套回滚步骤；数据库副本本身仍含加密负载，不能依赖它替代含密钥的整实例归档。（docs/operations/upgrade.md：主密钥必须同挂载、回滚 A 旧镜像直启/回滚 B 前置快照覆盖 + 清 -wal/-shm、"数据库副本 ≠ 备份"与跨架构说明）
 
 **验证：** `go test ./tests/integration -run TestUpgrade -v`；失败后旧版本镜像配原库可读，升级前快照存在且可校验。
 
-**建议提交：** `feat: guard database upgrades with recoverable snapshots`。
+**完成记录（2026-09-06）：** 5/5 通过；全量 `go test ./...` 回归通过。main.go 启动迁移替换为 Upgrade 守卫；文档 docs/operations/upgrade.md 交付。
 
 ### T27 · 备份、审计和系统设置管理页
 
