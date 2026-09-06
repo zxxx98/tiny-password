@@ -58,6 +58,10 @@ export function SessionBoundary({ children, requireAdmin }: { children: ReactNod
     })();
     return () => {
       cancelled = true;
+      // React StrictMode mounts, cleans up, and mounts effects once in
+      // development. Allow that second setup to perform the restore while
+      // the cancelled first request cannot update state.
+      attempted.current = false;
     };
   }, []);
 

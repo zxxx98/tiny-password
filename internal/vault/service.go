@@ -335,6 +335,13 @@ func (s *Service) Update(ctx context.Context, actor *auth.Principal, id string, 
 	if err != nil {
 		return Detail{}, err
 	}
+	// Address references are part of the encrypted payload, so updates must
+	// enforce the same visibility and target-type rules as creates.
+	if ref, ok := referenceTarget(payload); ok {
+		if err := s.checkReference(ctx, actor, view, ref); err != nil {
+			return Detail{}, err
+		}
+	}
 
 	// Decrypt the current envelope: it supplies the tags when the request
 	// omits them and the canonical bytes for no-change detection.

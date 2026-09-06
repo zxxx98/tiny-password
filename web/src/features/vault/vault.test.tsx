@@ -206,6 +206,37 @@ describe("ItemEditor", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/items/item-1");
   });
+
+  it("uses the refreshed revision after reloading a conflict", async () => {
+    const user = userEvent.setup();
+    const fresh = { ...loginDetail, revision: 7, payload: { ...loginDetail.payload, name: "Server copy" } };
+    const fetchMock = stubFetch([
+      { status: 409, body: { code: "REVISION_CONFLICT", message: "conflict", request_id: "r-1", current_revision: 7 } },
+      { status: 200, body: fresh },
+      { status: 200, body: fresh },
+    ]);
+    render(<ItemEditor csrfToken={csrf} initial={loginDetail} onSaved={() => {}} onCancel={() => {}} />);
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await screen.findByRole("alert");
+    await user.click(screen.getByRole("button", { name: "重新加载服务端内容" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const body = JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string);
+    expect(body.revision).toBe(7);
+  });
+
+  it("re-masks after reveal even when copy is used", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    stubClipboard();
+    stubFetch([{ status: 204 }, { status: 204 }]);
+    render(<SensitiveField label="密码" field="password" value="SYNSECRET-pw" itemId="item-1" csrfToken={csrf} />);
+    await user.click(screen.getByRole("button", { name: "显示" }));
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.queryByTestId("secret-value-password")).not.toBeInTheDocument();
+  });
 });
 
 describe("ItemDetail", () => {
@@ -288,6 +319,20 @@ describe("VaultPage", () => {
     expect(screen.getByText(/共享 · 创建者 bob/)).toBeInTheDocument();
     expect(screen.getByText(/个人/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建条目" })).toBeInTheDocument();
+  });
+
+  it("keeps the new-item editor reachable on narrow screens", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("matchMedia", () => ({ matches: false, addListener: () => {}, removeListener: () => {} }));
+    stubFetch([
+      { status: 200, body: { items: [], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: "新建条目" }));
+    // The desktop pane remains mounted but hidden; the second form is the
+    // narrow-screen editor that must be present for the same action.
+    expect(screen.getAllByRole("form", { name: "新建条目" })).toHaveLength(2);
   });
 
   it("shows the empty-vault and search-no-hit states", async () => {

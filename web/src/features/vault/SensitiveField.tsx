@@ -29,10 +29,18 @@ export function SensitiveField({
   const valueRef = useRef(value);
   valueRef.current = value;
 
-  const clearTimers = useCallback(() => {
+  const clearHideTimer = useCallback(() => {
     window.clearTimeout(hideTimer.current);
+  }, []);
+
+  const clearClipboardTimer = useCallback(() => {
     window.clearTimeout(clipboardTimer.current);
   }, []);
+
+  const clearTimers = useCallback(() => {
+    clearHideTimer();
+    clearClipboardTimer();
+  }, [clearClipboardTimer, clearHideTimer]);
 
   useEffect(() => clearTimers, [clearTimers]);
   // Any value change re-masks immediately: a stale reveal never lingers.
@@ -54,14 +62,14 @@ export function SensitiveField({
   const reveal = useCallback(() => {
     setRevealed(true);
     void audit("reveal");
-    clearTimers();
+    clearHideTimer();
     hideTimer.current = window.setTimeout(() => setRevealed(false), 30_000);
-  }, [audit, clearTimers]);
+  }, [audit, clearHideTimer]);
 
   const mask = useCallback(() => {
     setRevealed(false);
-    clearTimers();
-  }, [clearTimers]);
+    clearHideTimer();
+  }, [clearHideTimer]);
 
   const copy = useCallback(async () => {
     try {
@@ -73,7 +81,7 @@ export function SensitiveField({
     }
     void audit("copy");
     setCopyState("已复制。30 秒后将尽力清除剪贴板；若浏览器不允许则无法清除。");
-    clearTimers();
+    clearClipboardTimer();
     clipboardTimer.current = window.setTimeout(async () => {
       try {
         const current = await navigator.clipboard.readText();
@@ -85,7 +93,7 @@ export function SensitiveField({
         setCopyState("浏览器不允许读取剪贴板，无法自动清除，请手动处理。");
       }
     }, 30_000);
-  }, [audit, clearTimers]);
+  }, [audit, clearClipboardTimer]);
 
   return (
     <div className="space-y-1">

@@ -965,6 +965,16 @@ func TestItemAddressReferences(t *testing.T) {
 	resp = h.createItem(t, alice, itemCreateBody("personal", "credit_card", nullRef, nil, false))
 	expectStatus(t, resp, 201)
 	resp.Body.Close()
+
+	// Updates enforce the same reference policy as creates.
+	card := h.mustCreateItem(t, bob, "personal", "credit_card", payloadFixtureWithoutReference("credit_card"), nil)
+	resp = h.request(t, "PUT", "/items/"+card["id"].(string), map[string]any{
+		"revision": 1, "payload": ccWithRef(identityID),
+	}, bob)
+	out = decodeBody(t, resp)
+	if resp.StatusCode != http.StatusConflict || out["code"] != "REFERENCE_FORBIDDEN" {
+		t.Fatalf("cross-user reference on update: %d %v", resp.StatusCode, out["code"])
+	}
 }
 
 func TestItemAuditTrail(t *testing.T) {

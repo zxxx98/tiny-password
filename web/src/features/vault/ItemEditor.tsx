@@ -52,6 +52,9 @@ export function ItemEditor({ csrfToken, initial, onSaved, onCancel }: ItemEditor
   );
   const [tagText, setTagText] = useState(initial ? initial.tags.join(", ") : "");
   const [favorite, setFavorite] = useState(initial?.favorite ?? false);
+  // The revision is part of the editor's authoritative snapshot. It must
+  // advance when the user reloads after an optimistic-lock conflict.
+  const [revision, setRevision] = useState(initial?.revision ?? 0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +90,7 @@ export function ItemEditor({ csrfToken, initial, onSaved, onCancel }: ItemEditor
         saved = await request<ItemDetailData>(
           "PUT",
           `/api/v1/items/${initial.id}`,
-          { revision: initial.revision, payload, tags, favorite },
+          { revision, payload, tags, favorite },
           { csrfToken },
         );
       } else {
@@ -131,11 +134,24 @@ export function ItemEditor({ csrfToken, initial, onSaved, onCancel }: ItemEditor
                 setConflict(null);
                 // Reload authoritative content into the editor.
                 if (initial) {
-                  void request<ItemDetailData>("GET", `/api/v1/items/${initial.id}`, undefined, { csrfToken }).then((fresh) => {
-                    setPayload(fresh.payload as ItemPayload);
-                    setTagText(fresh.tags.join(", "));
-                    setFavorite(fresh.favorite);
-                  });
+                  void request<ItemDetailData>("GET", `/api/v1/items/${initial.id}`, undefined, { csrfToken })
+                    .then((fresh) => {
+                      if (fresh.payload) {
+                        setPayload(fresh.payload as ItemPayload);
+                      }
+                      setTagText((fresh.tags ?? []).join(", "));
+                      if (typeof fresh.favorite === "boolean") {
+                        setFavorite(fresh.favorite);
+                      }
+                      if (typeof fresh.revision === "number") {
+                        setRevision(fresh.revision);
+                      }
+                    })
+                    .catch((err) => {
+                      const info = errorText(err);
+                      setError(info.message);
+                      setRequestId(info.requestId);
+                    });
                 }
               }}
             >

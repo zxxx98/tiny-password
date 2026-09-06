@@ -320,10 +320,10 @@ export function VaultPage({ section }: { section?: "trash" }) {
         <div className="hidden lg:col-span-8 lg:block">{detailPane()}</div>
 
         {/* Route-driven full-page detail for tablet/mobile viewports. */}
-        {routeItemId && (
+        {(routeItemId || creating || selected) && (
           <div className="lg:hidden" data-testid="mobile-detail">
             <div className="p-4">
-              <Button variant="ghost" onClick={() => { setSelected(null); navigate("/vault"); }}>
+              <Button variant="ghost" onClick={() => { setSelected(null); setCreating(false); setEditing(false); navigate("/vault"); }}>
                 ← 返回列表
               </Button>
             </div>

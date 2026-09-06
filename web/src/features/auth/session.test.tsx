@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LoginPage } from "./LoginPage";
@@ -98,6 +99,21 @@ describe("SessionBoundary", () => {
     );
     expect(await screen.findByRole("heading", { name: "登录" })).toBeInTheDocument();
     expect(screen.queryByText("受保护内容")).not.toBeInTheDocument();
+  });
+
+  it("completes session restoration under React StrictMode", async () => {
+    vi.stubGlobal("fetch", stubFetch([
+      { status: 401, body: { code: "UNAUTHORIZED", message: "x", request_id: "r" } },
+      { status: 401, body: { code: "UNAUTHORIZED", message: "x", request_id: "r" } },
+    ]));
+    render(
+      <StrictMode>
+        <SessionBoundary>
+          <p>受保护内容</p>
+        </SessionBoundary>
+      </StrictMode>,
+    );
+    expect(await screen.findByRole("heading", { name: "登录" })).toBeInTheDocument();
   });
 
   it("pins a first-login principal to the password rotation and releases after the change", async () => {
