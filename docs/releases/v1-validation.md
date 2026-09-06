@@ -287,3 +287,27 @@
 - 证据路径：`web/src/features/vault/`、`internal/vault/`、`tests/e2e/vault.spec.ts`、`scripts/test-browser-e2e.sh`、`playwright.config.ts`
 - 未解决问题：移动真机验证与 360/768/1280px 截图归 T30 可访问性验收；三处集成测试存在偶发时序敏感（并发更新恰一成功），已通过确定性夹具降低概率，T30 完整验收时复核。
 - race 全量复核（2026-09-05）：`go test -race ./... -count=1 -timeout=25m` 全部通过（集成包 race 下约 612s，超出 Go 默认 10 分钟包超时，race 运行须显式 `-timeout=25m`；性能基线测试经 `raceDetector` 构建标记在 race 模式下跳过，其基线数据以非 race 模式测量）。
+
+## M4 · T17–T20 共享、生成器、归档与个人传输
+
+- 日期：2026-09-06
+- 提交：`59d6153`（T17）、`bb65bf3`（T18）、`003f084`（T19）、T20 提交（worktree `tiny-password-m03`，分支 `m03-personal-vault`）
+- T17 共享工作区：
+  - `TestSharedReadsWriteMatrix`：读者 C 与管理员 A 对共享条目的全部写操作（更新/收藏/标签/回收站/恢复/purge/历史恢复）一律 403；读者与管理员读共享条目及历史 200；创建者 B 的收藏/标签 204。
+  - `TestSharedForgedRequests`：更新 DTO 走私 vault_scope/owner_id 全部 400；伪造历史恢复 403；地址引用矩阵——共享→共享（创建者与读者均可 201）、共享→个人 409。
+  - `TestSharedCreatorDisabledKeepsData`：禁用创建者后会话 401、读者仍可读、重新启用后可写；`TestSharedCreatorDeletedCascades`：删除创建者后共享条目对读者 404、读者自身数据不受影响、审计仅存不透明 ID。
+  - 浏览器 E2E `shared.spec.ts` 1/1：读者看到创建者署名与只读原因、编辑/回收站控件不渲染。
+- T18 生成器：
+  - `internal/generator/`：密码（拒绝采样无模偏差、每类至少一个字符、排除易混淆 0O1lI|、8–128 位）；口令（EFF 短词表 1296 词内置 + CC BY 3.0 许可文件、3–10 词、拒绝采样阈值 65536−65536%1296、卡方均匀性检验）；SSH（Ed25519/RSA-4096、OpenSSH 编码、口令 KDF 加密、SHA256 指纹、RSA 并发信号量）。
+  - 端点集成测试 1 个（默认值/长度界/类过滤/未认证 401/不入库断言）+ 单元 10 个全过。
+  - 浏览器 E2E `generators.spec.ts` 2/2：长度与内存态、保存为条目导航。
+- T19 加密归档：
+  - `internal/platform/archive/`：T01 探针调用方式固化（创建裸 `-p`+stdin 口令+`-mhe=on`、`l -slt` 解析跳过归档元数据块、`x -y` 解包）；120s 超时、进程级并发信号量（2）、0700 受限临时目录、解包前后双重白名单校验（绝对路径/`..`/反斜杠/重复/嵌套归档/符号链接/512 文件/128MiB 上限）、错误分类 WRONG_PASSPHRASE vs BAD_ARCHIVE、工具输出永不入日志。
+  - 集成测试 `TestArchiveCreateExtractRoundTrip`（真实 7zz 26.03 往返 + 错误口令 + 损坏归档 + 无口令列取拒绝）；单元 4 个（路径白名单/重复与上限/干净集合/-slt 解析）。
+- T20 个人导入导出：
+  - `internal/transfer/`：版本化 manifest（文件级 SHA256、类型/范围白名单、拒绝账号材料）；导出仅含本人个人条目与本人创建共享条目（D10）；预览零数据库写入（摘要校验、负载重校验、冲突计数、缺失引用两遍扫描）；preview token = HMAC(调用者+负载摘要+过期)（10 分钟、单次消费、常量时间比较、跨用户拒绝）；确认单事务（冲突 ID 重新编号、billing 引用重映射进导入集、外部引用清空待补、全部重新加密）。
+  - 集成测试 3 个：往返（导出→新用户导入→计数/冲突=4/引用保持）、错误口令与损坏归档（稳定 400 码、无路径泄漏）、伪造/跨用户/二次确认全部 400。
+  - 浏览器 E2E `transfer.spec.ts` 2/2：导出下载横幅、完整往返、错误口令稳定错误。
+- 修复的缺陷：详情响应 tags 为 null 导致前端崩溃（现恒为 []）；详情 creator_name 值拷贝未回写；登录后不返回来源路由。
+- 验证命令：`go vet ./...`、`SEVENZIP_BIN=… go test ./... -count=1 -timeout=25m`、`go test -race ./internal/...`、前端 typecheck/57 测试/build、浏览器 E2E 5 个 spec（auth 4、vault 4、shared 1、generators 2、transfer 2）全部通过；`git diff --check` 通过。
+- 未解决问题：集成 race 全量（后台运行中，T30 复核）；R2 真实传输、Android 真机等不在 M4 范围。
