@@ -92,6 +92,7 @@ func newItemsHarness(t *testing.T) *itemsHarness {
 		Auth:  &httpapi.AuthDeps{Service: authSvc, CSRF: csrf},
 		Users: &httpapi.UsersDeps{Service: ih.usersSvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
 		Items: &httpapi.ItemsDeps{Service: vsvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
+		Generators: &httpapi.GeneratorsDeps{Session: authSvc},
 	}))
 	t.Cleanup(srv.Close)
 	h.server = srv
@@ -1144,5 +1145,34 @@ func TestItemRestartDecryption(t *testing.T) {
 	entries, err := restarted.ListHistory(ctx, &auth.Principal{UserID: aliceID, Role: "member"}, personal["id"].(string), "", 10)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("post-restart history: %v %v", entries, err)
+	}
+}
+
+// TestItemDetailWithoutTagsReturnsEmptyArray pins the contract that a
+// tag-less item renders `"tags":[]` (never null) in detail responses.
+func TestItemDetailWithoutTagsReturnsEmptyArray(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+
+	item := h.mustCreateItem(t, alice, "personal", "secure_note",
+		map[string]any{"name": "no tags", "body": "b"}, nil)
+	id := item["id"].(string)
+
+	var tagsJSON string
+	if err := h.db.QueryRow(`SELECT json_extract(payload_ciphertext, '$') FROM vault_items WHERE id=?`, id).Scan(&tagsJSON); err == nil {
+		// modernc has no json1 guarantee; ignore — the HTTP assertion below is
+		// the contract.
+		_ = tagsJSON
+	}
+	resp := h.request(t, "GET", "/items/"+id, nil, alice)
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("detail: %d", resp.StatusCode)
+	}
+	detail := decodeBody(t, resp)
+	tags, ok := detail["tags"].([]any)
+	if !ok || len(tags) != 0 {
+		t.Fatalf("tags must be [] (got %v)", detail["tags"])
 	}
 }

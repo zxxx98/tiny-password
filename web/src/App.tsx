@@ -5,7 +5,7 @@ import { Router } from "./app/router";
 import { SessionBoundary } from "./features/auth/SessionBoundary";
 import { SetupPage } from "./features/auth/SetupPage";
 import { UsersPage } from "./features/admin/UsersPage";
-import { GeneratorPlaceholder } from "./features/generator/GeneratorPlaceholder";
+import { GeneratorPage } from "./features/generator/GeneratorPage";
 import { VaultPage } from "./features/vault/VaultPage";
 
 function protectedRoute(element: React.ReactNode, requireAdmin?: boolean) {
@@ -39,7 +39,7 @@ const routes = [
   { path: "/vault", element: protectedRoute(<VaultPage />) },
   { path: "/vault/trash", element: protectedRoute(<VaultPage section="trash" />) },
   { path: "/vault/:itemId", element: protectedRoute(<VaultPage />) },
-  { path: "/generator", element: protectedRoute(<GeneratorPlaceholder />) },
+  { path: "/generator", element: protectedRoute(<GeneratorPage />) },
   { path: "/account", element: protectedRoute(<AccountPage />) },
   { path: "/account/activity", element: protectedRoute(<ActivityPage />) },
   { path: "/admin/users", element: protectedRoute(<UsersPage />, true) },

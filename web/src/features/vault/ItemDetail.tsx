@@ -41,7 +41,7 @@ export function ItemDetail({ detail, csrfToken, canManage, onEdit, onShowHistory
             这是 {detail.creator_name ?? "其他成员"} 创建的共享条目：可以查看，但只有创建者能修改。
           </p>
         )}
-        {detail.tags.length > 0 && (
+        {(detail.tags?.length ?? 0) > 0 && (
           <ul className="flex flex-wrap gap-2" aria-label="标签">
             {detail.tags.map((tag) => (
               <li key={tag} className="border border-ink px-2 py-0.5 font-mono text-xs">{tag}</li>

@@ -424,6 +424,11 @@ func (s *Service) decryptRow(row itemRow) ([]byte, any, *storedPayload, error) {
 	if envelope.Version != PayloadSchemaVersion {
 		return nil, nil, nil, errors.New("vault: stored payload version is unsupported")
 	}
+	if envelope.Tags == nil {
+		// omitempty drops empty tag lists on storage; normalize so responses
+		// always carry a JSON array, never null.
+		envelope.Tags = []string{}
+	}
 	typed := typedPayloadOf(row.ItemType, &envelope)
 	if typed == nil {
 		return nil, nil, nil, errors.New("vault: stored payload does not match the item type")

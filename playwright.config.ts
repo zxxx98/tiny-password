@@ -8,7 +8,7 @@ export default defineConfig({
   expect: { timeout: 5_000 },
   use: {
     baseURL: process.env.TP_E2E_BASE_URL ?? "http://127.0.0.1:8091",
-    trace: "retain-on-failure",
+    trace: "on",
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],
   // Failure artifacts land in test-results (gitignored).

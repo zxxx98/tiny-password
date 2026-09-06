@@ -24,6 +24,8 @@ export function SessionBoundary({ children, requireAdmin }: { children: ReactNod
   // resurrect itself, and the session cookie is the only restore source.
   const attempted = useRef(false);
   const [restoring, setRestoring] = useState(() => !principal);
+  // The route the user was trying to reach when the login view appeared.
+  const returnTo = useRef<string | null>(null);
 
   useEffect(() => {
     const onExpired = () => {
@@ -89,7 +91,10 @@ export function SessionBoundary({ children, requireAdmin }: { children: ReactNod
     if (restoring) {
       return <Loading label="正在恢复会话…" />;
     }
-    return <LoginPage onDone={() => navigate("/vault")} />;
+    if (returnTo.current === null) {
+      returnTo.current = window.location.pathname;
+    }
+    return <LoginPage onDone={() => navigate(returnTo.current ?? "/vault")} />;
   }
   if (principal.must_change_password) {
     return <ChangePasswordPage forced onDone={refreshAfterRotation} />;

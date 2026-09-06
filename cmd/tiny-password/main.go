@@ -146,14 +146,15 @@ func run(logger *slog.Logger) error {
 	server := &http.Server{
 		Addr: addr,
 		Handler: httpapi.New(httpapi.Options{
-			SPA:    webassets.SPAHandler(),
-			Ready:  ready,
-			Logger: logger,
-			Proxy:  proxy,
-			Auth:   &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
-			Audit:  &httpapi.AuditDeps{Service: auditService, DB: db, Cursor: cursorCodec, Session: authService},
-			Users:  &httpapi.UsersDeps{Service: usersService, Session: authService, Cursor: cursorCodec, Idempotency: idempotencyService},
-			Items:  itemsDeps,
+			SPA:        webassets.SPAHandler(),
+			Ready:      ready,
+			Logger:     logger,
+			Proxy:      proxy,
+			Auth:       &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
+			Audit:      &httpapi.AuditDeps{Service: auditService, DB: db, Cursor: cursorCodec, Session: authService},
+			Users:      &httpapi.UsersDeps{Service: usersService, Session: authService, Cursor: cursorCodec, Idempotency: idempotencyService},
+			Items:      itemsDeps,
+			Generators: &httpapi.GeneratorsDeps{Session: authService},
 			Setup: &httpapi.SetupDeps{
 				Service:     bootService,
 				CSRF:        csrf,
