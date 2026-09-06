@@ -77,6 +77,7 @@ done
 
 ADMIN_PW="e2e-admin-password-1"
 MEMBER_PW="e2e-member-password-1"
+SECOND_PW="e2e-second-password-1"
 JAR="$WORK/cookies"
 
 echo "browser-e2e: initializing instance"
@@ -106,15 +107,27 @@ CT=$(cat "$WORK/token")
 curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE" \
   -H "X-CSRF-Token: $CT" -d '{"username":"e2e-member","initial_password":"e2e-member-initial-1"}' \
   "$BASE/api/v1/users" > /dev/null
-curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE" \
-  -H "X-CSRF-Token: $CT" -d '{"username":"e2e-rotator","initial_password":"e2e-rotator-initial-1"}' \
-  "$BASE/api/v1/users" > /dev/null
+for MEMBER in "e2e-rotator" "e2e-second"; do
+  curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE" \
+    -H "X-CSRF-Token: $CT" -d "{\"username\":\"$MEMBER\",\"initial_password\":\"e2e-second-initial-1\"}" \
+    "$BASE/api/v1/users" > /dev/null
+done
 
 login "e2e-member" "e2e-member-initial-1" "$JAR"
 CT=$(cat "$WORK/token")
 curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE" \
   -H "X-CSRF-Token: $CT" -d '{"current_password":"e2e-member-initial-1","new_password":"'"$MEMBER_PW"'"}' \
   "$BASE/api/v1/auth/password" > /dev/null
+
+# Second member for the shared-workspace spec.
+login "e2e-second" "e2e-second-initial-1" "$JAR"
+CT=$(cat "$WORK/token")
+curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE"   -H "X-CSRF-Token: $CT" -d '{"current_password":"e2e-second-initial-1","new_password":"'"$SECOND_PW"'"}'   "$BASE/api/v1/auth/password" > /dev/null
+
+# A shared item created by e2e-member.
+login "e2e-member" "$MEMBER_PW" "$JAR"
+CT=$(cat "$WORK/token")
+curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE"   -H "X-CSRF-Token: $CT" -H "Idempotency-Key: e2e-seed-shared-1"   -d '{"item_type":"login","vault_scope":"shared","payload":{"name":"e2e shared login","username":"ops","password":"SYNSECRET-e2e-shared"},"tags":["e2e"]}'   "$BASE/api/v1/items" > /dev/null
 
 login "e2e-member" "$MEMBER_PW" "$JAR"
 CT=$(cat "$WORK/token")
@@ -124,7 +137,7 @@ curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Ori
   "$BASE/api/v1/items" > /dev/null
 
 echo "browser-e2e: running Playwright spec $E2E_SPEC"
-if TP_E2E_MEMBER_PW="$MEMBER_PW" npx playwright test --workers=1 --config "$ROOT/playwright.config.ts" "$E2E_SPEC"; then
+if TP_E2E_MEMBER_PW="$MEMBER_PW" TP_E2E_SECOND_PW="$SECOND_PW" npx playwright test --workers=1 --config "$ROOT/playwright.config.ts" "$E2E_SPEC"; then
   echo "browser-e2e: PASS"
 else
   SERVER_FAILED=1

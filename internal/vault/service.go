@@ -201,7 +201,9 @@ func (s *Service) Get(ctx context.Context, actor *auth.Principal, id string) (De
 	}
 	detail := Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: typed}
 	detail.Title = TitleOf(typed)
-	s.attachCreatorNames(ctx, s.db, []Meta{detail.Meta})
+	metas := []Meta{detail.Meta}
+	s.attachCreatorNames(ctx, s.db, metas)
+	detail.Meta = metas[0]
 	return detail, nil
 }
 
@@ -600,10 +602,10 @@ func (s *Service) attachCreatorNames(ctx context.Context, q Queryer, metas []Met
 // decorateDetail fills the response-side derived fields (title from the
 // typed payload, creator display name) on one detail response.
 func (s *Service) decorateDetail(ctx context.Context, q Queryer, detail Detail) Detail {
-	if typed, ok := detail.Payload.(any); ok {
-		detail.Title = TitleOf(typed)
-	}
-	s.attachCreatorNames(ctx, q, []Meta{detail.Meta})
+	detail.Title = TitleOf(detail.Payload)
+	metas := []Meta{detail.Meta}
+	s.attachCreatorNames(ctx, q, metas)
+	detail.Meta = metas[0]
 	return detail
 }
 

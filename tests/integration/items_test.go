@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -107,7 +108,13 @@ func (h *itemsHarness) bootstrapAdmin(t *testing.T) {
 	if _, err := h.boot.Initialize(bootstrap.InitializeInput{Token: token, Username: "Admin", Password: validPassword}); err != nil {
 		t.Fatal(err)
 	}
-	h.admin, _ = h.login(t, "Admin", validPassword)
+	admin, resp := h.login(t, "Admin", validPassword)
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("admin login failed: %d body=%s", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+	h.admin = admin
 }
 
 // insertMember adds a member whose internal id is a UUID, so audit
