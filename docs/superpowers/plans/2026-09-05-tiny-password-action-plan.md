@@ -435,14 +435,14 @@
 
 **新增：** `internal/backup/retention.go`、`internal/backup/retention_test.go`、`tests/integration/retention_test.go`。
 
-- [ ] 固化日/周/月时间桶规则，默认保留 7 日、4 周、6 月；同一备份落入多桶只保留一份，按目标已验证成功集合求保留并集。
-- [ ] 为跨月/跨年/DST、少量备份、数量调整和禁用目标建立纯函数测试。
-- [ ] 只在该目标新增已验证成功备份后清理该目标；失败备份不能触发删除最后可用备份。
-- [ ] 删除失败保留待清理记录并重试；R2 失败不阻止本地清理，每次删除审计只记录不透明对象标识。
+- [x] 固化日/周/月时间桶规则，默认保留 7 日、4 周、6 月；同一备份落入多桶只保留一份，按目标已验证成功集合求保留并集。（RetentionKeepSet 纯函数：UTC 日桶 + ISO 周桶 + 月桶各取"最近 N 个存在桶"的最新产物求并集；仅统计 status='succeeded' 行；产物以 run id 命名与 backup_runs 对应）
+- [x] 为跨月/跨年/DST、少量备份、数量调整和禁用目标建立纯函数测试。（retention_test.go 7 用例：GFS 并集、单产物多桶、少量全保、跨年逐桶、数量调整/归零、DST 前后 keep 集不变、同刻并列确定性）
+- [x] 只在该目标新增已验证成功备份后清理该目标；失败备份不能触发删除最后可用备份。（ApplyRetention 仅在 deliverTarget 成功后调用；无 succeeded 行时直接跳过（TestRetentionGuardWithoutSucceededRuns）；无状态对账，磁盘最新产物恒豁免，publish 与记行崩溃间的孤儿文件不会丢失最新备份）
+- [x] 删除失败保留待清理记录并重试；R2 失败不阻止本地清理，每次删除审计只记录不透明对象标识。（删除失败仅记日志、下次成功备份后对账自然重试（TestRetentionR2ReconcilesAndRetries 注入 500 后重试成功）；两目标独立执行；审计 backup.retention.deleted 仅含 run id/对象键，操作者 anonymous）
 
 **验证：** `go test ./internal/backup -run TestRetention -v`；`go test ./tests/integration -run TestRetention -v`；明确计算期望保留 ID 集合，不能仅断言数量。
 
-**建议提交：** `feat: apply verified backup retention per target`。
+**完成记录（2026-09-06）：** 纯函数 7/7、集成 4/4 通过（精确保留集断言：2/1/1 下仅剩 r3/r5 且恰好 3 条删除审计；R2 注入删除 500 后对象保留、重试后仅剩最新；守卫用例证明仅失败运行时不删除磁盘文件）。`go vet ./...`、`-race`、全量集成回归通过。
 
 ### T25 · 离线恢复与新主密钥重加密
 

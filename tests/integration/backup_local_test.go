@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/backup"
 	"github.com/tiny-password/tiny-password/internal/platform/archive"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
@@ -56,6 +57,7 @@ func (h *backupHarness) newRunner(t *testing.T, hooks backup.Hooks) *backup.Runn
 		MasterKeyRaw: h.keyRaw,
 		Now:          func() time.Time { return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) },
 		Hooks:        hooks,
+		Audit:        audit.NewService(audit.Options{}),
 	})
 	if err != nil {
 		t.Fatal(err)

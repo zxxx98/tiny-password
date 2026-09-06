@@ -39,6 +39,10 @@ const (
 	// passphrase never appears anywhere.
 	EventTransferExported = "transfer.exported"
 	EventTransferImported = "transfer.imported"
+	// Instance backup lifecycle (design §7.3, T24): retention deletions
+	// carry the opaque object identifier only (run id / object key), never
+	// passphrases or contents.
+	EventBackupRetentionDeleted = "backup.retention.deleted"
 )
 
 var allowlist = map[string]bool{
@@ -65,6 +69,7 @@ var allowlist = map[string]bool{
 	EventVaultSecretCopied:        true,
 	EventTransferExported:         true,
 	EventTransferImported:         true,
+	EventBackupRetentionDeleted:   true,
 }
 
 // Results are restricted to the database CHECK constraint's domain.
@@ -78,6 +83,7 @@ const (
 	TargetUser    = "user"
 	TargetSession = "session"
 	TargetItem    = "item"
+	TargetBackup  = "backup"
 )
 
 // Anonymous marks an unresolved actor (e.g. failed login for an unknown

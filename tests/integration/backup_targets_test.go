@@ -35,6 +35,7 @@ type fakeR2 struct {
 	alwaysFailPut  bool
 	corruptGetBody bool
 	failCopyStatus int
+	failDelete     bool
 }
 
 func newFakeR2() *fakeR2 {
@@ -121,6 +122,10 @@ func (f *fakeR2) handler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 
 	case http.MethodDelete:
+		if f.failDelete {
+			http.Error(w, "injected delete failure", http.StatusServiceUnavailable)
+			return
+		}
 		delete(f.objects, key)
 		delete(f.modTime, key)
 		w.WriteHeader(http.StatusNoContent)

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/platform/archive"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
@@ -96,6 +97,8 @@ type Options struct {
 	ScheduledPassphrase string
 	ScheduledLocalDir   string
 	ScheduledR2         *R2Delivery
+	// Audit records retention deletions (T24); optional.
+	Audit *audit.Service
 }
 
 // Runner produces whole-instance backups. The run mutex is process-wide
@@ -286,9 +289,9 @@ func (r *Runner) deliverTarget(ctx context.Context, runID string, target Target,
 	var err error
 	switch target {
 	case TargetLocal:
-		path, result.SizeBytes, result.SHA256, err = LocalStore{Dir: input.LocalDir}.Publish(staged.path, manifest.BackupID+".7z")
+		path, result.SizeBytes, result.SHA256, err = LocalStore{Dir: input.LocalDir}.Publish(staged.path, runID+".7z")
 	case TargetR2:
-		path, err = input.R2.Deliver(ctx, staged.path, staged.sizeBytes, staged.sha256, manifest.BackupID)
+		path, err = input.R2.Deliver(ctx, staged.path, staged.sizeBytes, staged.sha256, runID)
 	default:
 		err = fmt.Errorf("backup: unsupported target %q", target)
 	}
@@ -299,6 +302,9 @@ func (r *Runner) deliverTarget(ctx context.Context, runID string, target Target,
 	}
 	result.Path = path
 	r.succeedRun(runID, result.SizeBytes, result.SHA256)
+	// Retention runs only after this target gained a verified backup
+	// (T24); failures never affect the recorded success.
+	r.ApplyRetention(ctx, target, input)
 	return result
 }
 
