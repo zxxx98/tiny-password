@@ -113,9 +113,11 @@ CT=$(cat "$WORK/token")
 curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE" \
   -H "X-CSRF-Token: $CT" -d '{"username":"e2e-member","initial_password":"e2e-member-initial-1"}' \
   "$BASE/api/v1/users" > /dev/null
-for MEMBER in "e2e-rotator" "e2e-second"; do
+for PAIR in "e2e-rotator:e2e-rotator-initial-1" "e2e-second:e2e-second-initial-1"; do
+  NAME="${PAIR%%:*}"
+  INITIAL="${PAIR##*:}"
   curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Origin: $BASE" \
-    -H "X-CSRF-Token: $CT" -d "{\"username\":\"$MEMBER\",\"initial_password\":\"e2e-second-initial-1\"}" \
+    -H "X-CSRF-Token: $CT" -d "{\"username\":\"$NAME\",\"initial_password\":\"$INITIAL\"}" \
     "$BASE/api/v1/users" > /dev/null
 done
 
