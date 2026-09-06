@@ -13,13 +13,24 @@ import (
 type BackupsDeps struct {
 	Runner *backup.Runner
 	DB     *tpsqlite.DB
-	// LocalDir, R2 and Passphrase complete the manual run input; secrets
-	// live in the runner options / secret files, never in responses.
+	// LocalDir is the local publish directory; R2 resolves the R2 delivery
+	// at request time (settings + credential files). Passphrase and the
+	// credential values themselves never appear in responses.
 	LocalDir   string
-	R2         *backup.R2Delivery
+	R2         backup.R2Resolver
 	Passphrase string
 	Session    *auth.Service
 	Cursor     *CursorCodec
+}
+
+// resolveR2 returns the current R2 delivery for this request. A nil
+// delivery with a nil error means the target is not configured; a non-nil
+// error reports a resolution failure (settings store or credential file).
+func (d BackupsDeps) resolveR2(r *http.Request) (*backup.R2Delivery, error) {
+	if d.R2 == nil {
+		return nil, nil
+	}
+	return d.R2(r.Context())
 }
 
 func registerBackups(api *http.ServeMux, deps BackupsDeps) {
@@ -34,11 +45,12 @@ func registerBackups(api *http.ServeMux, deps BackupsDeps) {
 			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the job configuration is unavailable")
 			return
 		}
+		r2Delivery, r2Err := deps.resolveR2(r)
 		jobs := make([]map[string]any, 0, len(configs))
 		for _, c := range configs {
 			configured := deps.LocalDir != ""
 			if c.Target == backup.TargetR2 {
-				configured = deps.R2 != nil
+				configured = r2Err == nil && r2Delivery != nil
 			}
 			jobs = append(jobs, map[string]any{
 				"target":            string(c.Target),
@@ -112,6 +124,9 @@ func registerBackups(api *http.ServeMux, deps BackupsDeps) {
 	}))
 
 	// Manual trigger: 202 when accepted, 409 when a run holds the mutex.
+	// A requested target without its delivery configuration is refused with
+	// 503 MAINTENANCE before anything starts — the run never partially
+	// ignores the requested target list.
 	api.Handle("POST /api/v1/admin/backups/run", admin(func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			Targets []string `json:"targets"`
@@ -123,11 +138,22 @@ func registerBackups(api *http.ServeMux, deps BackupsDeps) {
 			Trigger:    backup.TriggerManual,
 			Passphrase: deps.Passphrase,
 			LocalDir:   deps.LocalDir,
-			R2:         deps.R2,
 		}
 		for _, t := range input.Targets {
 			switch t {
-			case string(backup.TargetLocal), string(backup.TargetR2):
+			case string(backup.TargetLocal):
+				runInput.Targets = append(runInput.Targets, backup.Target(t))
+			case string(backup.TargetR2):
+				delivery, err := deps.resolveR2(r)
+				if err != nil {
+					writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the r2 delivery configuration is unavailable")
+					return
+				}
+				if delivery == nil {
+					writeError(w, r, http.StatusServiceUnavailable, "MAINTENANCE", "backup delivery is not configured for target r2")
+					return
+				}
+				runInput.R2 = delivery
 				runInput.Targets = append(runInput.Targets, backup.Target(t))
 			default:
 				writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "unknown target")

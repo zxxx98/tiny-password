@@ -1,7 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, request } from "../../app/api";
-import { navigate } from "../../app/router";
-import { useSession } from "../../app/session";
+import { navigate, navigateWithState } from "../../app/router";
+import { SESSION_EXPIRED_EVENT, useSession } from "../../app/session";
 import { Button } from "../../design-system/Button";
 import { Field } from "../../design-system/Field";
 import { ErrorSummary } from "../../design-system/Status";
@@ -11,7 +11,34 @@ type SshGenerated = {
   public_key: string;
   private_key: string;
   fingerprint: string;
+  key_passphrase: string;
+  comment: string;
 };
+
+function MaskedOutput({
+  value,
+  label,
+  secretName,
+  revealed,
+  onToggle,
+}: {
+  value: string;
+  label: string;
+  secretName: string;
+  revealed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-start gap-2">
+      <output className="block min-w-0 flex-1 break-all border border-ink px-3 py-2 font-mono text-sm" aria-label={label}>
+        {revealed ? value : "••••••••"}
+      </output>
+      <Button variant="secondary" aria-pressed={revealed} onClick={onToggle}>
+        {revealed ? `隐藏${secretName}` : `显示${secretName}`}
+      </Button>
+    </div>
+  );
+}
 
 function errorOf(err: unknown): { message: string; requestId?: string } {
   if (err instanceof ApiError) {
@@ -27,40 +54,96 @@ function errorOf(err: unknown): { message: string; requestId?: string } {
  */
 export function GeneratorPage() {
   const { csrfToken } = useSession();
+  const mountedRef = useRef(true);
+  const sessionExpiredRef = useRef(false);
+  const controllersRef = useRef(new Set<AbortController>());
 
   const [pwLength, setPwLength] = useState(20);
   const [pwClasses, setPwClasses] = useState({ lower: true, upper: true, digits: true, symbols: true, noAmbiguous: false });
   const [password, setPassword] = useState<string | null>(null);
+  const [passwordRevealed, setPasswordRevealed] = useState(false);
 
   const [words, setWords] = useState(5);
   const [separator, setSeparator] = useState("-");
   const [capitalize, setCapitalize] = useState(false);
   const [passphrase, setPassphrase] = useState<string | null>(null);
+  const [passphraseRevealed, setPassphraseRevealed] = useState(false);
 
   const [sshAlgorithm, setSshAlgorithm] = useState<"ed25519" | "rsa4096">("ed25519");
   const [sshPassphrase, setSshPassphrase] = useState("");
   const [sshComment, setSshComment] = useState("");
   const [sshKey, setSshKey] = useState<SshGenerated | null>(null);
+  const [privateKeyRevealed, setPrivateKeyRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [requestId, setRequestId] = useState<string | undefined>();
   const [busy, setBusy] = useState<string | null>(null);
 
+  const clearGenerated = useCallback(() => {
+    setPassword(null);
+    setPasswordRevealed(false);
+    setPassphrase(null);
+    setPassphraseRevealed(false);
+    setSshKey(null);
+    setPrivateKeyRevealed(false);
+    setSshPassphrase("");
+    setSshComment("");
+    setBusy(null);
+    setSaving(false);
+  }, []);
+
+  const clearSsh = useCallback(() => {
+    setSshKey(null);
+    setPrivateKeyRevealed(false);
+    setSshPassphrase("");
+    setSshComment("");
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const onExpired = () => {
+      sessionExpiredRef.current = true;
+      for (const controller of controllersRef.current) {
+        controller.abort();
+      }
+      clearGenerated();
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => {
+      mountedRef.current = false;
+      for (const controller of controllersRef.current) {
+        controller.abort();
+      }
+      clearGenerated();
+      window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    };
+  }, [clearGenerated]);
+
   const generate = useCallback(
     async (kind: "password" | "passphrase" | "ssh-key", body: unknown, apply: (data: any) => void) => {
       setBusy(kind);
       setError(null);
       setRequestId(undefined);
+      const controller = new AbortController();
+      controllersRef.current.add(controller);
       try {
-        const data = await request<any>(`POST`, `/api/v1/generators/${kind}`, body, { csrfToken });
-        apply(data);
+        const data = await request<any>(`POST`, `/api/v1/generators/${kind}`, body, { csrfToken, signal: controller.signal });
+        if (mountedRef.current && !sessionExpiredRef.current && !controller.signal.aborted) {
+          apply(data);
+        }
       } catch (err) {
+        if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
+          return;
+        }
         const info = errorOf(err);
         setError(info.message);
         setRequestId(info.requestId);
       } finally {
-        setBusy(null);
+        controllersRef.current.delete(controller);
+        if (mountedRef.current && !sessionExpiredRef.current && !controller.signal.aborted) {
+          setBusy(null);
+        }
       }
     },
     [csrfToken],
@@ -70,8 +153,11 @@ export function GeneratorPage() {
     if (!sshKey) {
       return;
     }
+    const generated = sshKey;
     setSaving(true);
     setError(null);
+    const controller = new AbortController();
+    controllersRef.current.add(controller);
     try {
       const detail = await request<{ id: string }>(
         "POST",
@@ -84,25 +170,41 @@ export function GeneratorPage() {
             algorithm: sshKey.algorithm,
             public_key: sshKey.public_key,
             private_key: sshKey.private_key,
-            key_passphrase: sshPassphrase || undefined,
-            comment: sshComment || undefined,
+            key_passphrase: generated.key_passphrase || undefined,
+            comment: generated.comment || undefined,
             fingerprint: sshKey.fingerprint,
           },
         },
-        { csrfToken, idempotencyKey: crypto.randomUUID() },
+        { csrfToken, idempotencyKey: crypto.randomUUID(), signal: controller.signal },
       );
+      if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
+        return;
+      }
       // The generated material moved into the vault; clear the memory copy.
-      setSshKey(null);
-      setSshPassphrase("");
+      clearSsh();
       navigate(`/vault/${detail.id}`);
     } catch (err) {
+      if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
+        return;
+      }
       const info = errorOf(err);
       setError(info.message);
       setRequestId(info.requestId);
     } finally {
-      setSaving(false);
+      controllersRef.current.delete(controller);
+      if (mountedRef.current && !sessionExpiredRef.current && !controller.signal.aborted) {
+        setSaving(false);
+      }
     }
-  }, [sshKey, sshPassphrase, sshComment, csrfToken]);
+  }, [sshKey, csrfToken, clearSsh]);
+
+  const useGeneratedLoginPassword = useCallback(
+    (value: string, clear: () => void) => {
+      clear();
+      navigateWithState("/vault", { kind: "new-login", password: value });
+    },
+    [],
+  );
 
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-4 py-10">
@@ -161,16 +263,39 @@ export function GeneratorPage() {
                 symbols: pwClasses.symbols,
                 exclude_ambiguous: pwClasses.noAmbiguous,
               },
-              (data) => setPassword(data.value),
+              (data) => {
+                setPassword(data.value);
+                setPasswordRevealed(false);
+              },
             )
           }
         >
           {busy === "password" ? "生成中…" : "生成密码"}
         </Button>
         {password && (
-          <output className="block break-all border border-ink px-3 py-2 font-mono text-sm" aria-label="生成的密码">
-            {password}
-          </output>
+          <>
+            <MaskedOutput
+              value={password}
+              label="生成的密码"
+              secretName="密码"
+              revealed={passwordRevealed}
+              onToggle={() => setPasswordRevealed((revealed) => !revealed)}
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => useGeneratedLoginPassword(password, () => {
+                  setPassword(null);
+                  setPasswordRevealed(false);
+                })}
+              >
+                用于新建登录密码
+              </Button>
+              <Button variant="ghost" onClick={() => { setPassword(null); setPasswordRevealed(false); }}>
+                清除密码
+              </Button>
+            </div>
+          </>
         )}
       </section>
 
@@ -209,15 +334,38 @@ export function GeneratorPage() {
         <Button
           disabled={busy === "passphrase"}
           onClick={() =>
-            void generate("passphrase", { words, separator, capitalize }, (data) => setPassphrase(data.value))
+            void generate("passphrase", { words, separator, capitalize }, (data) => {
+              setPassphrase(data.value);
+              setPassphraseRevealed(false);
+            })
           }
         >
           {busy === "passphrase" ? "生成中…" : "生成口令"}
         </Button>
         {passphrase && (
-          <output className="block break-all border border-ink px-3 py-2 font-mono text-sm" aria-label="生成的口令">
-            {passphrase}
-          </output>
+          <>
+            <MaskedOutput
+              value={passphrase}
+              label="生成的口令"
+              secretName="口令"
+              revealed={passphraseRevealed}
+              onToggle={() => setPassphraseRevealed((revealed) => !revealed)}
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => useGeneratedLoginPassword(passphrase, () => {
+                  setPassphrase(null);
+                  setPassphraseRevealed(false);
+                })}
+              >
+                用于新建登录口令
+              </Button>
+              <Button variant="ghost" onClick={() => { setPassphrase(null); setPassphraseRevealed(false); }}>
+                清除口令
+              </Button>
+            </div>
+          </>
         )}
       </section>
 
@@ -258,7 +406,22 @@ export function GeneratorPage() {
         </div>
         <Button
           disabled={busy === "ssh-key"}
-          onClick={() => void generate("ssh-key", { algorithm: sshAlgorithm, passphrase: sshPassphrase, comment: sshComment }, (data) => setSshKey(data))}
+          onClick={() => {
+            const generatedPassphrase = sshPassphrase;
+            const generatedComment = sshComment;
+            void generate(
+              "ssh-key",
+              { algorithm: sshAlgorithm, passphrase: generatedPassphrase, comment: generatedComment },
+              (data) => {
+                setSshKey({
+                  ...data,
+                  key_passphrase: generatedPassphrase,
+                  comment: generatedComment,
+                });
+                setPrivateKeyRevealed(false);
+              },
+            );
+          }}
         >
           {busy === "ssh-key" ? "生成中…" : "生成密钥"}
         </Button>
@@ -268,15 +431,24 @@ export function GeneratorPage() {
             <output className="block break-all bg-neutral-100 px-3 py-2 font-mono text-xs" aria-label="生成的公钥">
               {sshKey.public_key}
             </output>
-            <output className="block max-h-40 overflow-y-auto break-all bg-neutral-100 px-3 py-2 font-mono text-xs" aria-label="生成的私钥">
-              {sshKey.private_key}
-            </output>
+            <MaskedOutput
+              value={sshKey.private_key}
+              label="生成的私钥"
+              secretName="私钥"
+              revealed={privateKeyRevealed}
+              onToggle={() => setPrivateKeyRevealed((revealed) => !revealed)}
+            />
             <p className="font-body text-xs text-neutral-500">
-              私钥仅在保存前展示；保存后以遮蔽形式查看。
+              私钥默认遮蔽；需要时使用“显示私钥”，保存或取消后会清除内存副本。
             </p>
-            <Button disabled={saving} onClick={() => void saveSshEntry()}>
-              {saving ? "保存中…" : "保存为 SSH 条目"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={saving} onClick={() => void saveSshEntry()}>
+                {saving ? "保存中…" : "保存为 SSH 条目"}
+              </Button>
+              <Button variant="secondary" disabled={saving} onClick={clearSsh}>
+                取消并清除密钥
+              </Button>
+            </div>
           </div>
         )}
       </section>

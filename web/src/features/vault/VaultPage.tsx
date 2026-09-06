@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "../../app/api";
-import { Link, navigate, useRouteParams } from "../../app/router";
+import { consumeNavigationState, Link, navigate, useRouteParams } from "../../app/router";
 import { useSession } from "../../app/session";
 import { Button } from "../../design-system/Button";
 import { ConfirmDialog } from "../../design-system/Dialog";
@@ -39,8 +39,24 @@ export function VaultPage({ section }: { section?: "trash" }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [generatedLoginDraft, setGeneratedLoginDraft] = useState<{ password: string } | null>(null);
+  const consumedNavigationState = useRef(false);
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   const [confirmTrash, setConfirmTrash] = useState(false);
+
+  useEffect(() => {
+    if (consumedNavigationState.current) {
+      return;
+    }
+    consumedNavigationState.current = true;
+    const state = consumeNavigationState<{ kind?: string; password?: string }>();
+    if (state?.kind === "new-login" && state.password) {
+      setGeneratedLoginDraft({ password: state.password });
+      setCreating(true);
+      setSelected(null);
+      setHistoryFor(null);
+    }
+  }, []);
 
   const fail = useCallback((err: unknown) => {
     const info = errorText(err);
@@ -174,8 +190,9 @@ export function VaultPage({ section }: { section?: "trash" }) {
       return (
         <ItemEditor
           csrfToken={csrfToken}
-          onCancel={() => setCreating(false)}
-          onSaved={(detail) => void refreshAfterChange(detail)}
+          initialLoginDraft={generatedLoginDraft ?? undefined}
+          onCancel={() => { setCreating(false); setGeneratedLoginDraft(null); }}
+          onSaved={(detail) => { setGeneratedLoginDraft(null); void refreshAfterChange(detail); }}
         />
       );
     }
@@ -269,7 +286,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
               </p>
             )}
 
-            <Button onClick={() => { setCreating(true); setSelected(null); setHistoryFor(null); }}>新建条目</Button>
+            <Button onClick={() => { setCreating(true); setGeneratedLoginDraft(null); setSelected(null); setHistoryFor(null); }}>新建条目</Button>
 
             <ErrorSummary message={error ?? ""} requestId={requestId} onDismiss={() => setError(null)} />
           </div>
@@ -323,7 +340,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
         {(routeItemId || creating || selected) && (
           <div className="lg:hidden" data-testid="mobile-detail">
             <div className="p-4">
-              <Button variant="ghost" onClick={() => { setSelected(null); setCreating(false); setEditing(false); navigate("/vault"); }}>
+              <Button variant="ghost" onClick={() => { setSelected(null); setCreating(false); setEditing(false); setGeneratedLoginDraft(null); navigate("/vault"); }}>
                 ← 返回列表
               </Button>
             </div>

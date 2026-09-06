@@ -5,10 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,22 +29,50 @@ import (
 // real backup runner and the shared auth harness.
 type backupsAPIHarness struct {
 	*authHarness
-	runner   *backup.Runner
-	admin    authClient
-	member   authClient
-	localDir string
-	entered  chan struct{}
-	release  chan struct{}
+	runner       *backup.Runner
+	admin        authClient
+	member       authClient
+	localDir     string
+	r2AccessPath string
+	r2SecretPath string
+	entered      chan struct{}
+	release      chan struct{}
 }
 
+// newBackupsAPIHarness builds the plain harness (no fault injection).
 func newBackupsAPIHarness(t *testing.T) *backupsAPIHarness {
+	return newBackupsAPIHarnessWithHooks(t, backup.Hooks{})
+}
+
+// newBackupsAPIHarnessWithBlockingArchive installs an AfterArchiveCreated
+// hook that blocks every run until released (manual-run busy tests). The
+// hook's channels are re-pointed onto the harness so tests can wait and
+// release through the same pair.
+func newBackupsAPIHarnessWithBlockingArchive(t *testing.T) *backupsAPIHarness {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	h := newBackupsAPIHarnessWithHooks(t, backup.Hooks{
+		AfterArchiveCreated: func(_ context.Context, _ string) error {
+			entered <- struct{}{}
+			<-release
+			return nil
+		},
+	})
+	h.entered, h.release = entered, release
+	return h
+}
+
+func newBackupsAPIHarnessWithHooks(t *testing.T, hooks backup.Hooks) *backupsAPIHarness {
 	t.Helper()
 	archiveBin(t)
 	h := &backupsAPIHarness{authHarness: newAuthHarness(t), localDir: t.TempDir()}
-	entered := make(chan struct{}, 1)
-	release := make(chan struct{})
-	h.entered = entered
-	h.release = release
+	h.entered, h.release = make(chan struct{}, 1), make(chan struct{})
+
+	// R2 credential secret files start absent: the target is unconfigured
+	// until a test mounts them.
+	h.r2AccessPath = filepath.Join(t.TempDir(), "r2_access_key")
+	h.r2SecretPath = filepath.Join(t.TempDir(), "r2_secret_key")
+	settingsService := settings.NewService(h.db.DB)
 
 	runner, err := backup.NewRunner(backup.Options{
 		DB:                  h.db,
@@ -51,14 +82,9 @@ func newBackupsAPIHarness(t *testing.T) *backupsAPIHarness {
 		Now:                 func() time.Time { return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) },
 		ScheduledPassphrase: "backup-passphrase-1",
 		ScheduledLocalDir:   h.localDir,
+		R2:                  backup.NewSettingsR2Resolver(h.db.DB, settingsService, h.r2AccessPath, h.r2SecretPath),
 		Audit:               audit.NewService(audit.Options{}),
-		Hooks: backup.Hooks{
-			AfterArchiveCreated: func(_ context.Context, _ string) error {
-				entered <- struct{}{}
-				<-release
-				return nil
-			},
-		},
+		Hooks:               hooks,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -88,16 +114,20 @@ func newBackupsAPIHarness(t *testing.T) *backupsAPIHarness {
 			Runner:     runner,
 			DB:         h.db,
 			LocalDir:   h.localDir,
+			R2:         backup.NewSettingsR2Resolver(h.db.DB, settingsService, h.r2AccessPath, h.r2SecretPath),
 			Passphrase: "backup-passphrase-1",
 			Session:    h.svc,
 			Cursor:     cursor,
 		},
 		Settings: &httpapi.SettingsDeps{
-			Settings:  settings.NewService(h.db.DB),
+			Settings:  settingsService,
 			Session:   h.svc,
 			Scheduler: sched,
 			Version:   "test",
 			Ready:     func() (map[string]bool, bool) { return map[string]bool{"database": true}, true },
+			R2CredentialsPresent: func() bool {
+				return backup.R2CredentialsPresent(h.r2AccessPath, h.r2SecretPath)
+			},
 		},
 	}))
 	t.Cleanup(srv.Close)
@@ -221,7 +251,7 @@ func TestBackupsJobsConfigRoundTrip(t *testing.T) {
 }
 
 func TestBackupsManualRunAndHistory(t *testing.T) {
-	h := newBackupsAPIHarness(t)
+	h := newBackupsAPIHarnessWithBlockingArchive(t)
 	// Hold the mutex with a blocking hook to prove the 409 path.
 	resp := h.request(t, "POST", "/admin/backups/run", map[string]any{"targets": []string{"local"}}, h.admin)
 	defer resp.Body.Close()
@@ -333,8 +363,139 @@ func TestSettingsWhitelistAndAuditResultFilter(t *testing.T) {
 	}
 }
 
-func seedAuditSuccessAndFailure(t *testing.T, db *sql.DB) {
+// jobReady decodes the jobs listing and reports the named target's
+// delivery_ready flag.
+func jobReady(t *testing.T, h *backupsAPIHarness, client authClient, target string) bool {
 	t.Helper()
+	resp := h.request(t, "GET", "/admin/backups/jobs", nil, client)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("jobs list: %d", resp.StatusCode)
+	}
+	var body struct {
+		Jobs []struct {
+			Target        string `json:"target"`
+			DeliveryReady bool   `json:"delivery_ready"`
+		} `json:"jobs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range body.Jobs {
+		if j.Target == target {
+			return j.DeliveryReady
+		}
+	}
+	t.Fatalf("target %s missing from jobs listing", target)
+	return false
+}
+
+// credentialsFlag decodes GET /admin/settings and reports the
+// r2_credentials_via_file presence flag.
+func credentialsFlag(t *testing.T, h *backupsAPIHarness, client authClient) bool {
+	t.Helper()
+	resp := h.request(t, "GET", "/admin/settings", nil, client)
+	defer resp.Body.Close()
+	var body struct {
+		R2CredentialsViaFile bool `json:"r2_credentials_via_file"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body.R2CredentialsViaFile
+}
+
+// The R2 delivery configuration is resolved at request time from the admin
+// settings store plus credential secret files (T27): before configuration
+// the manual run is refused with MAINTENANCE and the target is not
+// delivery-ready; afterwards the same endpoint delivers through the
+// settings-resolved client without a restart.
+func TestBackupsR2DeliveryResolvedFromSettings(t *testing.T) {
+	h := newBackupsAPIHarness(t)
+
+	if jobReady(t, h, h.admin, "r2") {
+		t.Fatal("r2 must not be delivery-ready before configuration")
+	}
+	resp := h.request(t, "POST", "/admin/backups/run", map[string]any{"targets": []string{"r2"}}, h.admin)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured r2 run: %d, want 503 MAINTENANCE", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if credentialsFlag(t, h, h.admin) {
+		t.Fatal("credentials reported present before mounting")
+	}
+
+	// Mount the credential files and store the non-sensitive settings half.
+	// The fake server speaks plain HTTP, so the settings row is seeded
+	// directly; the https whitelist itself is covered by
+	// TestSettingsWhitelistAndAuditResultFilter.
+	fake := newFakeR2()
+	server := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer server.Close()
+	if err := os.WriteFile(h.r2AccessPath, []byte("test-access\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.r2SecretPath, []byte("test-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.DB.Exec(
+		`INSERT INTO app_settings (key, value, updated_at) VALUES ('settings.runtime', ?, ?)`,
+		fmt.Sprintf(`{"r2_endpoint":%q,"r2_bucket":"test-bucket","r2_prefix":"backups/test-instance"}`, server.URL),
+		time.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if !credentialsFlag(t, h, h.admin) {
+		t.Fatal("credentials reported absent after mounting")
+	}
+	if !jobReady(t, h, h.admin, "r2") {
+		t.Fatal("r2 must be delivery-ready after settings + credentials")
+	}
+
+	resp2 := h.request(t, "POST", "/admin/backups/run", map[string]any{"targets": []string{"r2"}}, h.admin)
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Fatalf("configured r2 run: %d", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		resp3 := h.request(t, "GET", "/admin/backups/runs?target=r2", nil, h.admin)
+		var body struct {
+			Items []backup.RunRow `json:"items"`
+		}
+		err := json.NewDecoder(resp3.Body).Decode(&body)
+		resp3.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := len(body.Items) > 0 && body.Items[0].Status == "succeeded"
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("r2 run never succeeded: %+v", body.Items)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	finals := 0
+	for k := range fake.objects {
+		if !strings.HasPrefix(k, "backups/test-instance/") {
+			t.Fatalf("unexpected object %s", k)
+		}
+		if !strings.Contains(k, "/incoming/") {
+			finals++
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("final objects: %d", finals)
+	}
+}
+
+func seedAuditSuccessAndFailure(t *testing.T, db *sql.DB) {	t.Helper()
 	for _, e := range []struct {
 		id     string
 		result string

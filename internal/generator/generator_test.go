@@ -1,8 +1,12 @@
 package generator
 
 import (
+	"context"
+	"crypto/rsa"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -103,11 +107,14 @@ func TestPasswordUniformity(t *testing.T) {
 
 func TestPassphraseWordsAndOptions(t *testing.T) {
 	for _, words := range []int{3, 5, 10} {
-		pp, err := Passphrase(PassphraseOptions{Words: words})
+		// The bundled EFF list contains hyphenated words (for example
+		// "yo-yo"), so use a separator that cannot be mistaken for part of a
+		// selected word when checking the requested count.
+		pp, err := Passphrase(PassphraseOptions{Words: words, Separator: "_"})
 		if err != nil {
 			t.Fatalf("words %d: %v", words, err)
 		}
-		if got := strings.Count(pp, "-") + 1; got != words {
+		if got := strings.Count(pp, "_") + 1; got != words {
 			t.Fatalf("words=%d want %d in %q", got, words, pp)
 		}
 	}
@@ -133,11 +140,11 @@ func TestPassphraseWordsAndOptions(t *testing.T) {
 
 func TestPassphraseWordsFromBundledList(t *testing.T) {
 	// Every generated word must come from the bundled list.
-	pp, err := Passphrase(PassphraseOptions{Words: 10})
+	pp, err := Passphrase(PassphraseOptions{Words: 10, Separator: "_"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, word := range strings.Split(pp, "-") {
+	for _, word := range strings.Split(pp, "_") {
 		if !strings.Contains(strings.Join(words, "\n"), word) {
 			t.Fatalf("word %q not in bundled list", word)
 		}
@@ -233,5 +240,80 @@ func TestSSHKeyPairRSA4096(t *testing.T) {
 	}
 	if signer.PublicKey().Type() != "ssh-rsa" {
 		t.Fatalf("key type: %s", signer.PublicKey().Type())
+	}
+}
+
+func TestSSHKeyPairRSACancelWhileQueued(t *testing.T) {
+	oldWorker := rsaKeyWorker
+	defer func() { rsaKeyWorker = oldWorker }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	rsaKeyWorker = func(context.Context) (*rsa.PrivateKey, error) {
+		close(started)
+		<-release
+		return nil, errors.New("test worker stopped")
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := NewSSHKeyPairContext(context.Background(), SSHAlgoRSA4096, "", "")
+		firstDone <- err
+	}()
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := NewSSHKeyPairContext(ctx, SSHAlgoRSA4096, "", "")
+		secondDone <- err
+	}()
+	cancel()
+
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued cancellation error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued RSA request did not honor cancellation")
+	}
+
+	close(release)
+	if err := <-firstDone; err == nil {
+		t.Fatal("test worker unexpectedly succeeded")
+	}
+}
+
+func TestSSHKeyPairRSATotalDeadline(t *testing.T) {
+	oldWorker := rsaKeyWorker
+	oldTimeout := rsaGenerationTimeout
+	defer func() {
+		rsaKeyWorker = oldWorker
+		rsaGenerationTimeout = oldTimeout
+	}()
+
+	rsaGenerationTimeout = 20 * time.Millisecond
+	rsaKeyWorker = func(ctx context.Context) (*rsa.PrivateKey, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	started := time.Now()
+	_, err := NewSSHKeyPairContext(context.Background(), SSHAlgoRSA4096, "", "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("deadline took %s", elapsed)
+	}
+}
+
+func TestSSHKeyPairHonorsPreCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := NewSSHKeyPairContext(ctx, SSHAlgoEd25519, "", "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled ed25519 error = %v, want context.Canceled", err)
 	}
 }

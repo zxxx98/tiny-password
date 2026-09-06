@@ -96,10 +96,20 @@ type Options struct {
 	// live in the database.
 	ScheduledPassphrase string
 	ScheduledLocalDir   string
-	ScheduledR2         *R2Delivery
+	// R2 resolves the R2 delivery at run time (T27): the non-sensitive
+	// endpoint/bucket/prefix come from the admin settings store and the
+	// credentials from secret files, so configuration changes take effect
+	// on the next run without a restart. A nil result (with a nil error)
+	// means the target is not configured.
+	R2 R2Resolver
 	// Audit records retention deletions (T24); optional.
 	Audit *audit.Service
 }
+
+// R2Resolver returns the current R2 delivery configuration, or nil when
+// the target is not configured. An error reports a resolution failure
+// (settings store, credential file); scheduled runs fail closed on it.
+type R2Resolver func(ctx context.Context) (*R2Delivery, error)
 
 // Runner produces whole-instance backups. The run mutex is process-wide
 // (single-container deployment): every Runner instance in this process
@@ -242,6 +252,7 @@ func (r *Runner) ValidateRunInput(input RunInput) error {
 // already in progress (HTTP 409 BACKUP_BUSY) and a validation error for
 // misconfiguration.
 func (r *Runner) RunAsync(ctx context.Context, input RunInput) (bool, error) {
+	input.Targets = dedupTargets(input.Targets)
 	if err := r.ValidateRunInput(input); err != nil {
 		return false, err
 	}
@@ -269,6 +280,7 @@ func (r *Runner) RunAsync(ctx context.Context, input RunInput) (bool, error) {
 // recording anything. An archive-phase failure fails every requested
 // target's row; a delivery failure never rewrites another target's result.
 func (r *Runner) Run(ctx context.Context, input RunInput) (*RunSummary, error) {
+	input.Targets = dedupTargets(input.Targets)
 	switch input.Trigger {
 	case TriggerManual, TriggerScheduled:
 	default:
@@ -277,7 +289,7 @@ func (r *Runner) Run(ctx context.Context, input RunInput) (*RunSummary, error) {
 	if len(input.Targets) == 0 {
 		return nil, errors.New("backup: no targets requested")
 	}
-	for _, t := range dedupTargets(input.Targets) {
+	for _, t := range input.Targets {
 		switch t {
 		case TargetLocal:
 			if input.LocalDir == "" {
@@ -665,7 +677,7 @@ func errorCode(err error) string {
 	case errors.Is(err, ErrPublish):
 		return CodePublishFailed
 	case errors.Is(err, ErrUploadVerify):
-		return CodeUploadVerifyFaild
+		return CodeUploadVerifyFailed
 	case errors.Is(err, ErrUpload):
 		return CodeUploadFailed
 	default:

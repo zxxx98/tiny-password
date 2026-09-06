@@ -35,6 +35,8 @@ export type ItemEditorProps = {
   csrfToken: string;
   /** Present in edit mode; absent for creation. */
   initial?: ItemDetailData;
+  /** Optional in-memory values handed off by the generator for a new login. */
+  initialLoginDraft?: Partial<LoginPayload>;
   onSaved: (detail: ItemDetailData) => void;
   onCancel: () => void;
 };
@@ -44,11 +46,13 @@ export type ItemEditorProps = {
  * the stored row in edit mode. On a 409 conflict the current edits are kept
  * on screen — the user chooses to reload, nothing is overwritten silently.
  */
-export function ItemEditor({ csrfToken, initial, onSaved, onCancel }: ItemEditorProps) {
+export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onCancel }: ItemEditorProps) {
   const [type, setType] = useState<ItemType>(initial?.item_type ?? "login");
   const [scope, setScope] = useState<"personal" | "shared">(initial?.vault_scope ?? "personal");
   const [payload, setPayload] = useState<ItemPayload>(
-    initial ? (initial.payload as ItemPayload) : emptyPayload("login"),
+    initial
+      ? (initial.payload as ItemPayload)
+      : ({ ...emptyPayload("login"), ...(initialLoginDraft ?? {}) } as ItemPayload),
   );
   const [tagText, setTagText] = useState(initial ? initial.tags.join(", ") : "");
   const [favorite, setFavorite] = useState(initial?.favorite ?? false);

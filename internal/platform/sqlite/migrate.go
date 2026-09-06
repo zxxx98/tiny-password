@@ -63,7 +63,11 @@ func Upgrade(db *DB, fsys fs.FS, dataDir string, now time.Time) (string, error) 
 	if pending == 0 {
 		return "", nil
 	}
-	if !databaseIsEmpty(db.DB) {
+	empty, err := databaseIsEmpty(db.DB)
+	if err != nil {
+		return "", fmt.Errorf("inspect database before upgrade: %w", err)
+	}
+	if !empty {
 		presnapshot := filepath.Join(dataDir, fmt.Sprintf("pre-upgrade-%s.db", now.UTC().Format("20060102T150405")))
 		if err := db.Snapshot(context.Background(), presnapshot); err != nil {
 			return "", fmt.Errorf("pre-upgrade snapshot: %w", err)
@@ -83,14 +87,19 @@ func Upgrade(db *DB, fsys fs.FS, dataDir string, now time.Time) (string, error) 
 }
 
 // databaseIsEmpty reports whether the database holds no application tables
-// yet (a fresh file that only carries the migration bookkeeping).
-func databaseIsEmpty(db *sql.DB) bool {
+// yet (a fresh file that only carries the migration bookkeeping). An error
+// is surfaced, never treated as "empty": the upgrade guard must not skip
+// its pre-upgrade snapshot on an inspection failure.
+func databaseIsEmpty(db *sql.DB) (bool, error) {
 	var n int
 	err := db.QueryRow(
 		`SELECT COUNT(*) FROM sqlite_master WHERE type='table'
 		 AND name NOT LIKE 'sqlite_%' AND name != 'schema_migrations'`,
 	).Scan(&n)
-	return err != nil || n == 0
+	if err != nil {
+		return false, err
+	}
+	return n == 0, nil
 }
 
 // Migrate applies all pending *.sql files from fsys in lexical order inside

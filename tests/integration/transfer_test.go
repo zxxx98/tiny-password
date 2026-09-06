@@ -3,16 +3,22 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/platform/archive"
-	"github.com/tiny-password/tiny-password/internal/vault"
 	"github.com/tiny-password/tiny-password/internal/transfer"
+	"github.com/tiny-password/tiny-password/internal/vault"
 )
 
 // transferHarness wires the transfer endpoints on top of the items harness.
@@ -44,7 +50,11 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 	}(), nil)
 	h.mustCreateItem(t, alice, "shared", "secure_note", map[string]any{"name": "shared", "body": "shared body"}, nil)
 	// bob's personal item must NOT appear in alice's export.
-	h.mustCreateItem(t, h.itemClient(t, "bob"), "personal", "secure_note", map[string]any{"name": "bobs", "body": "b"}, nil)
+	bobSource := h.itemClient(t, "bob")
+	h.mustCreateItem(t, bobSource, "personal", "secure_note", map[string]any{"name": "bobs", "body": "b"}, nil)
+	// Nor should another member's shared item appear: shared readability is
+	// broader than the export policy, which is creator-only.
+	h.mustCreateItem(t, bobSource, "shared", "secure_note", map[string]any{"name": "bobs shared", "body": "b"}, nil)
 
 	// Export.
 	exportBody := map[string]string{"passphrase": "export-passphrase-1", "passphrase_confirm": "export-passphrase-1"}
@@ -152,6 +162,164 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTransferExportRejectsCapacityOverflow(t *testing.T) {
+	h := newTransferHarness(t)
+	h.itemClient(t, "alice")
+	principal := h.principalOf(t, "alice")
+	for i := 0; i < 511; i++ {
+		if _, err := h.vault.Create(t.Context(), principal, vault.CreateInput{
+			ItemType: vault.TypeSecureNote,
+			Scope:    string(vault.ScopePersonal),
+			Payload:  json.RawMessage(fmt.Sprintf(`{"name":"n-%d","body":"body"}`, i)),
+		}, nil); err != nil {
+			t.Fatalf("create item %d: %v", i, err)
+		}
+	}
+	_, err := h.vault.ExportAll(t.Context(), principal)
+	if !errors.Is(err, vault.ErrExportTooLarge) {
+		t.Fatalf("ExportAll error = %v, want ErrExportTooLarge", err)
+	}
+}
+
+func TestTransferExportAtCapacityCanBeListedAndExtracted(t *testing.T) {
+	archiveBin(t)
+	h := newTransferHarness(t)
+	h.itemClient(t, "alice")
+	principal := h.principalOf(t, "alice")
+	for i := 0; i < 510; i++ {
+		if _, err := h.vault.Create(t.Context(), principal, vault.CreateInput{
+			ItemType: vault.TypeSecureNote,
+			Scope:    string(vault.ScopePersonal),
+			Payload:  json.RawMessage(fmt.Sprintf(`{"name":"n-%d","body":"body"}`, i)),
+		}, nil); err != nil {
+			t.Fatalf("create item %d: %v", i, err)
+		}
+	}
+	workDir := t.TempDir()
+	svc, err := transfer.NewService(h.vault, transfer.Options{
+		WorkDir: workDir, HMACKey: bytes.Repeat([]byte{0x51}, 32),
+		Audit: audit.NewService(audit.Options{}), DB: h.db.DB, Now: h.clock.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, cleanup, err := svc.Export(t.Context(), principal, transfer.ExportInput{
+		Passphrase: "export-passphrase-1", PassphraseConfirm: "export-passphrase-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	archiveBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.Preview(t.Context(), principal, archiveBytes, "export-passphrase-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, _, err := svc.Confirm(t.Context(), principal, preview.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported != 510 {
+		t.Fatalf("confirmed imported=%d, want 510", imported)
+	}
+}
+
+func TestTransferImportRejectsInvalidInternalReferencesAtomically(t *testing.T) {
+	h := newTransferHarness(t)
+	actor := h.itemClient(t, "alice")
+	principal := h.principalOf(t, "alice")
+	before := h.listCount(t, actor, "/items")
+	items := []vault.ImportItem{
+		{OriginalID: "source-card", ItemType: vault.TypeCreditCard, Scope: string(vault.ScopePersonal), Payload: json.RawMessage(`{"name":"card","cardholder":"A","number":"4111111111111111","exp_month":1,"exp_year":2030,"billing_address_item_id":"not-identity"}`)},
+		{OriginalID: "not-identity", ItemType: vault.TypeSecureNote, Scope: string(vault.ScopePersonal), Payload: json.RawMessage(`{"name":"note","body":"body"}`)},
+	}
+	if _, _, err := h.vault.ImportAll(t.Context(), principal, items); !errors.Is(err, vault.ErrReferenceForbidden) {
+		t.Fatalf("wrong target type error = %v, want ErrReferenceForbidden", err)
+	}
+	if got := h.listCount(t, actor, "/items"); got != before {
+		t.Fatalf("invalid import changed item count: before=%d after=%d", before, got)
+	}
+
+	sharedSource := []vault.ImportItem{
+		{OriginalID: "shared-card", ItemType: vault.TypeCreditCard, Scope: string(vault.ScopeShared), Payload: json.RawMessage(`{"name":"card","cardholder":"A","number":"4111111111111111","exp_month":1,"exp_year":2030,"billing_address_item_id":"personal-address"}`)},
+		{OriginalID: "personal-address", ItemType: vault.TypeIdentity, Scope: string(vault.ScopePersonal), Payload: json.RawMessage(`{"name":"address"}`)},
+	}
+	if _, _, err := h.vault.ImportAll(t.Context(), principal, sharedSource); !errors.Is(err, vault.ErrReferenceForbidden) {
+		t.Fatalf("shared to personal error = %v, want ErrReferenceForbidden", err)
+	}
+	if got := h.listCount(t, actor, "/items"); got != before {
+		t.Fatalf("invalid shared import changed item count: before=%d after=%d", before, got)
+	}
+}
+
+func TestTransferConfirmConcurrentClaimImportsOnce(t *testing.T) {
+	archiveBin(t)
+	h := newTransferHarness(t)
+	alice := h.itemClient(t, "alice")
+	h.mustCreateItem(t, alice, "personal", "secure_note", map[string]any{"name": "once", "body": "body"}, nil)
+	exportBody, _ := json.Marshal(map[string]string{"passphrase": "export-passphrase-1", "passphrase_confirm": "export-passphrase-1"})
+	exportResp := h.request(t, "POST", "/transfer/export", json.RawMessage(exportBody), alice)
+	if exportResp.StatusCode != http.StatusOK {
+		t.Fatalf("export status=%d", exportResp.StatusCode)
+	}
+	archiveBytes, err := io.ReadAll(exportResp.Body)
+	exportResp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := h.principalOf(t, "alice")
+	workDir := t.TempDir()
+	svc, err := transfer.NewService(h.vault, transfer.Options{
+		WorkDir: workDir, HMACKey: bytes.Repeat([]byte{0x61}, 32),
+		Audit: audit.NewService(audit.Options{}), DB: h.db.DB, Now: h.clock.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := svc.Preview(t.Context(), principal, archiveBytes, "export-passphrase-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	type outcome struct {
+		imported int
+		err      error
+	}
+	outcomes := make(chan outcome, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			imported, _, err := svc.Confirm(t.Context(), principal, preview.Token)
+			outcomes <- outcome{imported: imported, err: err}
+		}()
+	}
+	wg.Wait()
+	close(outcomes)
+	successes := 0
+	for result := range outcomes {
+		if result.err == nil {
+			successes++
+			if result.imported != 1 {
+				t.Fatalf("successful confirm imported=%d, want 1", result.imported)
+			}
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful confirms=%d, want 1", successes)
+	}
+	items, err := h.vault.List(t.Context(), principal, vault.ListFilter{}, "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items after concurrent confirm=%d, want 2", len(items))
+	}
+}
+
 func TestTransferPreviewWrongPassphraseAndDigest(t *testing.T) {
 	archiveBin(t)
 	h := newTransferHarness(t)
@@ -197,6 +365,11 @@ func TestTransferPreviewWrongPassphraseAndDigest(t *testing.T) {
 	}
 	if strings.Contains(body["message"].(string), "/tmp/") {
 		t.Fatal("error message leaked a path")
+	}
+
+	status, body = upload(strings.Repeat("p", transfer.MaxPassphraseBytes+1), nil)
+	if status != http.StatusBadRequest || body["code"] != "VALIDATION_ERROR" {
+		t.Fatalf("oversized passphrase: %d %v", status, body)
 	}
 
 	// A corrupted body fails closed with a stable 400: corruption inside the

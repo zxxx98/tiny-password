@@ -150,6 +150,19 @@ describe("SensitiveField", () => {
 });
 
 describe("ItemEditor", () => {
+  it("prefills a personal login editor from an in-memory generated password draft", () => {
+    render(
+      <ItemEditor
+        csrfToken={csrf}
+        initialLoginDraft={{ password: "HANDOFF-PASSWORD" }}
+        onSaved={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("密码")).toHaveValue("HANDOFF-PASSWORD");
+    expect(screen.getByLabelText("密码")).toHaveAttribute("type", "password");
+  });
+
   it("blocks submission client-side when required fields are missing", async () => {
     const user = userEvent.setup();
     const fetchMock = stubFetch([]);

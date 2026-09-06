@@ -22,7 +22,7 @@ test.describe("backup administration", () => {
     await expect(page.getByText("未配置交付")).toBeVisible();
 
     // Adjust the local schedule and retention, then save.
-    await page.getByLabel("每日执行时间（UTC，HH:MM）").first().fill("03:30");
+    await page.getByLabel("每日执行时间（HH:MM）").first().fill("03:30");
     await page.getByLabel("日备份保留数").first().fill("5");
     await page.getByRole("button", { name: "保存配置" }).first().click();
     await expect(page.getByText("本地备份配置已保存。")).toBeVisible();
@@ -42,7 +42,9 @@ test.describe("backup administration", () => {
     await expect(page.getByRole("heading", { name: "系统设置" })).toBeVisible();
 
     await expect(page.getByText("就绪", { exact: true })).toBeVisible();
-    await expect(page.getByText("由 Secret 文件注入")).toBeVisible();
+    // The test instance mounts no R2 credentials, so the system page must
+    // report their absence honestly (the flag is real, not hard-coded).
+    await expect(page.getByText("未挂载")).toBeVisible();
     // The restore section explains the offline command and never offers a
     // web-side restore button.
     await expect(page.getByText(/tiny-password restore/)).toBeVisible();

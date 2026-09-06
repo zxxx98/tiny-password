@@ -359,37 +359,48 @@ type Object struct {
 	LastModified time.Time
 }
 
-// ListObjects lists up to 1000 keys under prefix.
+// listPage is one ListObjectsV2 response.
+type listPage struct {
+	Contents []struct {
+		Key          string    `xml:"Key"`
+		Size         int64     `xml:"Size"`
+		LastModified time.Time `xml:"LastModified"`
+	} `xml:"Contents"`
+	IsTruncated           bool   `xml:"IsTruncated"`
+	NextContinuationToken string `xml:"NextContinuationToken"`
+}
+
+// ListObjects lists the keys under prefix, following continuation tokens
+// so sweeps and retention reconciliation see the whole key space.
 func (c *Client) ListObjects(ctx context.Context, prefix string) ([]Object, error) {
+	var objects []Object
 	query := url.Values{"list-type": {"2"}, "prefix": {prefix}}
-	u := c.endpointURL("/"+c.cfg.Bucket, query)
-	resp, err := c.do(ctx, http.MethodGet, u, emptySHA256, nil, nil)
-	if err != nil {
-		return nil, err
+	for page := 0; ; page++ {
+		u := c.endpointURL("/"+c.cfg.Bucket, query)
+		resp, err := c.do(ctx, http.MethodGet, u, emptySHA256, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, statusError(resp)
+		}
+		var listing listPage
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		drainClose(resp)
+		if readErr != nil {
+			return nil, fmt.Errorf("%w: list read: %v", ErrUnexpected, readErr)
+		}
+		if err := xml.Unmarshal(raw, &listing); err != nil {
+			return nil, fmt.Errorf("%w: list parse: %v", ErrUnexpected, err)
+		}
+		for _, c := range listing.Contents {
+			objects = append(objects, Object{Key: c.Key, Size: c.Size, LastModified: c.LastModified})
+		}
+		if !listing.IsTruncated || listing.NextContinuationToken == "" || page >= 1000 {
+			return objects, nil
+		}
+		query.Set("continuation-token", listing.NextContinuationToken)
 	}
-	defer drainClose(resp)
-	if resp.StatusCode != http.StatusOK {
-		return nil, statusError(resp)
-	}
-	var listing struct {
-		Contents []struct {
-			Key          string    `xml:"Key"`
-			Size         int64     `xml:"Size"`
-			LastModified time.Time `xml:"LastModified"`
-		} `xml:"Contents"`
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, fmt.Errorf("%w: list read: %v", ErrUnexpected, err)
-	}
-	if err := xml.Unmarshal(raw, &listing); err != nil {
-		return nil, fmt.Errorf("%w: list parse: %v", ErrUnexpected, err)
-	}
-	objects := make([]Object, 0, len(listing.Contents))
-	for _, c := range listing.Contents {
-		objects = append(objects, Object{Key: c.Key, Size: c.Size, LastModified: c.LastModified})
-	}
-	return objects, nil
 }
 
 func escapeKey(key string) string {

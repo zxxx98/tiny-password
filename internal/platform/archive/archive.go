@@ -32,8 +32,12 @@ import (
 // 512 files.
 const (
 	MaxArchiveBytes = 64 << 20
-	MaxExtractBytes = 128 << 20
-	MaxFiles        = 512
+	// MaxTransferRequestBytes includes multipart framing and form-field
+	// overhead around a personal archive. It is enforced before multipart
+	// parsing so a request cannot make the parser allocate without bound.
+	MaxTransferRequestBytes int64 = 96 << 20
+	MaxExtractBytes               = 128 << 20
+	MaxFiles                      = 512
 	// MaxArchiveBytesOnDisk caps what the caller may hand us before 7z sees it.
 	// extractTimeout bounds every 7-Zip invocation.
 	extractTimeout = 120 * time.Second
@@ -409,5 +413,10 @@ func TempFileUnder(base string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.CreateTemp(dir, "upload-"+hex.EncodeToString(rnd[:]))
+	f, err := os.CreateTemp(dir, "upload-"+hex.EncodeToString(rnd[:]))
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	return f, nil
 }

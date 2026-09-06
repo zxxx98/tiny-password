@@ -24,6 +24,42 @@ func TestGeneratorEndpoints(t *testing.T) {
 	if status != 200 || len(body["value"].(string)) != 20 {
 		t.Fatalf("password default: %d %v", status, body)
 	}
+	// An omitted option still receives its documented default, even when a
+	// different option is supplied.  The generator guarantees each enabled
+	// class appears at least once, making this deterministic.
+	status, body = post("/generators/password", map[string]any{"length": 8}, alice)
+	if status != 200 {
+		t.Fatalf("password omitted classes: %d %v", status, body)
+	}
+	value := body["value"].(string)
+	for name, chars := range map[string]string{
+		"lowercase": "abcdefghijklmnopqrstuvwxyz",
+		"uppercase": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+		"digits":    "0123456789",
+		"symbols":   "!@#$%^&*()-_=+[]{};:,.?/",
+	} {
+		if !strings.ContainsAny(value, chars) {
+			t.Fatalf("omitted %s did not default on: %q", name, value)
+		}
+	}
+	// Presence matters: explicit zero/negative lengths and an explicit
+	// all-disabled class selection must be rejected rather than replaced with
+	// defaults.
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{name: "all classes disabled", body: map[string]any{
+			"lowercase": false, "uppercase": false, "digits": false, "symbols": false,
+		}},
+		{name: "zero length", body: map[string]any{"length": 0}},
+		{name: "negative length", body: map[string]any{"length": -1}},
+	} {
+		status, body = post("/generators/password", tc.body, alice)
+		if status != 400 || body["code"] != "VALIDATION_ERROR" {
+			t.Fatalf("%s: status=%d body=%v, want 400/VALIDATION_ERROR", tc.name, status, body)
+		}
+	}
 	// Length bounds and class handling.
 	status, body = post("/generators/password", map[string]any{"length": 8, "lowercase": true, "uppercase": false, "digits": false, "symbols": false}, alice)
 	if status != 200 || strings.ContainsAny(body["value"].(string), "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#") {

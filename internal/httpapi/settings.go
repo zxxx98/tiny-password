@@ -19,6 +19,10 @@ type SettingsDeps struct {
 	Version   string
 	// Ready reports the readiness checks (same set as /readyz).
 	Ready func() (map[string]bool, bool)
+	// R2CredentialsPresent reports whether both R2 credential secret files
+	// are mounted and readable (presence only — never the values). Nil
+	// reports false.
+	R2CredentialsPresent func() bool
 }
 
 func registerSettings(api *http.ServeMux, deps SettingsDeps) {
@@ -37,15 +41,15 @@ func registerSettings(api *http.ServeMux, deps SettingsDeps) {
 		if deps.Ready != nil {
 			checks, ready = deps.Ready()
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"version":  deps.Version,
-			"ready":    ready,
-			"checks":   checks,
-			"settings": st,
-			// Presence flag only — never the credential values.
-			"r2_credentials_via_file": true,
-			"scheduler":               deps.Scheduler.Results(),
-		})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"version":  deps.Version,
+				"ready":    ready,
+				"checks":   checks,
+				"settings": st,
+				// Presence flag only — never the credential values.
+				"r2_credentials_via_file": deps.R2CredentialsPresent != nil && deps.R2CredentialsPresent(),
+				"scheduler":               deps.Scheduler.Results(),
+			})
 	}))
 
 	// Update from an explicit non-sensitive whitelist; unknown or sensitive

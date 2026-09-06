@@ -96,13 +96,3 @@ func (s *Service) Update(ctx context.Context, st Settings) error {
 	}
 	return nil
 }
-
-// R2Configured reports whether the non-sensitive R2 settings are present
-// (the credential half comes from secret files).
-func (s *Service) R2Configured(ctx context.Context) (bool, error) {
-	st, err := s.Get(ctx)
-	if err != nil {
-		return false, err
-	}
-	return st.R2Endpoint != "" && st.R2Bucket != "", nil
-}

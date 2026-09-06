@@ -207,7 +207,8 @@ func ListRuns(db *sql.DB, target, beforeCreated, beforeID string, limit int) ([]
 
 // ScheduledJobs returns one scheduler job per enabled target that has a
 // daily schedule. The passphrase and delivery configuration come from the
-// runner options (secret files), never from the database.
+// runner options (secret files / settings resolver), never from the
+// database's sensitive surface.
 func (r *Runner) ScheduledJobs() ([]scheduler.Job, error) {
 	configs, err := LoadJobConfigs(r.opts.DB.DB)
 	if err != nil {
@@ -224,7 +225,7 @@ func (r *Runner) ScheduledJobs() ([]scheduler.Job, error) {
 			Timezone: c.ScheduleTimezone,
 			DailyAt:  c.ScheduleTime,
 			Fn: func(ctx context.Context) error {
-				input, err := r.scheduledInput(target)
+				input, err := r.scheduledInput(ctx, target)
 				if err != nil {
 					return err
 				}
@@ -239,7 +240,7 @@ func (r *Runner) ScheduledJobs() ([]scheduler.Job, error) {
 // scheduledInput builds the RunInput for scheduled executions. It fails
 // closed on missing configuration: an enabled target without its delivery
 // settings reports an error instead of guessing.
-func (r *Runner) scheduledInput(target Target) (RunInput, error) {
+func (r *Runner) scheduledInput(ctx context.Context, target Target) (RunInput, error) {
 	input := RunInput{Targets: []Target{target}, Trigger: TriggerScheduled}
 	if r.opts.ScheduledPassphrase == "" {
 		return input, fmt.Errorf("backup: scheduled backup passphrase not configured")
@@ -249,10 +250,17 @@ func (r *Runner) scheduledInput(target Target) (RunInput, error) {
 	case TargetLocal:
 		input.LocalDir = r.opts.ScheduledLocalDir
 	case TargetR2:
-		input.R2 = r.opts.ScheduledR2
-		if input.R2 == nil {
+		if r.opts.R2 == nil {
 			return input, fmt.Errorf("backup: r2 delivery is not configured")
 		}
+		delivery, err := r.opts.R2(ctx)
+		if err != nil {
+			return input, fmt.Errorf("backup: resolve r2 delivery: %w", err)
+		}
+		if delivery == nil {
+			return input, fmt.Errorf("backup: r2 delivery is not configured")
+		}
+		input.R2 = delivery
 	default:
 		return input, fmt.Errorf("backup: unsupported target %q", target)
 	}
@@ -265,8 +273,10 @@ type MaintenanceDeps struct {
 	DB          *sqlite.DB
 	Vault       *vault.Service
 	Idempotency *idempotency.Service
-	// R2Incoming, when set, sweeps interrupted R2 temporary objects.
-	R2Incoming *R2Delivery
+	// R2Incoming, when set, sweeps interrupted R2 temporary objects. The
+	// resolver is evaluated per execution so settings changes apply without
+	// a restart; a nil result skips the sweep.
+	R2Incoming R2Resolver
 }
 
 // MaintenanceJobs returns the bounded sweeps registered alongside backups
@@ -319,7 +329,14 @@ func MaintenanceJobs(deps MaintenanceDeps) []scheduler.Job {
 		jobs = append(jobs, scheduler.Job{
 			Name: "maintenance.r2_incoming",
 			Fn: func(ctx context.Context) error {
-				_, err := deps.R2Incoming.CleanupIncoming(ctx)
+				delivery, err := deps.R2Incoming(ctx)
+				if err != nil {
+					return err
+				}
+				if delivery == nil {
+					return nil
+				}
+				_, err = delivery.CleanupIncoming(ctx)
 				return err
 			},
 		})

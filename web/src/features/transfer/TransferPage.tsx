@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
-import { ApiError, request } from "../../app/api";
-import { useSession } from "../../app/session";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError, request, requestBlob } from "../../app/api";
+import { SESSION_EXPIRED_EVENT, useSession } from "../../app/session";
 import { Button } from "../../design-system/Button";
 import { Field } from "../../design-system/Field";
 import { ErrorSummary, StatusBanner } from "../../design-system/Status";
@@ -26,6 +26,18 @@ const errorOf = (err: unknown): { message: string; requestId?: string } => {
  */
 export function TransferPage() {
   const { csrfToken } = useSession();
+  const mountedRef = useRef(true);
+  const sessionExpiredRef = useRef(false);
+  const csrfTokenRef = useRef(csrfToken);
+  csrfTokenRef.current = csrfToken;
+  const previewRef = useRef<Preview | null>(null);
+  const controllersRef = useRef(new Set<AbortController>());
+  const sensitiveRef = useRef<{ passphrase: string; confirm: string; importPass: string; file: File | null }>({
+    passphrase: "",
+    confirm: "",
+    importPass: "",
+    file: null,
+  });
 
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -39,8 +51,87 @@ export function TransferPage() {
   const [error, setError] = useState<string | null>(null);
   const [requestId, setRequestId] = useState<string | undefined>();
   const [banner, setBanner] = useState<string | null>(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
+
+  sensitiveRef.current.passphrase = passphrase;
+  sensitiveRef.current.confirm = confirm;
+  sensitiveRef.current.importPass = importPass;
+  sensitiveRef.current.file = file;
+
+  const clearSecrets = useCallback(() => {
+    sensitiveRef.current = { passphrase: "", confirm: "", importPass: "", file: null };
+    previewRef.current = null;
+    setPassphrase("");
+    setConfirm("");
+    setFile(null);
+    setImportPass("");
+    setPreview(null);
+    setFileInputKey((key) => key + 1);
+    setError(null);
+    setRequestId(undefined);
+    setBanner(null);
+  }, []);
+
+  const cancelPreview = useCallback(async (previewToken: string, token: string) => {
+    try {
+      await request<void>(
+        "POST",
+        "/api/v1/transfer/import/cancel",
+        { preview_token: previewToken },
+        // Session expiry is already being handled by the originating call;
+        // cleanup must not recursively broadcast another expiry event.
+        { csrfToken: token, suppressAuthFailure: true },
+      );
+    } catch {
+      // Best effort: the server's lifecycle cleanup is authoritative.
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const onExpired = () => {
+      sessionExpiredRef.current = true;
+      for (const controller of controllersRef.current) {
+        controller.abort();
+      }
+      const token = previewRef.current?.preview_token;
+      clearSecrets();
+      if (token) {
+        void cancelPreview(token, csrfTokenRef.current);
+      }
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => {
+      mountedRef.current = false;
+      for (const controller of controllersRef.current) {
+        controller.abort();
+      }
+      const token = previewRef.current?.preview_token;
+      // React state is no longer observable after unmount; clear the refs
+      // directly so no cleanup callback retains file or passphrase values.
+      sensitiveRef.current = { passphrase: "", confirm: "", importPass: "", file: null };
+      previewRef.current = null;
+      if (token) {
+        void cancelPreview(token, csrfTokenRef.current);
+      }
+      window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    };
+  }, [cancelPreview, clearSecrets]);
+
+  const beginRequest = () => {
+    const controller = new AbortController();
+    controllersRef.current.add(controller);
+    return controller;
+  };
+
+  const endRequest = (controller: AbortController) => {
+    controllersRef.current.delete(controller);
+  };
 
   const fail = useCallback((err: unknown) => {
+    if (!mountedRef.current || sessionExpiredRef.current) {
+      return;
+    }
     if (err instanceof ApiError) {
       setError(err.message);
       setRequestId(err.requestId);
@@ -56,19 +147,17 @@ export function TransferPage() {
       return;
     }
     setExporting(true);
+    const controller = beginRequest();
     try {
-      const response = await fetch("/api/v1/transfer/export", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-        body: JSON.stringify({ passphrase, passphrase_confirm: confirm }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({ message: "导出失败" }));
-        setError(body.message ?? "导出失败");
+      const blob = await requestBlob(
+        "POST",
+        "/api/v1/transfer/export",
+        { passphrase, passphrase_confirm: confirm },
+        { csrfToken, signal: controller.signal },
+      );
+      if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
         return;
       }
-      const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -79,44 +168,64 @@ export function TransferPage() {
       setConfirm("");
       setBanner("归档已下载。请妥善保管归档口令——没有口令将无法恢复。");
     } catch (err) {
+      if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
+        return;
+      }
       const info = errorOf(err);
       setError(info.message);
       setRequestId(info.requestId);
     } finally {
-      setExporting(false);
+      endRequest(controller);
+      if (mountedRef.current && !sessionExpiredRef.current && !controller.signal.aborted) {
+        setExporting(false);
+      }
     }
   }, [passphrase, confirm, csrfToken]);
 
   const doPreview = useCallback(async () => {
     setError(null);
+    const previousToken = previewRef.current?.preview_token;
+    if (previousToken) {
+      previewRef.current = null;
+      void cancelPreview(previousToken, csrfTokenRef.current);
+    }
     setPreview(null);
+    previewRef.current = null;
     if (!file) {
       setError("请选择要导入的归档文件。");
       return;
     }
     setImporting(true);
+    const controller = beginRequest();
     try {
       const body = new FormData();
       body.append("archive", file);
       body.append("passphrase", importPass);
-      const response = await fetch("/api/v1/transfer/import/preview", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "X-CSRF-Token": csrfToken },
+      const data = await request<Preview>(
+        "POST",
+        "/api/v1/transfer/import/preview",
         body,
-      });
-      const data = await response.json().catch(() => ({ message: "导入失败" }));
-      if (!response.ok) {
-        setError(data.message ?? "导入失败");
+        { csrfToken, signal: controller.signal },
+      );
+      if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
         return;
       }
-      setPreview(data as Preview);
-    } catch {
-      setError("导入失败，请重试。");
+      previewRef.current = data;
+      setPreview(data);
+    } catch (err) {
+      if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
+        return;
+      }
+      const info = errorOf(err);
+      setError(info.message);
+      setRequestId(info.requestId);
     } finally {
-      setImporting(false);
+      endRequest(controller);
+      if (mountedRef.current && !sessionExpiredRef.current && !controller.signal.aborted) {
+        setImporting(false);
+      }
     }
-  }, [file, importPass, csrfToken]);
+  }, [file, importPass, csrfToken, cancelPreview]);
 
   const doConfirm = useCallback(async () => {
     if (!preview) {
@@ -124,21 +233,32 @@ export function TransferPage() {
     }
     setImporting(true);
     setError(null);
+    const controller = beginRequest();
     try {
       const summary = await request<{ imported_count: number }>(
         "POST",
         "/api/v1/transfer/import/confirm",
         { preview_token: preview.preview_token },
-        { csrfToken },
+        { csrfToken, signal: controller.signal },
       );
+      if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
+        return;
+      }
+      previewRef.current = null;
       setPreview(null);
       setFile(null);
+      setFileInputKey((key) => key + 1);
       setImportPass("");
       setBanner(`导入完成：${summary.imported_count} 个条目已写入保险库。`);
     } catch (err) {
-      fail(err);
+      if (!controller.signal.aborted) {
+        fail(err);
+      }
     } finally {
-      setImporting(false);
+      endRequest(controller);
+      if (mountedRef.current && !sessionExpiredRef.current && !controller.signal.aborted) {
+        setImporting(false);
+      }
     }
   }, [preview, csrfToken, fail]);
 
@@ -207,6 +327,7 @@ export function TransferPage() {
           label="归档文件（.7z）"
           type="file"
           accept=".7z"
+          key={fileInputKey}
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         />
         <Field

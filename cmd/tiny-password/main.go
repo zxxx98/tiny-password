@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,7 +25,6 @@ import (
 	"github.com/tiny-password/tiny-password/internal/idempotency"
 	"github.com/tiny-password/tiny-password/internal/platform/config"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
-	"github.com/tiny-password/tiny-password/internal/platform/objectstore"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 	"github.com/tiny-password/tiny-password/internal/scheduler"
 	"github.com/tiny-password/tiny-password/internal/settings"
@@ -152,12 +150,27 @@ func run(logger *slog.Logger) error {
 	}
 	usersService := users.NewService(db.DB, users.Options{Audit: auditService})
 
+	// Non-sensitive admin settings (T27). The R2 delivery resolver combines
+	// them with the credential secret files on every run, so configuration
+	// changes apply without a restart; credentials never enter the store.
+	settingsService := settings.NewService(db.DB)
+	backupPassphrase, err := backup.ReadOptionalSecretFile(
+		envOr("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase"),
+	)
+	if err != nil {
+		return fmt.Errorf("backup passphrase secret: %w", err)
+	}
+	r2AccessPath := envOr("TP_R2_ACCESS_KEY_FILE", "/run/secrets/r2_access_key")
+	r2SecretPath := envOr("TP_R2_SECRET_KEY_FILE", "/run/secrets/r2_secret_key")
+	r2Resolver := backup.NewSettingsR2Resolver(db.DB, settingsService, r2AccessPath, r2SecretPath)
+
 	// Vault item endpoints need the master key to seal payloads; an instance
 	// without a key stays healthy but exposes no vault surface.
 	var itemsDeps *httpapi.ItemsDeps
 	var transferDeps *httpapi.TransferDeps
+	var transferService *transfer.Service
+	var previewCleanup httpapi.PreviewCleanup
 	var backupRunner *backup.Runner
-	var scheduledR2 *backup.R2Delivery
 	var vaultService *vault.Service
 	if masterKey != nil {
 		vaultService, err = vault.NewService(db.DB, masterKey, vault.Options{Audit: auditService})
@@ -170,10 +183,16 @@ func run(logger *slog.Logger) error {
 			Cursor:      cursorCodec,
 			Idempotency: idempotencyService,
 		}
-		// Personal import/export staging lives under the data dir with 0700
-		// permissions (D11: a tmpfs mount in deployment).
-		transferService, err := transfer.NewService(vaultService, transfer.Options{
-			WorkDir: envOr("TP_TRANSFER_WORK_DIR", filepath.Join(dataDir, "transfer-tmp")),
+		// Personal import/export staging must live on an approved tmpfs mount
+		// (D11). PrepareWorkDir validates both the default and the operator's
+		// TP_TRANSFER_WORK_DIR, then creates one private child per process.
+		workDir, cleanupWorkDir, err := transfer.PrepareWorkDir(os.Getenv("TP_TRANSFER_WORK_DIR"))
+		if err != nil {
+			return fmt.Errorf("transfer staging unavailable: %w", err)
+		}
+		defer cleanupWorkDir()
+		transferService, err = transfer.NewService(vaultService, transfer.Options{
+			WorkDir: workDir,
 			HMACKey: masterKey.IdempotencyMACKey(),
 			Audit:   auditService,
 			DB:      db.DB,
@@ -181,6 +200,7 @@ func run(logger *slog.Logger) error {
 		if err != nil {
 			return fmt.Errorf("transfer service: %w", err)
 		}
+		previewCleanup = transferService
 		transferDeps = &httpapi.TransferDeps{Service: transferService, Session: authService}
 
 		// Whole-instance backups (M5). The runner stages everything in a
@@ -190,11 +210,10 @@ func run(logger *slog.Logger) error {
 			WorkDir:             envOr("TP_BACKUP_WORK_DIR", filepath.Join(dataDir, "backup-tmp")),
 			AppVersion:          version,
 			MasterKeyRaw:        masterKeyRaw,
-			ScheduledPassphrase: readOptionalSecret("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase"),
+			ScheduledPassphrase: backupPassphrase,
 			ScheduledLocalDir:   envOr("TP_BACKUP_DIR", filepath.Join(dataDir, "backups")),
+			R2:                  r2Resolver,
 		}
-		scheduledR2 = r2DeliveryFromEnv(logger)
-		backupOptions.ScheduledR2 = scheduledR2
 		backupRunner, err = backup.NewRunner(backupOptions)
 		if err != nil {
 			return fmt.Errorf("backup runner: %w", err)
@@ -222,7 +241,7 @@ func run(logger *slog.Logger) error {
 			}
 		}
 	}
-	maintenanceDeps := backup.MaintenanceDeps{DB: db, Vault: vaultService, Idempotency: idempotencyService, R2Incoming: scheduledR2}
+	maintenanceDeps := backup.MaintenanceDeps{DB: db, Vault: vaultService, Idempotency: idempotencyService, R2Incoming: r2Resolver}
 	for _, job := range backup.MaintenanceJobs(maintenanceDeps) {
 		if err := sched.Register(job); err != nil {
 			return fmt.Errorf("register %s: %w", job.Name, err)
@@ -232,17 +251,16 @@ func run(logger *slog.Logger) error {
 	defer sched.Stop()
 
 	// Admin backup/settings endpoints (T27). The manual passphrase and
-	// delivery configuration live in the runner options; the R2 non-
-	// sensitive half is persisted in the settings service.
-	settingsService := settings.NewService(db.DB)
+	// delivery configuration resolve from secret files and the settings
+	// store; secrets never appear in responses.
 	var backupsDeps *httpapi.BackupsDeps
 	if backupRunner != nil {
 		backupsDeps = &httpapi.BackupsDeps{
 			Runner:     backupRunner,
 			DB:         db,
 			LocalDir:   envOr("TP_BACKUP_DIR", filepath.Join(dataDir, "backups")),
-			R2:         scheduledR2,
-			Passphrase: readOptionalSecret("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase"),
+			R2:         r2Resolver,
+			Passphrase: backupPassphrase,
 			Session:    authService,
 			Cursor:     cursorCodec,
 		}
@@ -255,9 +273,9 @@ func run(logger *slog.Logger) error {
 			Ready:      ready,
 			Logger:     logger,
 			Proxy:      proxy,
-			Auth:       &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy},
+			Auth:       &httpapi.AuthDeps{Service: authService, CSRF: csrf, AllowInsecureCookies: config.AllowInsecureCookies(), Proxy: proxy, PreviewCleanup: previewCleanup},
 			Audit:      &httpapi.AuditDeps{Service: auditService, DB: db, Cursor: cursorCodec, Session: authService},
-			Users:      &httpapi.UsersDeps{Service: usersService, Session: authService, Cursor: cursorCodec, Idempotency: idempotencyService},
+			Users:      &httpapi.UsersDeps{Service: usersService, Session: authService, Cursor: cursorCodec, Idempotency: idempotencyService, PreviewCleanup: previewCleanup},
 			Items:      itemsDeps,
 			Generators: &httpapi.GeneratorsDeps{Session: authService},
 			Transfer:   transferDeps,
@@ -268,6 +286,9 @@ func run(logger *slog.Logger) error {
 				Scheduler: sched,
 				Version:   version,
 				Ready:     func() (map[string]bool, bool) { return ready.Run(context.Background()) },
+				R2CredentialsPresent: func() bool {
+					return backup.R2CredentialsPresent(r2AccessPath, r2SecretPath)
+				},
 			},
 			Setup: &httpapi.SetupDeps{
 				Service:     bootService,
@@ -286,6 +307,10 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if transferService != nil {
+		transferService.Start(ctx)
+		defer transferService.Close()
+	}
 
 	shutdownErr := make(chan error, 1)
 	go func() {
@@ -312,48 +337,6 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// readOptionalSecret reads a secret file that may legitimately be absent
-// (e.g. scheduled backups disabled). Present-but-unreadable is fatal: the
-// operator must fix the mount rather than run with partial credentials.
-func readOptionalSecret(envKey, defaultPath string) string {
-	path := envOr(envKey, defaultPath)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(raw))
-}
-
-// r2DeliveryFromEnv assembles the R2 delivery from operator configuration.
-// All-or-nothing: a partial configuration logs a warning and disables the
-// target instead of guessing.
-func r2DeliveryFromEnv(logger *slog.Logger) *backup.R2Delivery {
-	endpoint := os.Getenv("TP_R2_ENDPOINT")
-	bucket := os.Getenv("TP_R2_BUCKET")
-	prefix := envOr("TP_R2_PREFIX", "tiny-password")
-	access := readOptionalSecret("TP_R2_ACCESS_KEY_FILE", "/run/secrets/r2_access_key")
-	secret := readOptionalSecret("TP_R2_SECRET_KEY_FILE", "/run/secrets/r2_secret_key")
-	if endpoint == "" && bucket == "" && access == "" && secret == "" {
-		return nil
-	}
-	if endpoint == "" || bucket == "" || access == "" || secret == "" {
-		logger.Warn("incomplete R2 configuration; R2 backup target disabled")
-		return nil
-	}
-	client, err := objectstore.NewClient(objectstore.Config{
-		Endpoint:        endpoint,
-		Region:          "auto",
-		Bucket:          bucket,
-		AccessKeyID:     access,
-		SecretAccessKey: secret,
-	})
-	if err != nil {
-		logger.Warn("invalid R2 configuration; R2 backup target disabled")
-		return nil
-	}
-	return &backup.R2Delivery{Client: client, Prefix: prefix}
 }
 
 // A missing master key still permits health/readiness diagnostics, but cannot

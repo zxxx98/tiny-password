@@ -18,7 +18,7 @@ import (
 // backup_runs.error_code).
 const (
 	CodeUploadFailed      = "BACKUP_UPLOAD_FAILED"
-	CodeUploadVerifyFaild = "BACKUP_UPLOAD_VERIFY_FAILED"
+	CodeUploadVerifyFailed = "BACKUP_UPLOAD_VERIFY_FAILED"
 )
 
 // Errors for the R2 delivery phase.
@@ -105,11 +105,10 @@ func (d R2Delivery) Deliver(ctx context.Context, stagedPath string, size int64, 
 		return "", fmt.Errorf("%w: final object size %d, want %d", ErrUploadVerify, info.Size, size)
 	}
 
-	if err := d.Client.DeleteObject(ctx, tmpKey); err != nil {
-		// The final object is delivered; a lingering temporary object is
-		// cleaned up later (CleanupIncoming) and must not fail the run.
-		return "", fmt.Errorf("%w: temporary object cleanup deferred: %s", ErrUpload, classifyUpload(err, false).Error())
-	}
+	// The final object is delivered and verified. A temporary object whose
+	// delete failed lingers only until CleanupIncoming sweeps it (TTL); it
+	// must never turn a verified delivery into a failed run.
+	_ = d.Client.DeleteObject(ctx, tmpKey)
 	return finalKey, nil
 }
 

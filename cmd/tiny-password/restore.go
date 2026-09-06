@@ -26,7 +26,14 @@ func runRestoreCommand(args []string, logger *slog.Logger) int {
 		return 2
 	}
 	dataDir := envOr("TP_DATA_DIR", "/data")
-	passphrase := readOptionalSecret("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase")
+	passphrase, err := backup.ReadOptionalSecretFile(
+		envOr("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase"),
+	)
+	if err != nil {
+		logger.Error("backup passphrase secret unreadable", "error", err.Error())
+		logger.Error("restore failed", "stage", "start", "code", backup.RestoreCodePassphrase, "request_id", restoreCorrelationID)
+		return 1
+	}
 
 	targetKeyRaw, err := config.ReadMasterKeyFile(config.MasterKeyFile())
 	if err != nil {

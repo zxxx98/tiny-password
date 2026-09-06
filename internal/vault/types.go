@@ -65,6 +65,14 @@ var (
 	ErrReferenceForbidden = errors.New("vault: address reference not allowed")
 	// ErrRevisionConflict reports an optimistic-locking mismatch.
 	ErrRevisionConflict = errors.New("vault: revision conflict")
+	// ErrExportTooLarge reports an export whose item count would exceed the
+	// archive entry limit. Export callers must fail before producing a partial
+	// archive rather than silently truncating the result.
+	ErrExportTooLarge = errors.New("vault: export exceeds the allowed size")
+	// ErrImportCommitUnknown marks a transaction whose Commit returned an
+	// error after SQLite may have durably applied it. Callers must not retry
+	// the corresponding one-shot operation automatically.
+	ErrImportCommitUnknown = errors.New("vault: import commit outcome unknown")
 )
 
 // RevisionConflictError carries the current revision so the HTTP layer can
@@ -90,10 +98,10 @@ type Meta struct {
 	// items never carry a name: only their owner can read them.
 	CreatorName string  `json:"creator_name,omitempty"`
 	Favorite    bool    `json:"favorite"`
-	Revision  uint64  `json:"revision"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	DeletedAt *string `json:"deleted_at"`
+	Revision    uint64  `json:"revision"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+	DeletedAt   *string `json:"deleted_at"`
 }
 
 // Detail adds the decrypted payload and the tag list. Tags live inside the

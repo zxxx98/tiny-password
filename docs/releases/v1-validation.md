@@ -352,3 +352,16 @@
   1. **真实 R2 验收未完成**（`TestR2Live` 跳过）：需要 TP_R2_TEST_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY 测试凭据；T30 前必须补跑并记录证据。
   2. M5 退出门槛要求"本地和 R2 各完成新密钥干净实例恢复"：本地路径已由 `TestRestoreFullRoundTripWithNewKey`+`TestRestoreOverExistingInstancePreservesSnapshot` 覆盖；R2 侧恢复依赖真实 R2 下载归档，同样等待测试凭据（恢复流程本身与归档来源无关，已由本地归档全量验证）。
   3. race 全量 `-timeout=25m` 复核在 T30 统一执行（本轮仅对新包与关键集成用例执行 race）。
+
+## M5 · 审查修复
+
+- 日期：2026-09-06；基于 M5 提交 `514c13d` 的工作区修复。
+- R2 设置双源脱节（P1）：`PUT/GET /admin/settings` 原先只写库不生效——实际交付仅由 `TP_R2_ENDPOINT` 等 env 在启动时构建。现改为 `backup.NewSettingsR2Resolver`：非敏感 endpoint/bucket/prefix 以管理设置存储为唯一来源，凭据仍来自 Secret 文件，每次运行（手动/定时/维护清扫）按需解析，配置变更无需重启；env 端点/桶配置路径移除。`settings.R2Configured` 死代码删除。
+- `r2_credentials_via_file` 硬编码 true（P1）：改为按 R2 凭据 Secret 文件真实存在性返回（`backup.R2CredentialsPresent`），无凭据实例如实显示「未挂载」；E2E 断言同步更正。
+- R2 临时对象删除失败误记失败（P2）：`R2Delivery.Deliver` 在最终对象已 Copy+HEAD 验证后，临时对象删除失败不再把运行判为 `BACKUP_UPLOAD_FAILED`——按注释语义记成功，遗留对象由 `CleanupIncoming` TTL 清扫。新增 `TestBackupR2TempDeleteFailureStillSucceeds`（fake 注入 delete 503：succeeded + 1 final + 1 incoming，恢复后清扫回收）。
+- 手动运行目标预检（P2）：请求 r2 而未配置交付时返回 503 MAINTENANCE（明确指向目标配置），不再落进笼统 400；前端「立即执行」对未配置目标禁用、「备份全部目标」仅在全部就绪时可用；调度时间标签去掉错误的「UTC」注记（实际按目标时区执行）。
+- `readOptionalSecret` 注释与行为矛盾（P2）：实现为 `config`/`backup` 包的 `ReadOptionalSecretFile`——文件不存在返回空值，存在但不可读返回错误（主流程启动失败、restore 子命令以 RESTORE_PASSPHRASE_INVALID + 明确日志退出），与「不得以部分凭据运行」注释一致。
+- 健壮性（P3）：Run/RunAsync 对 targets 去重（重复目标不再重复交付/重复 retention）；`restore-state.json` 改临时文件+rename 原子写（撕裂写入不再阻塞断点恢复）；`sqlite.Upgrade` 的空库探测改为 fail-closed（查询错误中止升级，不再跳过前置快照）；`ListObjectsV2` 跟随 continuation token（>1000 对象时清扫/对账不再饿死）；`CodeUploadVerifyFaild` 常量拼写更正（持久化值不变）。
+- 测试：`TestBackupsR2DeliveryResolvedFromSettings`（未配置 503 → 挂凭据+写设置 → delivery_ready 翻转 → 手动运行经设置解析的客户端真实交付成功）；backups API harness 重构（阻塞钩子仅 busy 用例安装）；前端新增未配置目标禁用运行按钮用例。
+- 验证命令与结果：`go vet ./...`、`SEVENZIP_BIN=… go test ./... -count=1 -timeout=25m` 全部通过；前端 typecheck + 70 测试（新增 1）通过；E2E backups.spec.ts 3/3（凭据标志断言改为「未挂载」）。
+- 未解决问题：与上节相同的 R2 真实验收缺口不变（TestR2Live 待凭据）；此外修复审查中发现 `TP_R2_ENDPOINT/BUCKET/PREFIX` env 配置路径已移除——部署如曾使用需改为管理设置（文档于 T29 deploy/backup-restore 手册交付）。

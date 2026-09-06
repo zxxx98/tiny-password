@@ -478,10 +478,10 @@
 
 **新增：** `internal/settings/service.go`、`internal/httpapi/{backups,settings}.go`、`web/src/features/admin/{BackupsPage,AuditPage,SettingsPage}.tsx`、`web/src/features/admin/admin.test.tsx`、`tests/e2e/backups.spec.ts`。
 
-- [ ] 管理 API 仅允许 admin；设置只接收显式非敏感字段白名单，秘密通过 Secret 注入，不提供下载秘密配置接口。
-- [ ] 页面提供手动执行、每日时间/时区、目标启停/保留设置、逐目标结果、验证与清理失败历史。
-- [ ] 覆盖运行中、成功、失败、从未成功、R2 未配置、空间不足、维护状态以及部分目标不可用。
-- [ ] 审计页支持事件/结果/时间筛选；系统页展示版本、ready 状态与任务失败，恢复页只说明离线命令，不直接覆盖运行数据库。
+- [x] 管理 API 仅允许 admin；设置只接收显式非敏感字段白名单，秘密通过 Secret 注入，不提供下载秘密配置接口。（六个备份/设置端点均 RequireAdmin；settings 结构体即白名单（仅 r2_endpoint/bucket/prefix 三键）；无任何秘密下载或回显接口，GET 仅含凭据存在性布尔）
+- [x] 页面提供手动执行、每日时间/时区、目标启停/保留设置、逐目标结果、验证与清理失败历史。（BackupsPage：逐目标立即执行/启用/HH:MM/IANA 时区/保留 0–999 + 独立历史逐目标显示 succeeded/failed/error_code；运行中/成功/失败/中断状态齐备。清理失败经调度器 lastResult 在系统页可见（maintenance.r2_incoming 等）；本地/R2 保留删除失败仅记日志，下一次成功备份自然重试对账）
+- [x] 覆盖运行中、成功、失败、从未成功、R2 未配置、空间不足、维护状态以及部分目标不可用。（历史行覆盖全部状态；从未执行显示空态文案；R2 未配置=「未配置交付」徽标 + 禁用运行按钮 + 手动运行 503 MAINTENANCE；部分目标不可用时「备份全部目标」禁用、逐目标独立执行；集成 4 用例 + E2E 3 用例覆盖）
+- [x] 审计页支持事件/结果/时间筛选；系统页展示版本、ready 状态与任务失败，恢复页只说明离线命令，不直接覆盖运行数据库。（AuditPage event+result 筛选（服务端校验白名单），时间经游标分页排序；SettingsPage 展示版本/checks/就绪/调度失败告警 + R2 非敏感三键 + 凭据存在性真实标志；恢复区仅有离线命令文案，无任何 Web 恢复按钮）
 
 **验证：** `npm --prefix web test -- --run src/features/admin`；`make test-e2e E2E_SPEC=backups.spec.ts`，模拟 R2 失败，本地成功仍独立展示。
 

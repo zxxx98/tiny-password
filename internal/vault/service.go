@@ -12,6 +12,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/idempotency"
+	"github.com/tiny-password/tiny-password/internal/platform/archive"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
 )
@@ -688,8 +689,11 @@ type ExportItem struct {
 	Payload any
 }
 
-// exportMaxItems caps one export run (decision D09/D10: 512 files).
-const exportMaxItems = 512
+// An export always contains manifest.json and the items directory in addition
+// to one file per item. Keep the item capacity below the archive entry limit
+// so the output is guaranteed to pass the same limits on re-import.
+const exportArchiveOverhead = 2
+const exportMaxItems = archive.MaxFiles - exportArchiveOverhead
 
 // ExportAll decrypts every item the actor may export: their personal items
 // plus shared items they created — current versions only (decision D10).
@@ -699,17 +703,34 @@ func (s *Service) ExportAll(ctx context.Context, actor *auth.Principal) ([]Expor
 	if actor == nil {
 		return nil, ErrForbidden
 	}
-	metas, err := s.List(ctx, actor, ListFilter{}, "", "", exportMaxItems)
+	// List intentionally includes every shared item readable by the caller.
+	// Export is narrower: only personal items owned by the caller and shared
+	// items created by the caller are candidates. Apply the limit only after
+	// this ownership predicate, and fetch one extra row to detect overflow.
+	where := `deleted_at IS NULL AND
+		((vault_scope='personal' AND owner_user_id=?) OR
+		 (vault_scope='shared' AND created_by_user_id=?))`
+	rows, err := s.repo.listRows(ctx, s.db, where, []any{actor.UserID, actor.UserID}, "", "", exportMaxItems+1)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]ExportItem, 0, len(metas))
-	for _, m := range metas {
-		detail, err := s.Get(ctx, actor, m.ID)
+	if len(rows) > exportMaxItems {
+		return nil, ErrExportTooLarge
+	}
+	out := make([]ExportItem, 0, len(rows))
+	for _, row := range rows {
+		// The SQL predicate is the candidate narrowing step; keep the policy
+		// check explicit so a future query change cannot broaden exports.
+		if !Can(Role(actor.Role), actor.UserID, row.policyView(), ActionExport) {
+			continue
+		}
+		_, typed, envelope, err := s.decryptRow(row)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, ExportItem{Meta: detail.Meta, Tags: detail.Tags, Payload: detail.Payload})
+		meta := row.toMeta()
+		meta.Title = TitleOf(typed)
+		out = append(out, ExportItem{Meta: meta, Tags: envelope.Tags, Payload: typed})
 	}
 	return out, nil
 }
@@ -725,6 +746,26 @@ type ImportItem struct {
 	Payload    json.RawMessage
 }
 
+// ImportTxHook runs after validation and conflict mapping, inside the same
+// transaction immediately before imported rows are inserted. Transfer uses
+// this narrow callback to validate the originating session without making the
+// vault package depend on authentication policy.
+type ImportTxHook func(context.Context, *sql.Tx) error
+
+// billingReference extracts the only cross-item reference currently carried
+// by a vault payload. decodePayload has already checked the type grammar; this
+// helper is deliberately small so import validation and rewriting use the
+// same field without accepting arbitrary account material.
+func billingReference(payload json.RawMessage) (string, bool) {
+	var obj struct {
+		BillingAddressItemID *string `json:"billing_address_item_id"`
+	}
+	if err := json.Unmarshal(payload, &obj); err != nil || obj.BillingAddressItemID == nil || *obj.BillingAddressItemID == "" {
+		return "", false
+	}
+	return *obj.BillingAddressItemID, true
+}
+
 // ImportAll stores a set of imported items in ONE transaction. IDs that
 // already exist are re-issued as fresh UUIDv7 items; address references
 // pointing into the import set are remapped to the new IDs, references
@@ -732,9 +773,22 @@ type ImportItem struct {
 // Every payload is re-validated and re-encrypted under the importer's
 // ownership.
 func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []ImportItem) (imported int, remapped int, err error) {
+	return s.ImportAllWithHook(ctx, actor, items, nil)
+}
+
+// ImportAllWithHook is ImportAll with an optional transaction-local check.
+// The hook executes before the first insert and any hook error rolls back the
+// transaction, preserving retryability when commit definitely did not begin.
+func (s *Service) ImportAllWithHook(ctx context.Context, actor *auth.Principal, items []ImportItem, hook ImportTxHook) (imported int, remapped int, err error) {
 	if actor == nil {
 		return 0, 0, ErrForbidden
 	}
+	// Validate every item and the complete reference graph before opening the
+	// write transaction. References are checked against archive metadata, not
+	// just their string presence: an internal target must be an identity, and
+	// a shared source cannot point at a personal target. This makes malformed
+	// archives fail as a unit before any row can be inserted.
+	archiveItems := make(map[string]ImportItem, len(items))
 	for i := range items {
 		if !ItemTypes[items[i].ItemType] {
 			return 0, 0, fmt.Errorf("%w: unknown item type at position %d", ErrPayloadInvalid, i)
@@ -748,6 +802,26 @@ func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []
 		if _, err := validateTags(items[i].Tags); err != nil {
 			return 0, 0, fmt.Errorf("tags %d: %w", i, err)
 		}
+		if items[i].OriginalID != "" {
+			if _, duplicate := archiveItems[items[i].OriginalID]; duplicate {
+				return 0, 0, fmt.Errorf("%w: duplicate imported item id", ErrPayloadInvalid)
+			}
+			archiveItems[items[i].OriginalID] = items[i]
+		}
+	}
+	for i := range items {
+		ref, ok := billingReference(items[i].Payload)
+		if !ok {
+			continue
+		}
+		target, inArchive := archiveItems[ref]
+		if !inArchive {
+			continue // external references are cleared below by design.
+		}
+		if target.ItemType != TypeIdentity ||
+			(items[i].Scope == string(ScopeShared) && target.Scope != string(ScopeShared)) {
+			return 0, 0, fmt.Errorf("%w: imported billing reference is not allowed", ErrReferenceForbidden)
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -759,6 +833,7 @@ func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []
 	// Pass 1: final IDs — the original ID when free, a fresh UUIDv7 on a
 	// conflict (design D10: conflicting IDs are re-issued, never overwritten).
 	idMap := make(map[string]string, len(items))
+	finalIDs := make([]string, len(items))
 	at := s.now().UTC().Format(TimestampFormat)
 	for i := range items {
 		original := items[i].OriginalID
@@ -770,7 +845,10 @@ func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []
 		if exists > 0 || original == "" {
 			final = ident.NewUUIDv7()
 		}
-		idMap[original] = final
+		finalIDs[i] = final
+		if original != "" {
+			idMap[original] = final
+		}
 	}
 
 	// Pass 2: rewrite billing references into the import set; clear ones
@@ -804,6 +882,11 @@ func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []
 		}
 		items[i].Payload = out
 	}
+	if hook != nil {
+		if err := hook(ctx, tx); err != nil {
+			return 0, 0, err
+		}
+	}
 
 	// Pass 3: encrypt and insert.
 	for i := range items {
@@ -826,7 +909,7 @@ func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []
 		if err != nil {
 			return 0, 0, err
 		}
-		id := idMap[items[i].OriginalID]
+		id := finalIDs[i]
 		enc, err := s.key.Encrypt(plaintext, AADFor(id, scope, ownerID, creatorID, crypto.PayloadVersion, 1))
 		if err != nil {
 			return 0, 0, err
@@ -851,7 +934,7 @@ func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []
 		return 0, 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("%w: %v", ErrImportCommitUnknown, err)
 	}
 	return imported, remapped, nil
 }

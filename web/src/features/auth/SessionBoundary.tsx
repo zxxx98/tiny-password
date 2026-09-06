@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { abortInFlightRequests, request } from "../../app/api";
-import { navigate } from "../../app/router";
+import { clearNavigationState, navigate } from "../../app/router";
 import { SESSION_EXPIRED_EVENT, sessionStore, useSession, type Principal } from "../../app/session";
 import { Loading } from "../../design-system/Status";
 import { ChangePasswordPage } from "./ChangePasswordPage";
@@ -29,6 +29,7 @@ export function SessionBoundary({ children, requireAdmin }: { children: ReactNod
 
   useEffect(() => {
     const onExpired = () => {
+      clearNavigationState();
       abortInFlightRequests();
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);

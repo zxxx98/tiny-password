@@ -50,10 +50,10 @@ async function parseError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, code, message, requestId, currentRevision);
 }
 
-function handleAuthFailure(status: number): void {
+function handleAuthFailure(status: number, suppressEvent = false): void {
   if (status === 401) {
     sessionStore.clear();
-    if (typeof window !== "undefined") {
+    if (!suppressEvent && typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
     }
   }
@@ -67,6 +67,8 @@ export type RequestOptions = {
   onResponse?: (response: Response) => void;
   /** Aborts this single request; the global in-flight registry still applies. */
   signal?: AbortSignal;
+  /** Best-effort cleanup calls still clear a 401 session, but skip a duplicate expiry event. */
+  suppressAuthFailure?: boolean;
 };
 
 // In-flight request registry. Locking or logging out aborts everything so a
@@ -81,10 +83,27 @@ export function abortInFlightRequests(): number {
   return count;
 }
 
-export async function request<T>(method: string, url: string, body?: unknown, options?: RequestOptions): Promise<T> {
+function isBodyInit(body: unknown): body is BodyInit {
+  return (
+    (typeof FormData !== "undefined" && body instanceof FormData) ||
+    (typeof Blob !== "undefined" && body instanceof Blob) ||
+    (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) ||
+    body instanceof ArrayBuffer ||
+    (typeof ReadableStream !== "undefined" && body instanceof ReadableStream)
+  );
+}
+
+async function requestWithResponse<T>(
+  method: string,
+  url: string,
+  body: unknown,
+  options: RequestOptions | undefined,
+  read: (response: Response) => Promise<T>,
+): Promise<T> {
   const headers: Record<string, string> = {};
   const sendBody = body !== undefined;
-  if (sendBody) {
+  const rawBody = sendBody && isBodyInit(body);
+  if (sendBody && !rawBody) {
     headers["Content-Type"] = "application/json";
   }
   if (options?.csrfToken && method !== "GET" && method !== "HEAD") {
@@ -109,21 +128,42 @@ export async function request<T>(method: string, url: string, body?: unknown, op
       method,
       credentials: "same-origin",
       headers,
-      body: sendBody ? JSON.stringify(body) : undefined,
+      body: sendBody ? (rawBody ? body : JSON.stringify(body)) : undefined,
       signal: controller.signal,
     });
+    options?.onResponse?.(response);
+    if (!response.ok) {
+      // Do not let the 401 broadcast abort the response body before its
+      // structured ApiError has been parsed. Successful body reads remain in
+      // the in-flight registry until they finish, so global aborts cover
+      // binary downloads as well as fetch() itself.
+      inFlight.delete(controller);
+      handleAuthFailure(response.status, options?.suppressAuthFailure);
+      throw await parseError(response);
+    }
+    return await read(response);
   } finally {
     inFlight.delete(controller);
   }
-  options?.onResponse?.(response);
-  if (!response.ok) {
-    handleAuthFailure(response.status);
-    throw await parseError(response);
-  }
-  if (response.status === 204) {
-    return undefined as T;
-  }
-  return (await response.json()) as T;
+}
+
+export async function request<T>(method: string, url: string, body?: unknown, options?: RequestOptions): Promise<T> {
+  return requestWithResponse(method, url, body, options, async (response) => {
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    return (await response.json()) as T;
+  });
+}
+
+/** Session-aware binary response helper used by archive downloads. */
+export async function requestBlob(
+  method: string,
+  url: string,
+  body?: unknown,
+  options?: RequestOptions,
+): Promise<Blob> {
+  return requestWithResponse(method, url, body, options, (response) => response.blob());
 }
 
 export async function getJSON<T>(url: string): Promise<T> {

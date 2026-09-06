@@ -429,6 +429,57 @@ func TestBackupR2ReadbackMismatchFailsAndTempObjectIsCleanable(t *testing.T) {
 	}
 }
 
+// A failed delete of the temporary object must not turn a verified
+// delivery into a failed run: the final object is already in place and the
+// leftover incoming object is reclaimed by the TTL sweep.
+func TestBackupR2TempDeleteFailureStillSucceeds(t *testing.T) {
+	h := newTargetsHarness(t)
+	h.fake.failDelete = true
+
+	summary, err := h.runBoth(t, h.runner)
+	if err != nil {
+		t.Fatalf("delivery must succeed despite the temporary-object delete failure: %v", err)
+	}
+	r2res := summary.For(backup.TargetR2)
+	if r2res.Err != nil {
+		t.Fatalf("r2 result: %v", r2res.Err)
+	}
+	if status, code := h.runsForTarget(t, "r2"); status != "succeeded" || code != "" {
+		t.Fatalf("r2 row: %s/%s", status, code)
+	}
+
+	// The final object exists and exactly one temporary object lingers.
+	final, temps := 0, 0
+	for k := range h.fake.objects {
+		if strings.HasPrefix(k, h.prefix+"/incoming/") {
+			temps++
+		} else if strings.HasPrefix(k, h.prefix+"/") {
+			final++
+		}
+	}
+	if final != 1 || temps != 1 {
+		t.Fatalf("final=%d temps=%d", final, temps)
+	}
+
+	// The sweep reclaims the lingering temporary object once deletes work
+	// again and the object ages past the TTL.
+	h.fake.failDelete = false
+	for k := range h.fake.modTime {
+		h.fake.modTime[k] = time.Now().UTC().Add(-48 * time.Hour)
+	}
+	aged := backup.R2Delivery{
+		Client: h.client, Prefix: h.prefix,
+		Now: func() time.Time { return time.Now().UTC().Add(25 * time.Hour) },
+	}
+	removed, err := aged.CleanupIncoming(context.Background())
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("cleanup removed %d objects", removed)
+	}
+}
+
 func TestBackupR2CleanupIncomingRespectsAge(t *testing.T) {
 	h := newTargetsHarness(t)
 	oldKey := h.prefix + "/incoming/old.7z"

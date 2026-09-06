@@ -161,6 +161,23 @@ describe("BackupsPage", () => {
     await user.click(screen.getAllByRole("button", { name: "立即执行" })[0]);
     await waitFor(() => expect(screen.getByText("已有备份在运行，请稍后再试。")).toBeInTheDocument());
   });
+
+  it("disables run actions for targets without delivery configuration", async () => {
+    seedAdmin();
+    stubFetch([
+      { status: 200, body: jobsBody },
+      { status: 200, body: { items: [], next_cursor: null } },
+    ]);
+    render(<BackupsPage />);
+    await waitFor(() => expect(screen.getByText("本地备份")).toBeInTheDocument());
+
+    // The configured local target can run; the unconfigured R2 target and
+    // the all-targets shortcut cannot.
+    const runButtons = screen.getAllByRole("button", { name: "立即执行" });
+    expect(runButtons[0]).toBeEnabled();
+    expect(runButtons[1]).toBeDisabled();
+    expect(screen.getByRole("button", { name: "立即备份全部目标" })).toBeDisabled();
+  });
 });
 
 describe("AuditPage", () => {

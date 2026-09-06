@@ -17,6 +17,7 @@ test.describe("generators", () => {
     await page.getByRole("button", { name: "生成密码" }).click();
     const out = page.getByLabel("生成的密码");
     await expect(out).toBeVisible();
+    await page.getByRole("button", { name: "显示密码" }).click();
     const value = await out.textContent();
     expect(value?.length).toBe(24);
     // Reload wipes the in-memory result.

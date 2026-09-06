@@ -64,7 +64,18 @@ func writeRecoveryState(dataDir string, st *RecoveryState) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(recoveryStatePath(dataDir), raw, 0o600)
+	// Write through a temporary file and rename: a torn direct write would
+	// leave an unparseable state file and block breakpoint recovery.
+	path := recoveryStatePath(dataDir)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func removeRecoveryState(dataDir string) {

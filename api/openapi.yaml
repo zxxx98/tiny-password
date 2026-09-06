@@ -867,6 +867,11 @@ paths:
                   fingerprint: { type: string }
         "400": { $ref: "#/components/responses/BadRequest" }
         "429": { $ref: "#/components/responses/RateLimited" }
+        "504":
+          description: key generation exceeded its total deadline
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /transfer/export:
     post:
@@ -909,6 +914,8 @@ paths:
               properties:
                 archive: { type: string, format: binary }
                 passphrase: { type: string, maxLength: 1024 }
+            # The complete multipart request is capped at 96 MiB; the archive
+            # itself is capped at 64 MiB after parsing.
       responses:
         "200":
           description: counts per type, conflicts and reference gaps; preview token
@@ -923,6 +930,31 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Busy" }
+  /transfer/import/cancel:
+    post:
+      tags: [transfer]
+      summary: Cancel a staged import preview
+      description: Removes the caller's staged plaintext preview. The token is
+        bound to both the caller and, for authenticated HTTP sessions, the
+        originating session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preview_token]
+              properties:
+                preview_token: { type: string, maxLength: 128 }
+      responses:
+        "204": { description: Preview canceled }
+        "400":
+          description: preview expired, already consumed, or not owned by caller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /transfer/import/confirm:
     post:
       tags: [transfer]
@@ -955,6 +987,12 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
+        "500":
+          description: import outcome is uncertain after a commit error; clients must not retry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/Busy" }
 
   /admin/backups/jobs:
     get:
@@ -987,6 +1025,7 @@ paths:
       responses:
         "202": { description: run started; independent local/R2 results reported via runs }
         "409": { description: BACKUP_BUSY (mutual exclusion) }
+        "503": { description: MAINTENANCE — backup passphrase or the requested target's delivery configuration is absent }
         "403": { $ref: "#/components/responses/Forbidden" }
   /admin/audit:
     get:
@@ -998,6 +1037,9 @@ paths:
         - name: event
           in: query
           schema: { type: string, maxLength: 64 }
+        - name: result
+          in: query
+          schema: { type: string, enum: [success, failure] }
       responses:
         "200":
           description: redacted events

@@ -46,7 +46,7 @@ const statusLabels: Record<RunRow["status"], string> = {
 const errorMessages: Record<string, string> = {
   VALIDATION_ERROR: "配置不符合要求（时间 HH:MM、IANA 时区、保留数量 0–999）。",
   BACKUP_BUSY: "已有备份在运行，请稍后再试。",
-  MAINTENANCE: "备份口令未配置：请挂载 backup_passphrase Secret。",
+  MAINTENANCE: "备份口令或目标交付未配置：请挂载 backup_passphrase Secret，并完成 R2 的端点/桶配置与凭据挂载。",
   FORBIDDEN: "需要管理员角色。",
 };
 
@@ -140,6 +140,10 @@ export function BackupsPage() {
     setJobs((prev) => prev?.map((j) => (j.target === target ? { ...j, ...patch } : j)) ?? null);
   };
 
+  // A target without its delivery configuration can never run; the
+  // all-targets shortcut only lights up when every target is ready.
+  const allReady = (jobs ?? []).length > 0 && (jobs ?? []).every((j) => j.delivery_ready);
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-10">
       <header className="flex flex-wrap items-center justify-between gap-4">
@@ -149,7 +153,7 @@ export function BackupsPage() {
             每个目标独立调度、独立报告；仅保存非敏感配置，口令与凭据来自挂载的 Secret。
           </p>
         </div>
-        <Button disabled={busy === "run-local-r2"} onClick={() => void runNow(["local", "r2"])}>
+        <Button disabled={!allReady || busy === "run-local-r2"} onClick={() => void runNow(["local", "r2"])}>
           {busy === "run-local-r2" ? "启动中…" : "立即备份全部目标"}
         </Button>
       </header>
@@ -189,7 +193,8 @@ export function BackupsPage() {
                 <div className="flex gap-2">
                   <Button
                     variant="secondary"
-                    disabled={busy === "run-" + job.target}
+                    disabled={!job.delivery_ready || busy === "run-" + job.target}
+                    title={job.delivery_ready ? undefined : "该目标的交付配置未完成"}
                     onClick={() => void runNow([job.target])}
                   >
                     {busy === "run-" + job.target ? "启动中…" : "立即执行"}
@@ -215,10 +220,10 @@ export function BackupsPage() {
                 </label>
                 <Field
                   id={`schedule-${job.target}`}
-                  label="每日执行时间（UTC，HH:MM）"
+                  label="每日执行时间（HH:MM）"
                   value={job.schedule_time}
                   onChange={(e) => patchJob(job.target, { schedule_time: e.target.value })}
-                  hint="留空表示不按日调度；时区用 IANA 名称。"
+                  hint="按本目标的时区执行；留空表示不按日调度。"
                 />
                 <Field
                   id={`timezone-${job.target}`}

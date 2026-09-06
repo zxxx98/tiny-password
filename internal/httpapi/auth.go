@@ -15,9 +15,20 @@ type AuthDeps struct {
 	Service              *auth.Service
 	CSRF                 *PreAuthCSRF
 	AllowInsecureCookies bool
+	// PreviewCleanup invalidates plaintext transfer previews when the
+	// originating session is revoked or rotated. It is optional so auth can
+	// be used without transfer in smaller deployments and tests.
+	PreviewCleanup PreviewCleanup
 	// Proxy resolves the client source used for rate limiting. An empty
 	// config keeps the direct peer address (forwarded headers ignored).
 	Proxy ProxyConfig
+}
+
+// PreviewCleanup is implemented by the transfer service without coupling the
+// HTTP auth package to transfer's concrete implementation.
+type PreviewCleanup interface {
+	InvalidateSession(context.Context, string, string)
+	InvalidateUser(context.Context, string)
 }
 type principalContextKey struct{}
 
@@ -98,9 +109,13 @@ func registerAuth(api *http.ServeMux, deps AuthDeps) {
 		writeJSON(w, 200, map[string]any{"user": CurrentPrincipal(r.Context()), "csrf_token": auth.CSRFToken(sessionToken(r))})
 	})
 	guarded("POST /api/v1/auth/logout", true, func(w http.ResponseWriter, r *http.Request) {
+		principal := CurrentPrincipal(r.Context())
 		if err := deps.Service.Logout(r.Context(), sessionToken(r)); err != nil {
 			writeAuthError(w, r, err)
 			return
+		}
+		if deps.PreviewCleanup != nil {
+			deps.PreviewCleanup.InvalidateSession(r.Context(), principal.UserID, principal.Session.ID)
 		}
 		deps.clearSession(w)
 		w.WriteHeader(204)
@@ -117,6 +132,13 @@ func registerAuth(api *http.ServeMux, deps AuthDeps) {
 		if err != nil {
 			writeAuthError(w, r, err)
 			return
+		}
+		if deps.PreviewCleanup != nil {
+			// ChangePassword revokes every prior session, so all previews for
+			// this user must be discarded, including previews from other
+			// devices. The newly-issued session has no pre-existing preview.
+			principal := CurrentPrincipal(r.Context())
+			deps.PreviewCleanup.InvalidateUser(r.Context(), principal.UserID)
 		}
 		deps.setSession(w, result.Token)
 		w.Header().Set("X-CSRF-Token", auth.CSRFToken(result.Token))
@@ -135,6 +157,9 @@ func registerAuth(api *http.ServeMux, deps AuthDeps) {
 		if err := deps.Service.RevokeSession(r.Context(), sessionToken(r), id); err != nil {
 			writeAuthError(w, r, err)
 			return
+		}
+		if deps.PreviewCleanup != nil {
+			deps.PreviewCleanup.InvalidateSession(r.Context(), CurrentPrincipal(r.Context()).UserID, id)
 		}
 		if id == CurrentPrincipal(r.Context()).Session.ID {
 			deps.clearSession(w)

@@ -16,11 +16,34 @@ export function usePath(): string {
 }
 
 export function navigate(path: string): void {
+  navigateWithState(path);
+}
+
+let transientNavigationState: unknown = null;
+
+/**
+ * Navigate with a one-shot in-memory state handoff. It intentionally never
+ * enters history.state, localStorage, or sessionStorage: it is only for
+ * moving sensitive generator output into an editor in the same tab.
+ */
+export function navigateWithState(path: string, state?: unknown): void {
+  transientNavigationState = state ?? null;
   if (window.location.pathname === path) {
+    window.dispatchEvent(new PopStateEvent("popstate"));
     return;
   }
   window.history.pushState({}, "", path);
   window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+export function consumeNavigationState<T>(): T | null {
+  const state = transientNavigationState as T | null;
+  transientNavigationState = null;
+  return state;
+}
+
+export function clearNavigationState(): void {
+  transientNavigationState = null;
 }
 
 /** Matches "/vault/:itemId" against a concrete path; returns captured params. */

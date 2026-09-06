@@ -12,10 +12,11 @@ import (
 
 // UsersDeps wires the admin member-management endpoints (T09).
 type UsersDeps struct {
-	Service     *users.Service
-	Session     *auth.Service
-	Cursor      *CursorCodec
-	Idempotency *idempotency.Service
+	Service        *users.Service
+	Session        *auth.Service
+	Cursor         *CursorCodec
+	Idempotency    *idempotency.Service
+	PreviewCleanup PreviewCleanup
 }
 
 const usersCreateScope = "users.create"
@@ -60,6 +61,9 @@ func registerUsers(api *http.ServeMux, deps UsersDeps) {
 			writeUsersError(w, r, err)
 			return
 		}
+		if deps.PreviewCleanup != nil {
+			deps.PreviewCleanup.InvalidateUser(r.Context(), targetID)
+		}
 		writeJSON(w, http.StatusOK, u)
 	}))
 
@@ -77,6 +81,9 @@ func registerUsers(api *http.ServeMux, deps UsersDeps) {
 			writeUsersError(w, r, err)
 			return
 		}
+		if deps.PreviewCleanup != nil {
+			deps.PreviewCleanup.InvalidateUser(r.Context(), targetID)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -90,6 +97,9 @@ func registerUsers(api *http.ServeMux, deps UsersDeps) {
 		if err := deps.Service.Delete(r.Context(), CurrentPrincipal(r.Context()), targetID, users.DeleteInput{ConfirmUsername: input.ConfirmUsername}); err != nil {
 			writeUsersError(w, r, err)
 			return
+		}
+		if deps.PreviewCleanup != nil {
+			deps.PreviewCleanup.InvalidateUser(r.Context(), targetID)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
