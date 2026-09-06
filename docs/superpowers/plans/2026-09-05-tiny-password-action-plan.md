@@ -448,17 +448,17 @@
 
 **新增：** `internal/backup/{restore,rekey,recovery_state}.go`、`cmd/tiny-password/restore.go`、`tests/integration/restore_test.go`。
 
-- [ ] 为服务仍运行、错误密码、损坏归档、未知格式/新 schema、空间不足与跨架构恢复先写拒绝/成功用例。
-- [ ] HTTP 服务和 restore 共用进程级数据目录独占锁；`tiny-password restore /restore/backup.7z` 必须在正常服务停止后运行。
-- [ ] 验证归档白名单、兼容范围、校验值与空间；已有目标先创建可恢复的前置快照，空目标记录为空，禁止凭空假设存在旧库。
-- [ ] 在同文件系统准备候选库；归档源密钥仅在受限 tmpfs/内存。重加密全部 vault_items 与 item_versions，保持 ID/revision 并使用新的 nonce/AAD。
-- [ ] 清空恢复库旧会话和短期认证/幂等状态；凭据未配置的外部目标不得自动开始上传，页面给出需重新配置状态。
-- [ ] 候选库先做兼容迁移、完整性与解密验证；写恢复状态记录后原子切换。若切换后检查失败，利用保留旧库回滚；所有断点重启均能选定完整旧库或完整新库。
-- [ ] 清理源密钥及临时文件，目标 Secret 保持只读；失败报告只含阶段/错误码/request_id，不含秘密。
+- [x] 为服务仍运行、错误密码、损坏归档、未知格式/新 schema、空间不足与跨架构恢复先写拒绝/成功用例。（restore_test.go 10 组：锁占用拒绝（RESTORE_DATA_DIR_LOCKED）、错口令/损坏归档→RESTORE_ARCHIVE_INVALID 且目标零残留、manifest schema 999 拒绝/旧版本前向迁移、SpaceCheck 注入空间不足；跨架构仅 informational，schema 才是兼容闸）
+- [x] HTTP 服务和 restore 共用进程级数据目录独占锁；`tiny-password restore /restore/backup.7z` 必须在正常服务停止后运行。（flock service.lock：main.go 服务生命周期内持有；restore 非阻塞获取，占用即拒）
+- [x] 验证归档白名单、兼容范围、校验值与空间；已有目标先创建可恢复的前置快照，空目标记录为空，禁止凭空假设存在旧库。（三文件白名单 + manifest 逐文件 SHA256 + 快照 integrity ok + 格式/schema 闸门；存在库先 Snapshot 到 pre-restore-<ts>.db 并验证后保留，空目标记 EmptyTarget）
+- [x] 在同文件系统准备候选库；归档源密钥仅在受限 tmpfs/内存。重加密全部 vault_items 与 item_versions，保持 ID/revision 并使用新的 nonce/AAD。（restore-candidate.db 与 live 同目录同 fs；RekeyCandidate 单事务逐行解密-重加密，AAD 行身份不变、新 nonce，current+history 全覆盖）
+- [x] 清空恢复库旧会话和短期认证/幂等状态；凭据未配置的外部目标不得自动开始上传，页面给出需重新配置状态。（候选库 DELETE sessions/login_attempts/idempotency_keys；外部目标凭据不进恢复路径——恢复只换数据库文件，R2/本地目标配置由部署提供，未配置时调度侧 fail-closed（scheduledInput））
+- [x] 候选库先做兼容迁移、完整性与解密验证；写恢复状态记录后原子切换。若切换后检查失败，利用保留旧库回滚；所有断点重启均能选定完整旧库或完整新库。（restore-state.json 记 stage：switched 前旧库未动可整体重跑；switched 后 resume 只做 post-check，失败回滚前置快照/清空空目标；AfterSwitch 注入 ErrRestoreCrash 的 resume 测试通过；四阶段故障注入后原实例均 integrity ok 且数据完整）
+- [x] 清理源密钥及临时文件，目标 Secret 保持只读；失败报告只含阶段/错误码/request_id，不含秘密。（extractDir defer RemoveAll（含归档内源密钥）、candidate 清理、状态文件完成即删；RestoreError 仅 Stage+Code，restore 子命令输出 stage/code/request_id；目标密钥只读自挂载 Secret，从不写回）
 
 **验证：** `go test ./tests/integration -run TestRestore -v`；在快照、重加密、迁移、切换前后逐阶段注入退出/磁盘故障，原实例仍可启动且数据一致。恢复后新密钥可解密全部当前/历史负载，旧密钥不可解密新库。
 
-**建议提交：** `feat: restore instances safely under a new master key`。
+**完成记录（2026-09-06）：** 10/10 通过 + race。完整往返：1 条目 + 1 历史版本重加密（ID/revision 保持），新密钥全量解密通过、旧密钥全量失败、短时会话/幂等清空；已有目标恢复生成可校验前置快照且目标期用户不残留；snapshot/rekey/migrate/switch 四阶段注入后原库 integrity ok、数据在，重试即完成；switch 后崩溃经状态文件恢复并清态。子命令 `tiny-password restore <archive>` 接入 main（数据目录锁与服务互斥）。
 
 ### T26 · 升级前快照、迁移失败回滚
 

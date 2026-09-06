@@ -43,6 +43,11 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+	// Offline restore runs instead of the HTTP service; the data-directory
+	// lock keeps the two mutually exclusive (T25).
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		os.Exit(runRestoreCommand(os.Args[2:], logger))
+	}
 	if err := run(logger); err != nil {
 		logger.Error("startup failed", "error", err.Error())
 		os.Exit(1)
@@ -55,6 +60,13 @@ func run(logger *slog.Logger) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
+	// The service holds the data-directory lock for its whole lifetime so
+	// an offline restore can never race a running instance (T25).
+	dataDirLock, err := backup.AcquireDataDirLock(dataDir)
+	if err != nil {
+		return fmt.Errorf("acquire data dir lock: %w", err)
+	}
+	defer dataDirLock.Release()
 
 	db, err := sqlite.Open(filepath.Join(dataDir, "tiny-password.db"))
 	if err != nil {
