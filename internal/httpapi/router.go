@@ -29,6 +29,8 @@ type Options struct {
 	Items *ItemsDeps
 	// Generators wires the credential generator endpoints.
 	Generators *GeneratorsDeps
+	// Transfer wires the personal import/export endpoints.
+	Transfer *TransferDeps
 	// Logger receives one structured access-log record per request; nil
 	// disables access logging (tests).
 	Logger *slog.Logger
@@ -96,6 +98,9 @@ func registerAPIRoutes(api *http.ServeMux, opts Options) {
 	}
 	if opts.Generators != nil {
 		registerGenerators(api, *opts.Generators)
+	}
+	if opts.Transfer != nil {
+		registerTransfer(api, *opts.Transfer)
 	}
 	api.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "resource not found")

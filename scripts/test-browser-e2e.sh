@@ -51,6 +51,12 @@ npm --prefix "$ROOT/web" run build > /dev/null
 echo "browser-e2e: building server"
 go build -o "$WORK/tiny-password-e2e-bin" ./cmd/tiny-password
 
+# The pinned 7zz from the probe download (the production image ships it on
+# PATH; a bare host needs SEVENZIP_BIN pointing at it).
+if [ -z "${SEVENZIP_BIN:-}" ] && [ -x /tmp/tp-7zz/7zz ]; then
+  export SEVENZIP_BIN=/tmp/tp-7zz/7zz
+fi
+
 TP_ADDR="127.0.0.1:$E2E_PORT" \
 TP_DATA_DIR="$WORK/data" \
 TP_MASTER_KEY_FILE="$WORK/master_key" \

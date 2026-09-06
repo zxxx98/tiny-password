@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
+	"github.com/tiny-password/tiny-password/internal/transfer"
 	"github.com/tiny-password/tiny-password/internal/users"
 	"github.com/tiny-password/tiny-password/internal/vault"
 	"github.com/tiny-password/tiny-password/migrations"
@@ -70,6 +72,16 @@ func newItemsHarness(t *testing.T) *itemsHarness {
 	}
 	ih.vault = vsvc
 	ih.decrypts = decrypts
+	transferSvc, err := transfer.NewService(vsvc, transfer.Options{
+		WorkDir: filepath.Join(t.TempDir(), "transfer"),
+		HMACKey: bytes.Repeat([]byte{0x77}, 32),
+		Audit:   auditSvc,
+		DB:      h.db.DB,
+		Now:     h.clock.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ih.usersSvc = users.NewService(h.db.DB, users.Options{Now: h.clock.Now, Audit: auditSvc})
 
 	cursor, err := httpapi.NewCursorCodec(bytes.Repeat([]byte{0x44}, 32), 0)
@@ -93,6 +105,7 @@ func newItemsHarness(t *testing.T) *itemsHarness {
 		Users: &httpapi.UsersDeps{Service: ih.usersSvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
 		Items: &httpapi.ItemsDeps{Service: vsvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
 		Generators: &httpapi.GeneratorsDeps{Session: authSvc},
+		Transfer: &httpapi.TransferDeps{Service: transferSvc, Session: authSvc},
 	}))
 	t.Cleanup(srv.Close)
 	h.server = srv

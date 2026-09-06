@@ -35,6 +35,10 @@ const (
 	// category is recorded, never the value.
 	EventVaultSecretRevealed = "vault.secret.revealed"
 	EventVaultSecretCopied   = "vault.secret.copied"
+	// Personal import/export (design §7.3): success events only; the archive
+	// passphrase never appears anywhere.
+	EventTransferExported = "transfer.exported"
+	EventTransferImported = "transfer.imported"
 )
 
 var allowlist = map[string]bool{
@@ -59,6 +63,8 @@ var allowlist = map[string]bool{
 	EventVaultItemHistoryRestored: true,
 	EventVaultSecretRevealed:      true,
 	EventVaultSecretCopied:        true,
+	EventTransferExported:         true,
+	EventTransferImported:         true,
 }
 
 // Results are restricted to the database CHECK constraint's domain.

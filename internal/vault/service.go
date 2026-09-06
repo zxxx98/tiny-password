@@ -673,3 +673,195 @@ func (s *Service) RecordSecretEvent(ctx context.Context, actor *auth.Principal, 
 	}
 	return nil
 }
+
+// ValidatePayload re-uses the package's payload grammar for import paths
+// that receive decrypted payloads from outside this package.
+func ValidatePayload(itemType string, raw json.RawMessage) error {
+	_, err := decodePayload(itemType, raw)
+	return err
+}
+
+// ExportItem is one decrypted item prepared for the personal archive.
+type ExportItem struct {
+	Meta    Meta
+	Tags    []string
+	Payload any
+}
+
+// exportMaxItems caps one export run (decision D09/D10: 512 files).
+const exportMaxItems = 512
+
+// ExportAll decrypts every item the actor may export: their personal items
+// plus shared items they created — current versions only (decision D10).
+// The administrator holds no personal-vault privilege, so an admin exporting
+// sees only their own data.
+func (s *Service) ExportAll(ctx context.Context, actor *auth.Principal) ([]ExportItem, error) {
+	if actor == nil {
+		return nil, ErrForbidden
+	}
+	metas, err := s.List(ctx, actor, ListFilter{}, "", "", exportMaxItems)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ExportItem, 0, len(metas))
+	for _, m := range metas {
+		detail, err := s.Get(ctx, actor, m.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ExportItem{Meta: detail.Meta, Tags: detail.Tags, Payload: detail.Payload})
+	}
+	return out, nil
+}
+
+// ImportItem is one decrypted item to store on import. Scope decides the
+// ownership mapping: personal items belong to the importer; shared items
+// keep the importer as their creator (decision D10).
+type ImportItem struct {
+	OriginalID string
+	ItemType   string
+	Scope      string
+	Tags       []string
+	Payload    json.RawMessage
+}
+
+// ImportAll stores a set of imported items in ONE transaction. IDs that
+// already exist are re-issued as fresh UUIDv7 items; address references
+// pointing into the import set are remapped to the new IDs, references
+// outside it are cleared (the preview listed them for the user to fill in).
+// Every payload is re-validated and re-encrypted under the importer's
+// ownership.
+func (s *Service) ImportAll(ctx context.Context, actor *auth.Principal, items []ImportItem) (imported int, remapped int, err error) {
+	if actor == nil {
+		return 0, 0, ErrForbidden
+	}
+	for i := range items {
+		if !ItemTypes[items[i].ItemType] {
+			return 0, 0, fmt.Errorf("%w: unknown item type at position %d", ErrPayloadInvalid, i)
+		}
+		if !Scopes[items[i].Scope] {
+			return 0, 0, fmt.Errorf("%w: unknown scope at position %d", ErrPayloadInvalid, i)
+		}
+		if _, err := decodePayload(items[i].ItemType, items[i].Payload); err != nil {
+			return 0, 0, fmt.Errorf("payload %d: %w", i, err)
+		}
+		if _, err := validateTags(items[i].Tags); err != nil {
+			return 0, 0, fmt.Errorf("tags %d: %w", i, err)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	// Pass 1: final IDs — the original ID when free, a fresh UUIDv7 on a
+	// conflict (design D10: conflicting IDs are re-issued, never overwritten).
+	idMap := make(map[string]string, len(items))
+	at := s.now().UTC().Format(TimestampFormat)
+	for i := range items {
+		original := items[i].OriginalID
+		final := original
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM vault_items WHERE id=?`, original).Scan(&exists); err != nil {
+			return 0, 0, err
+		}
+		if exists > 0 || original == "" {
+			final = ident.NewUUIDv7()
+		}
+		idMap[original] = final
+	}
+
+	// Pass 2: rewrite billing references into the import set; clear ones
+	// pointing outside it.
+	for i := range items {
+		if items[i].ItemType != TypeCreditCard {
+			continue
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(items[i].Payload, &obj); err != nil {
+			return 0, 0, fmt.Errorf("payload %d: %w", i, err)
+		}
+		refRaw, ok := obj["billing_address_item_id"]
+		if !ok || string(refRaw) == "null" {
+			continue
+		}
+		var ref string
+		if err := json.Unmarshal(refRaw, &ref); err != nil || ref == "" {
+			continue
+		}
+		if newID, inSet := idMap[ref]; inSet && newID != ref {
+			obj["billing_address_item_id"], _ = json.Marshal(newID)
+			remapped++
+		} else if _, known := idMap[ref]; !known {
+			// Outside the archive: the preview flagged it; clear on import.
+			obj["billing_address_item_id"] = json.RawMessage("null")
+		}
+		out, err := json.Marshal(obj)
+		if err != nil {
+			return 0, 0, err
+		}
+		items[i].Payload = out
+	}
+
+	// Pass 3: encrypt and insert.
+	for i := range items {
+		payload, err := decodePayload(items[i].ItemType, items[i].Payload)
+		if err != nil {
+			return 0, 0, err
+		}
+		tags, err := validateTags(items[i].Tags)
+		if err != nil {
+			return 0, 0, err
+		}
+		scope := items[i].Scope
+		ownerID, creatorID := "", ""
+		if scope == string(ScopePersonal) {
+			ownerID = actor.UserID
+		} else {
+			creatorID = actor.UserID
+		}
+		_, plaintext, err := buildEnvelope(items[i].ItemType, tags, payload)
+		if err != nil {
+			return 0, 0, err
+		}
+		id := idMap[items[i].OriginalID]
+		enc, err := s.key.Encrypt(plaintext, AADFor(id, scope, ownerID, creatorID, crypto.PayloadVersion, 1))
+		if err != nil {
+			return 0, 0, err
+		}
+		row := itemRow{
+			ID: id, Scope: scope,
+			OwnerID:   sql.NullString{String: ownerID, Valid: ownerID != ""},
+			CreatorID: sql.NullString{String: creatorID, Valid: creatorID != ""},
+			ItemType:  items[i].ItemType, Favorite: false,
+			PayloadVersion: enc.Version, Nonce: enc.Nonce[:], Ciphertext: enc.Ciphertext,
+			Revision: 1, CreatedAt: at, UpdatedAt: at,
+		}
+		if err := s.repo.insertItem(ctx, tx, row); err != nil {
+			return 0, 0, err
+		}
+		imported++
+	}
+	if err := s.audit.Record(ctx, tx, audit.Event{
+		Name: audit.EventTransferImported, ActorID: actor.UserID,
+		TargetType: audit.TargetUser, TargetID: actor.UserID, Result: audit.ResultSuccess,
+	}); err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return imported, remapped, nil
+}
+
+// IDExists reports whether an item row with this ID exists (import conflict
+// detection). It leaks nothing else.
+func (s *Service) IDExists(ctx context.Context, id string) bool {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM vault_items WHERE id=?`, id).Scan(&exists); err != nil {
+		return false
+	}
+	return exists > 0
+}

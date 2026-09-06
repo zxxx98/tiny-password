@@ -25,6 +25,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/platform/config"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
+	"github.com/tiny-password/tiny-password/internal/transfer"
 	"github.com/tiny-password/tiny-password/internal/users"
 	"github.com/tiny-password/tiny-password/internal/vault"
 	"github.com/tiny-password/tiny-password/internal/webassets"
@@ -113,6 +114,8 @@ func run(logger *slog.Logger) error {
 	}
 	auditService := audit.NewService(audit.Options{})
 
+
+
 	// Login rate limits follow the production defaults; test harnesses may
 	// raise the username window explicitly (mirrors TP_SETUP_RATE_LIMIT_PER_MIN).
 	authLimits := auth.Limits{}
@@ -130,6 +133,7 @@ func run(logger *slog.Logger) error {
 	// Vault item endpoints need the master key to seal payloads; an instance
 	// without a key stays healthy but exposes no vault surface.
 	var itemsDeps *httpapi.ItemsDeps
+	var transferDeps *httpapi.TransferDeps
 	if masterKey != nil {
 		vaultService, err := vault.NewService(db.DB, masterKey, vault.Options{Audit: auditService})
 		if err != nil {
@@ -141,6 +145,18 @@ func run(logger *slog.Logger) error {
 			Cursor:      cursorCodec,
 			Idempotency: idempotencyService,
 		}
+		// Personal import/export staging lives under the data dir with 0700
+		// permissions (D11: a tmpfs mount in deployment).
+		transferService, err := transfer.NewService(vaultService, transfer.Options{
+			WorkDir: envOr("TP_TRANSFER_WORK_DIR", filepath.Join(dataDir, "transfer-tmp")),
+			HMACKey: masterKey.IdempotencyMACKey(),
+			Audit:   auditService,
+			DB:      db.DB,
+		})
+		if err != nil {
+			return fmt.Errorf("transfer service: %w", err)
+		}
+		transferDeps = &httpapi.TransferDeps{Service: transferService, Session: authService}
 	}
 
 	server := &http.Server{
@@ -155,6 +171,7 @@ func run(logger *slog.Logger) error {
 			Users:      &httpapi.UsersDeps{Service: usersService, Session: authService, Cursor: cursorCodec, Idempotency: idempotencyService},
 			Items:      itemsDeps,
 			Generators: &httpapi.GeneratorsDeps{Session: authService},
+			Transfer:   transferDeps,
 			Setup: &httpapi.SetupDeps{
 				Service:     bootService,
 				CSRF:        csrf,

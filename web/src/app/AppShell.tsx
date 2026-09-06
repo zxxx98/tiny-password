@@ -13,6 +13,7 @@ export type NavItem = { to: string; label: string };
 const baseNavItems: NavItem[] = [
   { to: "/vault", label: "保险库" },
   { to: "/generator", label: "生成器" },
+  { to: "/transfer", label: "导入导出" },
   { to: "/account", label: "账户" },
 ];
 

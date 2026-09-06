@@ -4,6 +4,7 @@ import { AppShell } from "./app/AppShell";
 import { Router } from "./app/router";
 import { SessionBoundary } from "./features/auth/SessionBoundary";
 import { SetupPage } from "./features/auth/SetupPage";
+import { TransferPage } from "./features/transfer/TransferPage";
 import { UsersPage } from "./features/admin/UsersPage";
 import { GeneratorPage } from "./features/generator/GeneratorPage";
 import { VaultPage } from "./features/vault/VaultPage";
@@ -40,6 +41,7 @@ const routes = [
   { path: "/vault/trash", element: protectedRoute(<VaultPage section="trash" />) },
   { path: "/vault/:itemId", element: protectedRoute(<VaultPage />) },
   { path: "/generator", element: protectedRoute(<GeneratorPage />) },
+  { path: "/transfer", element: protectedRoute(<TransferPage />) },
   { path: "/account", element: protectedRoute(<AccountPage />) },
   { path: "/account/activity", element: protectedRoute(<ActivityPage />) },
   { path: "/admin/users", element: protectedRoute(<UsersPage />, true) },
