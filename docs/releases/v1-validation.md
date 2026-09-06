@@ -311,3 +311,44 @@
 - 修复的缺陷：详情响应 tags 为 null 导致前端崩溃（现恒为 []）；详情 creator_name 值拷贝未回写；登录后不返回来源路由。
 - 验证命令：`go vet ./...`、`SEVENZIP_BIN=… go test ./... -count=1 -timeout=25m`、`go test -race ./internal/...`、前端 typecheck/57 测试/build、浏览器 E2E 5 个 spec（auth 4、vault 4、shared 1、generators 2、transfer 2）全部通过；`git diff --check` 通过。
 - 未解决问题：集成 race 全量（后台运行中，T30 复核）；R2 真实传输、Android 真机等不在 M4 范围。
+
+## M5 · T21–T27 实例备份与恢复
+
+- 日期：2026-09-06
+- 提交：`2021d15`（T21）、`d25c276`（T22）、`c826e55`（T23）、`8be0119`（T24）、`55db7e0`（T25）、`4530163`（T26）、`ee005b8`（T27）
+- 执行环境：Linux arm64（Oracle），Go 1.25/toolchain go1.26.8，Node 22，7zz 26.03（/tmp/tp-7zz/7zz，SEVENZIP_BIN 指定）
+- T21 本地备份（`internal/backup/`）：
+  - `TestBackupLocalSuccessDuringConcurrentWrites`：10 行/事务持续并发写入期间执行备份；发布产物以隐藏临时名复制→fsync→SHA256 复核→同文件系统 rename 原子落盘；解开归档逐文件校验清单 SHA256、`secrets/master_key` 与源密钥一致、快照 `integrity_check=ok`、快照内批计数 %10==0（事务一致性）；backup_runs 单条 succeeded（含 size/sha256）；受限工作目录清空。
+  - 空口令→`BACKUP_PASSPHRASE_INVALID`；注入损坏→`BACKUP_VERIFY_FAILED` 且旧备份保留；取消→`BACKUP_CANCELED` 无残留；进程级互斥→`BACKUP_BUSY`（无第二行）；空间检查注入→`BACKUP_INSUFFICIENT_SPACE`；构造校验（主密钥长度/工作目录）。
+  - archive 适配器新增 `Limits`/`ExtractLimited`/`Timeout`（个人迁移 64MiB/128MiB/512 文件默认不变；实例归档显式配置默认 1 GiB、单次 7z 10 分钟）。
+- T22 R2 交付（`internal/platform/objectstore/`，无 SDK）：
+  - 2026-09-06 核对 Cloudflare 官方文档（S3 API 兼容、S3 token 认证、region auto）并记入 `docs/decisions/0002-dependencies.md`；最小 SigV4 REST 子集（PUT/GET/HEAD/DELETE/Copy/ListObjectsV2）。
+  - 交付契约：唯一临时对象（签名含 payload SHA-256）→ 流式回读比对 → CopyObject → HEAD 复核 size → 删除临时对象；ETag 不作完整性依据。
+  - 集成测试 8 个（假 S3 服务器）：双向独立（本地成功 R2 失败 BACKUP_UPLOAD_FAILED / R2 成功本地失败 BACKUP_PUBLISH_FAILED）、归档失败两目标同码、429 退避重试后成功、403 单次即败、回读不一致→BACKUP_UPLOAD_VERIFY_FAILED 且 incoming 可经 `CleanupIncoming` 回收、按 TTL 清扫保留新对象、SigV4 与独立参考实现一致（修复了参考实现 Credential 段偏移与客户端密钥派生缺失两处问题）。
+  - `TestR2Live`（真实 R2 验收）**按规范跳过：无测试凭据（TP_R2_TEST_*），未完成，不以 mock 替代**。
+- T23 调度与维护（`internal/scheduler/`）：
+  - 假时钟 10 用例：UTC 每日恰一次、Asia/Shanghai 08:30=UTC 00:30、纽约 2026-03-08 02:30 春季缺口（Go time.Date 向后归一化，显式检测前移至下个有效瞬间 03:30 EDT）执行一次、2026-11-01 01:30 重复时刻仅首次执行、停机跨调度点补跑恰一次、失败当日不重试、panic 经命名返回值 recover 为 failed、busy skip 不写当日标记、并发评估恰一执行、注册校验（时间/时区）；`time/tzdata` 内嵌。
+  - 集成：`TestJobRestartMarksInterruptedRuns`（3 行 pending/running→interrupted+BACKUP_INTERRUPTED、succeeded 行不动、二次扫描 0）、`TestBackupOverlap`（定时挂起中手动被拒 + 调度 tick skipped-busy + 完成后当日不重跑）、`TestMaintenanceJobs`（trash/sessions/login_attempts/wal_checkpoint/idempotency 5 任务幂等清扫）。
+  - main.go 接线：启动标记中断行、注册计划与维护任务、SIGTERM 后 Stop。
+- T24 GFS 保留：
+  - `RetentionKeepSet` 纯函数（UTC 日/ISO 周/月桶，取最近 N 个存在桶最新产物并集）7 用例：GFS 并集（9 产物精确集合）、单产物多桶、少量全保、跨年逐桶、数量调整/归零、DST 稳定、同刻并列确定性。
+  - 集成 4 个：2/1/1 下精确保留 {r3,r5} 且恰 3 条 `backup.retention.deleted` 审计（仅 run id）、仅失败运行时不删除磁盘文件（守卫）、磁盘最新产物恒豁免（publish/记行崩溃间孤儿）、R2 删除注入 500 后对象保留且重试成功、R2 失败不阻止本地清理。
+- T25 离线恢复（`restore.go`/`rekey.go`/`recovery_state.go`、`cmd/tiny-password/restore.go`）：
+  - 数据目录 flock（service.lock）与服务生命周期互斥：`TestRestoreRefusesRunningService`。
+  - 完整往返：1 条目+1 历史版本重加密（ID/scope/owner/revision 不变、新 nonce/AAD 同绑定）；新密钥全量解密通过、旧密钥全量失败；短时会话/限流/幂等清空；空目标不产前置快照；已有目标产 `pre-restore-<ts>.db` 且 integrity ok 保留。
+  - 拒绝矩阵：错口令/损坏归档→RESTORE_ARCHIVE_INVALID 且目标零残留（仅 service.lock）；manifest schema 999→RESTORE_SCHEMA_TOO_NEW；schema 1（旧）→ 前向迁移成功；空间注入→RESTORE_INSUFFICIENT_SPACE；目标密钥非 32 字节→RESTORE_TARGET_KEY_INVALID。
+  - 四阶段故障注入（snapshot/rekey/migrate/switch）：每次失败后原库 integrity ok、原数据完整、状态文件与候选库清理；重试即完成。switch 后注入 `ErrRestoreCrash`：状态文件留在 switched，重启 resume 仅做 post-check 并完成（Resumed=true）。
+  - 报告仅 stage/code/request_id；源密钥只存在于受限提取目录与内存并随 defer 清理；目标密钥只读自挂载 Secret。
+- T26 升级守卫（`sqlite.Upgrade`）：
+  - 空库升级免快照；非空库先 Snapshot+integrity ok；无 pending 不再快照；applied 版本新于二进制→安全拒绝且零改动（不支持降级）；逐迁移事务自 T03 保持——注入中断性失败：0002 保留、0003 整体回滚、v1 数据可读；中断重启补齐后续迁移。
+  - `tests/fixtures/schema-v1.sql`（发布版 0001 基线快照）+ synthetic 用户行升级后保留；`docs/operations/upgrade.md` 交付（回滚 A 旧镜像直启、回滚 B 前置快照覆盖 + 清 -wal/-shm；"数据库副本 ≠ 备份"警示）。
+- T27 管理 API 与页面：
+  - `GET/PUT /admin/backups/jobs`（白名单校验：HH:MM、IANA、保留 0–999）、`GET /admin/backups/runs`（游标分页、target 筛选）、`POST /admin/backups/run`（RunAsync：剥离请求取消信号后台执行；忙 409 BACKUP_BUSY；口令未配置 503 MAINTENANCE）、`GET/PUT /admin/settings`（仅 r2_endpoint/bucket/prefix 三键，struct 即白名单）、`/admin/audit` 新增 result 筛选。
+  - 集成测试 4 个：member 全端点 403、配置往返+非法值拒绝、手动执行 202→挂起中 409→释放后 succeeded（含 size）、设置三键精确断言（无凭据字段可达）+ result=failure 仅失败行。
+  - 前端：`BackupsPage`（逐目标启用/时刻/时区/保留 + 立即执行 + 独立历史）、`AuditPage`（事件/结果筛选、脱敏渲染）、`SettingsPage`（版本/就绪/检查、调度失败告警、R2 非敏感三键、恢复页仅离线命令无任何 Web 恢复按钮）；`admin.test.tsx` 8 用例 + `app-shell.test.tsx` 更新（12+69 前端测试全过）。
+  - 浏览器 E2E `backups.spec.ts` **3/3**：配置保存、本地手动执行成功而 R2 未配置交付仍独立展示（模拟 R2 失败场景）、系统页就绪态与凭据策略、审计结果筛选；`scripts/test-browser-e2e.sh` 增加 backup_passphrase Secret。
+- 验证命令与结果：`go vet ./...` 通过；`SEVENZIP_BIN=… go test ./... -count=1 -timeout=25m` 全部通过（15 包 ok）；`go test -race ./internal/backup ./internal/settings ./internal/scheduler ./internal/platform/archive ./internal/platform/objectstore` 与 `-run 'TestBackup|TestRestore|TestRetention|TestJobRestart|TestBackupOverlap|TestMaintenanceJobs|TestBackups|TestSettings' -race` 通过；前端 typecheck、69 测试、build 通过；E2E backups.spec.ts 3/3。
+- 未解决问题：
+  1. **真实 R2 验收未完成**（`TestR2Live` 跳过）：需要 TP_R2_TEST_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY 测试凭据；T30 前必须补跑并记录证据。
+  2. M5 退出门槛要求"本地和 R2 各完成新密钥干净实例恢复"：本地路径已由 `TestRestoreFullRoundTripWithNewKey`+`TestRestoreOverExistingInstancePreservesSnapshot` 覆盖；R2 侧恢复依赖真实 R2 下载归档，同样等待测试凭据（恢复流程本身与归档来源无关，已由本地归档全量验证）。
+  3. race 全量 `-timeout=25m` 复核在 T30 统一执行（本轮仅对新包与关键集成用例执行 race）。
