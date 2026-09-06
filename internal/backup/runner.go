@@ -90,6 +90,12 @@ type Options struct {
 	Now             func() time.Time
 	Logger          *slog.Logger
 	Hooks           Hooks
+	// Scheduled delivery configuration (T23): the passphrase comes from a
+	// secret file, target settings from operator configuration. They never
+	// live in the database.
+	ScheduledPassphrase string
+	ScheduledLocalDir   string
+	ScheduledR2         *R2Delivery
 }
 
 // Runner produces whole-instance backups. The run mutex is process-wide

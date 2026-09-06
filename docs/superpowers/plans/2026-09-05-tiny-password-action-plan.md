@@ -422,14 +422,14 @@
 
 **新增：** `internal/scheduler/{scheduler,daily}.go`、`internal/scheduler/scheduler_test.go`、`internal/backup/jobs.go`。
 
-- [ ] 假时钟覆盖 UTC、Asia/Shanghai、America/New_York 的正常/跳过/重复时刻以及重启补跑规则。
-- [ ] 每日时间与 IANA 时区持久化；手动与定时共享互斥锁，任务重叠明确返回 busy/skip 结果。
-- [ ] 记录 backup_runs 生命周期；进程重启将遗留 running 标成 interrupted，禁止展示永远运行中。
-- [ ] 注册回收站清理、过期会话/限流/幂等记录清理和低峰 WAL checkpoint；后台 panic 转为失败状态而非退出 HTTP 进程。
+- [x] 假时钟覆盖 UTC、Asia/Shanghai、America/New_York 的正常/跳过/重复时刻以及重启补跑规则。（scheduler_test.go 10 用例：UTC 每日一次、CST 08:30=UTC 00:30、2026-03-08 纽约 02:30 春季跳过时刻于下个有效瞬间执行（Go time.Date 对缺口向后归一化，显式检测并前移）、2026-11-01 01:30 重复时刻仅首次执行一次、停机跨调度点补跑恰一次）
+- [x] 每日时间与 IANA 时区持久化；手动与定时共享互斥锁，任务重叠明确返回 busy/skip 结果。（backup_jobs.schedule_time/schedule_timezone；进程级 instanceMutex 由 TestBackupOverlap 验证：定时执行中手动 Run 被拒、调度器下个 tick 状态=skipped(busy)；time/tzdata 内嵌保证容器内时区可用）
+- [x] 记录 backup_runs 生命周期；进程重启将遗留 running 标成 interrupted，禁止展示永远运行中。（MarkInterruptedRuns 于启动调用：pending/running→interrupted + BACKUP_INTERRUPTED + finished_at，已完成行不受影响，重复执行安全）
+- [x] 注册回收站清理、过期会话/限流/幂等记录清理和低峰 WAL checkpoint；后台 panic 转为失败状态而非退出 HTTP 进程。（MaintenanceJobs：maintenance.trash/sessions/login_attempts/wal_checkpoint/idempotency/r2_incoming；panic 经命名返回值 recover 为 failed 结果；main.go 已接线：启动标记中断、注册计划+维护任务、SIGTERM 后 Stop）
 
 **验证：** `go test ./internal/scheduler -v`；`go test ./tests/integration -run 'TestBackupOverlap|TestJobRestart|TestMaintenanceJobs' -v`；每天最多一次计划执行，失败在管理 API 可见。
 
-**建议提交：** `feat: schedule backups and bounded maintenance jobs`。
+**完成记录（2026-09-06）：** `go test ./internal/scheduler -v` 10/10 通过；集成 TestJobRestartMarksInterruptedRuns（3 行中断恰标记、已完成行不动、二次扫描 0）、TestBackupOverlap（定时挂起中手动被拒 + tick skipped-busy + 完成后当日不重跑）、TestMaintenanceJobs（过期回收站/会话/限流/幂等清除、新鲜行保留、幂等重扫）通过；全量 `go test ./...` 与 race 通过。
 
 ### T24 · GFS 保留与可重试清理
 

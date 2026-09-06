@@ -14,17 +14,21 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
+	"github.com/tiny-password/tiny-password/internal/backup"
 	"github.com/tiny-password/tiny-password/internal/bootstrap"
 	"github.com/tiny-password/tiny-password/internal/httpapi"
 	"github.com/tiny-password/tiny-password/internal/idempotency"
 	"github.com/tiny-password/tiny-password/internal/platform/config"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
+	"github.com/tiny-password/tiny-password/internal/platform/objectstore"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
+	"github.com/tiny-password/tiny-password/internal/scheduler"
 	"github.com/tiny-password/tiny-password/internal/transfer"
 	"github.com/tiny-password/tiny-password/internal/users"
 	"github.com/tiny-password/tiny-password/internal/vault"
@@ -64,11 +68,13 @@ func run(logger *slog.Logger) error {
 	// Master key is read from the mounted secret file only (D03). A missing
 	// or invalid key keeps the process alive (healthz ok) but not ready.
 	keyFile := config.MasterKeyFile()
+	var masterKeyRaw []byte
 	masterKey, masterKeyErr := func() (*crypto.MasterKey, error) {
 		raw, err := config.ReadMasterKeyFile(keyFile)
 		if err != nil {
 			return nil, err
 		}
+		masterKeyRaw = raw
 		return crypto.NewMasterKey(raw)
 	}()
 	if masterKeyErr != nil {
@@ -114,8 +120,6 @@ func run(logger *slog.Logger) error {
 	}
 	auditService := audit.NewService(audit.Options{})
 
-
-
 	// Login rate limits follow the production defaults; test harnesses may
 	// raise the username window explicitly (mirrors TP_SETUP_RATE_LIMIT_PER_MIN).
 	authLimits := auth.Limits{}
@@ -134,8 +138,11 @@ func run(logger *slog.Logger) error {
 	// without a key stays healthy but exposes no vault surface.
 	var itemsDeps *httpapi.ItemsDeps
 	var transferDeps *httpapi.TransferDeps
+	var backupRunner *backup.Runner
+	var scheduledR2 *backup.R2Delivery
+	var vaultService *vault.Service
 	if masterKey != nil {
-		vaultService, err := vault.NewService(db.DB, masterKey, vault.Options{Audit: auditService})
+		vaultService, err = vault.NewService(db.DB, masterKey, vault.Options{Audit: auditService})
 		if err != nil {
 			return fmt.Errorf("vault service: %w", err)
 		}
@@ -157,7 +164,54 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("transfer service: %w", err)
 		}
 		transferDeps = &httpapi.TransferDeps{Service: transferService, Session: authService}
+
+		// Whole-instance backups (M5). The runner stages everything in a
+		// restricted work dir and publishes verified archives only.
+		backupOptions := backup.Options{
+			DB:                  db,
+			WorkDir:             envOr("TP_BACKUP_WORK_DIR", filepath.Join(dataDir, "backup-tmp")),
+			AppVersion:          version,
+			MasterKeyRaw:        masterKeyRaw,
+			ScheduledPassphrase: readOptionalSecret("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase"),
+			ScheduledLocalDir:   envOr("TP_BACKUP_DIR", filepath.Join(dataDir, "backups")),
+		}
+		scheduledR2 = r2DeliveryFromEnv(logger)
+		backupOptions.ScheduledR2 = scheduledR2
+		backupRunner, err = backup.NewRunner(backupOptions)
+		if err != nil {
+			return fmt.Errorf("backup runner: %w", err)
+		}
+		if marked, err := backup.MarkInterruptedRuns(db.DB, time.Now()); err != nil {
+			logger.Warn("cannot mark interrupted backup runs", "error", err.Error())
+		} else if marked > 0 {
+			logger.Info("marked interrupted backup runs", "count", marked)
+		}
 	}
+
+	// The scheduler owns daily backup jobs and bounded maintenance sweeps.
+	sched, err := scheduler.New(scheduler.Options{DB: db.DB, Logger: logger})
+	if err != nil {
+		return fmt.Errorf("scheduler: %w", err)
+	}
+	if backupRunner != nil {
+		jobs, err := backupRunner.ScheduledJobs()
+		if err != nil {
+			return fmt.Errorf("scheduled backup jobs: %w", err)
+		}
+		for _, job := range jobs {
+			if err := sched.Register(job); err != nil {
+				return fmt.Errorf("register %s: %w", job.Name, err)
+			}
+		}
+	}
+	maintenanceDeps := backup.MaintenanceDeps{DB: db, Vault: vaultService, Idempotency: idempotencyService, R2Incoming: scheduledR2}
+	for _, job := range backup.MaintenanceJobs(maintenanceDeps) {
+		if err := sched.Register(job); err != nil {
+			return fmt.Errorf("register %s: %w", job.Name, err)
+		}
+	}
+	sched.Start(context.WithoutCancel(context.Background()))
+	defer sched.Stop()
 
 	server := &http.Server{
 		Addr: addr,
@@ -215,6 +269,48 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// readOptionalSecret reads a secret file that may legitimately be absent
+// (e.g. scheduled backups disabled). Present-but-unreadable is fatal: the
+// operator must fix the mount rather than run with partial credentials.
+func readOptionalSecret(envKey, defaultPath string) string {
+	path := envOr(envKey, defaultPath)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// r2DeliveryFromEnv assembles the R2 delivery from operator configuration.
+// All-or-nothing: a partial configuration logs a warning and disables the
+// target instead of guessing.
+func r2DeliveryFromEnv(logger *slog.Logger) *backup.R2Delivery {
+	endpoint := os.Getenv("TP_R2_ENDPOINT")
+	bucket := os.Getenv("TP_R2_BUCKET")
+	prefix := envOr("TP_R2_PREFIX", "tiny-password")
+	access := readOptionalSecret("TP_R2_ACCESS_KEY_FILE", "/run/secrets/r2_access_key")
+	secret := readOptionalSecret("TP_R2_SECRET_KEY_FILE", "/run/secrets/r2_secret_key")
+	if endpoint == "" && bucket == "" && access == "" && secret == "" {
+		return nil
+	}
+	if endpoint == "" || bucket == "" || access == "" || secret == "" {
+		logger.Warn("incomplete R2 configuration; R2 backup target disabled")
+		return nil
+	}
+	client, err := objectstore.NewClient(objectstore.Config{
+		Endpoint:        endpoint,
+		Region:          "auto",
+		Bucket:          bucket,
+		AccessKeyID:     access,
+		SecretAccessKey: secret,
+	})
+	if err != nil {
+		logger.Warn("invalid R2 configuration; R2 backup target disabled")
+		return nil
+	}
+	return &backup.R2Delivery{Client: client, Prefix: prefix}
 }
 
 // A missing master key still permits health/readiness diagnostics, but cannot
