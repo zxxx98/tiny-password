@@ -33,7 +33,36 @@ test.describe("PWA", () => {
       await navigator.serviceWorker.ready;
     });
 
-    const result = await page.evaluate(async () => {
+    const memberPassword = process.env.TP_E2E_MEMBER_PW ?? "e2e-member-password-1";
+    const result = await page.evaluate(async (password) => {
+      const csrfResponse = await fetch("/api/v1/csrf", {
+        method: "POST",
+        credentials: "include",
+      });
+      const csrf = (await csrfResponse.json()).csrf_token as string;
+      const loginResponse = await fetch("/api/v1/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrf,
+        },
+        body: JSON.stringify({
+          username: "e2e-member",
+          password,
+        }),
+      });
+      if (!loginResponse.ok) {
+        throw new Error(`browser e2e login failed: ${loginResponse.status}`);
+      }
+
+      // This is intentionally an authenticated vault read. It must stay
+      // network-only even when the response contains encrypted-vault data.
+      const itemsResponse = await fetch("/api/v1/items", { credentials: "include" });
+      if (!itemsResponse.ok) {
+        throw new Error(`authenticated vault read failed: ${itemsResponse.status}`);
+      }
+
       const cacheNames = await caches.keys();
       const entries = (
         await Promise.all(
@@ -44,20 +73,18 @@ test.describe("PWA", () => {
         )
       ).flat();
 
-      // A real API request must remain network-only. The response is allowed
-      // to fail in this isolated test; it must never create a cached entry.
-      await fetch("/api/v1/items").catch(() => undefined);
-
       return {
         cacheNames,
         entries,
+        itemsStatus: itemsResponse.status,
         localStorage: window.localStorage.length,
         sessionStorage: window.sessionStorage.length,
         indexedDB: "indexedDB" in window ? await indexedDB.databases() : [],
       };
-    });
+    }, memberPassword);
 
     expect(result.cacheNames).toEqual(["tp-static-v1"]);
+    expect(result.itemsStatus).toBe(200);
     expect(result.entries).not.toContain("/api/v1/items");
     expect(result.entries.every((path) =>
       ["/", "/index.html", "/offline.html", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"].includes(path) ||

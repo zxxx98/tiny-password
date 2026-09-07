@@ -116,6 +116,11 @@ python3 scripts/test-auth-http.py "$BASE"
 # idempotent member creation — all over the real API.
 python3 scripts/test-admin-http.py "$BASE"
 
+# T31 architecture smoke: create, decrypt, update, and trash a vault item on
+# the image itself. The release gate must exercise the encryption path, not
+# only health/setup/authentication and the bundled archive tool.
+python3 scripts/test-vault-http.py "$BASE"
+
 # Synthetic secrets transit request bodies during the acceptance flows; they
 # must never reach the container logs or the database/WAL files.
 if $DOCKER logs "$CONTAINER_NAME" 2>&1 | grep -q "SYNSECRET"; then

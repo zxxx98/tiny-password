@@ -45,9 +45,40 @@ jobs:
       - name: Run the bundled 7-Zip binary
         run: docker run --rm --platform linux/${{ matrix.arch }} tiny-password:smoke-${{ matrix.arch }} /usr/local/bin/7zz i
 
+  scan:
+    name: Scan ${{ matrix.arch }} candidate
+    needs: smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build candidate locally
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: tiny-password:scan-${{ matrix.arch }}
+          build-args: VERSION=scan-${{ matrix.arch }}
+      - name: Scan candidate image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: tiny-password:scan-${{ matrix.arch }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
   publish:
     name: Publish multi-architecture image
-    needs: smoke
+    needs: [smoke, scan]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
@@ -84,14 +115,5 @@ jobs:
           build-args: VERSION=${{ steps.meta.outputs.version }}
           provenance: mode=max
           sbom: true
-      - name: Scan published image
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
       - name: Inspect published manifest
         run: docker buildx imagetools inspect "${IMAGE_NAME}:${{ steps.meta.outputs.version }}"

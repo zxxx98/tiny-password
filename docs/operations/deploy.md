@@ -69,9 +69,21 @@ docker compose logs -f app
 准备好本地 secret 文件后，发布前运行：
 
 ```bash
+export TP_MASTER_KEY_SOURCE="$PWD/secrets/master_key"
+export TP_BACKUP_PASSPHRASE_SOURCE="$PWD/secrets/backup_passphrase"
+bash scripts/check-compose-secrets.sh
 docker compose config --quiet
+export TP_TUNNEL_TOKEN_SOURCE="$PWD/secrets/tunnel_token"
+TP_CHECK_TUNNEL=1 bash scripts/check-compose-secrets.sh
 TP_TUNNEL_TOKEN_SOURCE="$PWD/secrets/tunnel_token" docker compose --profile tunnel config --quiet
 docker compose -f compose.yaml -f deploy/compose.lan.yaml config --quiet
 ```
 
-R2 只在已准备两份 R2 credential 文件时叠加 `deploy/compose.r2.yaml`；R2 endpoint、bucket、prefix 从管理员系统页配置，credential 只通过 Secret 文件提供。
+R2 只在已准备两份 R2 credential 文件时叠加 `deploy/compose.r2.yaml`；R2 endpoint、bucket、prefix 从管理员系统页配置，credential 只通过 Secret 文件提供。启用 R2 前先执行：
+
+```bash
+export TP_R2_ACCESS_KEY_SOURCE="$PWD/secrets/r2_access_key"
+export TP_R2_SECRET_KEY_SOURCE="$PWD/secrets/r2_secret_key"
+TP_CHECK_R2=1 bash scripts/check-compose-secrets.sh
+docker compose -f compose.yaml -f deploy/compose.r2.yaml config --quiet
+```

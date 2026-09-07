@@ -15,6 +15,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/platform/archive"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
+	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 )
 
 // Options configures the vault service.
@@ -304,6 +305,35 @@ type UpdateInput struct {
 // version is archived and the revision advanced inside a single transaction;
 // a lost race returns the current revision without overwriting anything.
 func (s *Service) Update(ctx context.Context, actor *auth.Principal, id string, input UpdateInput) (Detail, error) {
+	// SQLite's deferred transaction can fail while upgrading a read snapshot
+	// to a writer when two callers start from the same revision. Roll back that
+	// losing snapshot and retry so the second caller observes the committed
+	// revision and receives the intended REVISION_CONFLICT instead of a
+	// transient DATABASE_BUSY response.
+	var detail Detail
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt) * time.Millisecond
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return Detail{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		detail, err = s.updateOnce(ctx, actor, id, input)
+		if !sqlite.IsBusy(err) || attempt == 2 {
+			return detail, err
+		}
+	}
+	return detail, err
+}
+
+func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id string, input UpdateInput) (Detail, error) {
 	if actor == nil {
 		return Detail{}, ErrForbidden
 	}
