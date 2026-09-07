@@ -42,6 +42,10 @@ type itemsHarness struct {
 }
 
 func newItemsHarness(t *testing.T) *itemsHarness {
+	return newItemsHarnessWithSearchProfile(t, nil)
+}
+
+func newItemsHarnessWithSearchProfile(t *testing.T, profile vault.SearchProfileHook) *itemsHarness {
 	t.Helper()
 	h := newAuthHarness(t)
 	ih := &itemsHarness{authHarness: h}
@@ -66,6 +70,7 @@ func newItemsHarness(t *testing.T) *itemsHarness {
 	decrypts := &decryptRecorder{}
 	vsvc, err := vault.NewService(h.db.DB, key, vault.Options{
 		Now: h.clock.Now, Audit: auditSvc, DecryptHook: decrypts.record,
+		SearchProfile: profile,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -100,12 +105,12 @@ func newItemsHarness(t *testing.T) *itemsHarness {
 
 	csrf := httpapi.NewPreAuthCSRF(false)
 	srv := httptest.NewServer(httpapi.New(httpapi.Options{
-		Setup: &httpapi.SetupDeps{Service: boot, CSRF: csrf, Logger: slogDiscard()},
-		Auth:  &httpapi.AuthDeps{Service: authSvc, CSRF: csrf},
-		Users: &httpapi.UsersDeps{Service: ih.usersSvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
-		Items: &httpapi.ItemsDeps{Service: vsvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
+		Setup:      &httpapi.SetupDeps{Service: boot, CSRF: csrf, Logger: slogDiscard()},
+		Auth:       &httpapi.AuthDeps{Service: authSvc, CSRF: csrf},
+		Users:      &httpapi.UsersDeps{Service: ih.usersSvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
+		Items:      &httpapi.ItemsDeps{Service: vsvc, Session: authSvc, Cursor: cursor, Idempotency: idem},
 		Generators: &httpapi.GeneratorsDeps{Session: authSvc},
-		Transfer: &httpapi.TransferDeps{Service: transferSvc, Session: authSvc},
+		Transfer:   &httpapi.TransferDeps{Service: transferSvc, Session: authSvc},
 	}))
 	t.Cleanup(srv.Close)
 	h.server = srv

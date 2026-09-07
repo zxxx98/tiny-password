@@ -28,17 +28,21 @@ type Options struct {
 	// id. Tests use it to assert that only authorized candidates decrypt;
 	// production leaves it nil.
 	DecryptHook func(itemID string)
+	// SearchProfile receives optional phase timings for search benchmarks.
+	// It is never given payload data and is nil in production by default.
+	SearchProfile SearchProfileHook
 }
 
 // Service orchestrates the item lifecycle: the repository narrows candidates,
 // the policy authorizes, and only then is anything decrypted.
 type Service struct {
-	db          *sql.DB
-	key         *crypto.MasterKey
-	repo        repository
-	now         func() time.Time
-	audit       *audit.Service
-	decryptHook func(itemID string)
+	db            *sql.DB
+	key           *crypto.MasterKey
+	repo          repository
+	now           func() time.Time
+	audit         *audit.Service
+	decryptHook   func(itemID string)
+	searchProfile SearchProfileHook
 }
 
 // NewService requires the master key: without it no payload can be sealed
@@ -56,7 +60,8 @@ func NewService(db *sql.DB, key *crypto.MasterKey, options Options) (*Service, e
 	if options.Audit == nil {
 		options.Audit = audit.NewService(audit.Options{})
 	}
-	return &Service{db: db, key: key, now: options.Now, audit: options.Audit, decryptHook: options.DecryptHook}, nil
+	return &Service{db: db, key: key, now: options.Now, audit: options.Audit,
+		decryptHook: options.DecryptHook, searchProfile: options.SearchProfile}, nil
 }
 
 // CreateInput carries the create request. Ownership is derived from the
@@ -440,17 +445,32 @@ func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id stri
 // indicates corruption or a bug and maps to a bare internal error — never
 // to details that could leak stored material.
 func (s *Service) decryptRow(row itemRow) ([]byte, any, *storedPayload, error) {
+	return s.decryptRowWithProfile(row, nil)
+}
+
+func (s *Service) decryptRowWithProfile(row itemRow, profile SearchProfileHook) ([]byte, any, *storedPayload, error) {
 	if s.decryptHook != nil {
 		s.decryptHook(row.ID)
 	}
 	aad := AADFor(row.ID, row.Scope, row.OwnerID.String, row.CreatorID.String, row.PayloadVersion, row.Revision)
+	started := time.Now()
 	raw, err := s.key.DecryptColumns(row.PayloadVersion, row.Nonce, row.Ciphertext, aad)
+	if profile != nil {
+		profile(SearchPhaseDecrypt, time.Since(started))
+	}
 	if err != nil {
 		return nil, nil, nil, errors.New("vault: stored payload failed authentication")
 	}
 	var envelope storedPayload
+	started = time.Now()
 	if err := json.Unmarshal(raw, &envelope); err != nil {
+		if profile != nil {
+			profile(SearchPhaseJSON, time.Since(started))
+		}
 		return nil, nil, nil, errors.New("vault: stored payload is unreadable")
+	}
+	if profile != nil {
+		profile(SearchPhaseJSON, time.Since(started))
 	}
 	if envelope.Version != PayloadSchemaVersion {
 		return nil, nil, nil, errors.New("vault: stored payload version is unsupported")

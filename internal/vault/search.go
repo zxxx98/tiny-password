@@ -3,13 +3,32 @@ package vault
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/tiny-password/tiny-password/internal/auth"
 )
 
 // searchBatchSize bounds how many candidates are decrypted per SQL batch
-// while scanning. The whole set never lives in memory at once.
-const searchBatchSize = 200
+// while scanning. Five thousand keeps the 10,000-item search benchmark to
+// two SQL passes while retaining a bounded working set for larger vaults.
+const searchBatchSize = 5000
+
+// SearchPhase identifies one measurable part of a search request. The hook is
+// optional and intended for benchmark instrumentation; production callers can
+// leave it nil so the hot path only pays for the nil check.
+type SearchPhase string
+
+const (
+	SearchPhaseSQL     SearchPhase = "sql"
+	SearchPhaseDecrypt SearchPhase = "decrypt"
+	SearchPhaseJSON    SearchPhase = "json"
+	SearchPhaseMatch   SearchPhase = "match"
+)
+
+// SearchProfileHook receives wall-clock duration samples for one search
+// phase. It must not retain plaintext values; only phase and duration cross
+// this boundary.
+type SearchProfileHook func(SearchPhase, time.Duration)
 
 // SearchInput carries the search request. The query matches name, username,
 // URLs, tags and notes (design §7.1) case-insensitively; scope, type and tag
@@ -114,7 +133,17 @@ func (s *Service) scanMatches(ctx context.Context, where string, args []any, mat
 		cursorID      = beforeID
 	)
 	for len(matched) <= limit {
-		rows, err := s.repo.listRows(ctx, s.db, where, args, cursorUpdated, cursorID, searchBatchSize)
+		var (
+			rows []itemRow
+			err  error
+		)
+		if s.searchProfile == nil {
+			rows, err = s.repo.listRows(ctx, s.db, where, args, cursorUpdated, cursorID, searchBatchSize)
+		} else {
+			started := time.Now()
+			rows, err = s.repo.listRows(ctx, s.db, where, args, cursorUpdated, cursorID, searchBatchSize)
+			s.profile(SearchPhaseSQL, time.Since(started))
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -122,19 +151,41 @@ func (s *Service) scanMatches(ctx context.Context, where string, args []any, mat
 			break
 		}
 		for _, row := range rows {
-			_, typed, envelope, err := s.decryptRow(row)
+			var typed any
+			var envelope *storedPayload
+			if s.searchProfile == nil {
+				_, typed, envelope, err = s.decryptRow(row)
+			} else {
+				_, typed, envelope, err = s.decryptRowWithProfile(row, s.searchProfile)
+			}
 			if err != nil {
 				return nil, err
 			}
-			if match(row, typed, envelope.Tags) {
-				meta := row.toMeta()
-				meta.Title = TitleOf(typed)
-				matched = append(matched, meta)
+			if s.searchProfile == nil {
+				if match(row, typed, envelope.Tags) {
+					meta := row.toMeta()
+					meta.Title = TitleOf(typed)
+					matched = append(matched, meta)
+				}
+			} else {
+				started := time.Now()
+				if match(row, typed, envelope.Tags) {
+					meta := row.toMeta()
+					meta.Title = TitleOf(typed)
+					matched = append(matched, meta)
+				}
+				s.profile(SearchPhaseMatch, time.Since(started))
 			}
 			cursorUpdated, cursorID = row.UpdatedAt, row.ID
 		}
 	}
 	return matched, nil
+}
+
+func (s *Service) profile(phase SearchPhase, elapsed time.Duration) {
+	if s.searchProfile != nil {
+		s.searchProfile(phase, elapsed)
+	}
 }
 
 // Search returns the caller's readable items matching the query, newest

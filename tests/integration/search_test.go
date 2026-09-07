@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/vault"
 	"github.com/tiny-password/tiny-password/tests/fixtures"
 )
 
@@ -37,6 +38,32 @@ func (d *decryptRecorder) count() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.ids)
+}
+
+type searchPhaseRecorder struct {
+	mu     sync.Mutex
+	totals map[vault.SearchPhase]time.Duration
+}
+
+func (p *searchPhaseRecorder) record(phase vault.SearchPhase, elapsed time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.totals == nil {
+		p.totals = make(map[vault.SearchPhase]time.Duration)
+	}
+	p.totals[phase] += elapsed
+}
+
+func (p *searchPhaseRecorder) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.totals = make(map[vault.SearchPhase]time.Duration)
+}
+
+func (p *searchPhaseRecorder) get(phase vault.SearchPhase) time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.totals[phase]
 }
 
 func TestSearchMatchesAuthorizedFieldsOnly(t *testing.T) {
@@ -244,8 +271,8 @@ func TestSearchDecryptsOnlyAuthorizedCandidates(t *testing.T) {
 	// Authorized candidates only: alice's two items plus the shared one. The
 	// unreadable personal item of bob is never decrypted.
 	want := map[string]bool{
-		aliceA["id"].(string): true,
-		aliceB["id"].(string): true,
+		aliceA["id"].(string):    true,
+		aliceB["id"].(string):    true,
 		bobShared["id"].(string): true,
 	}
 	if len(decrypted) != len(want) {
@@ -440,8 +467,59 @@ func TestSearchPerformanceBaseline(t *testing.T) {
 	if got := h.decrypts.count(); got != 10000 {
 		t.Fatalf("decrypt calls=%d, want exactly 10000 authorized candidates", got)
 	}
-	t.Logf("search over 10000 items: %s (single-user baseline; P95 comes from T30)", elapsed)
+	t.Logf("search over 10000 items: %s (single-user baseline; matrix P95 comes from T30)", elapsed)
 	if elapsed > 30*time.Second {
 		t.Fatalf("search baseline regression: %s", elapsed)
+	}
+}
+
+func TestSearchPerformanceMatrix(t *testing.T) {
+	if testing.Short() || raceDetector {
+		t.Skip("performance matrix skipped with -short or under -race")
+	}
+	profile := &searchPhaseRecorder{}
+	h := newItemsHarnessWithSearchProfile(t, profile.record)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	aliceID := h.lookupUserID(t, "alice")
+	if _, err := fixtures.SeedLoginItems(context.Background(), h.db.DB, mustMasterKey(t), aliceID, 10000, 4999, "needle-haystack"); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := []string{
+		"needle-haystack",            // unique title hit
+		"site05000",                  // unique URL hit
+		"user05000",                  // unique username hit
+		"synthetic load-test record", // common note hit
+		"definitely-absent",          // full scan with no hit
+	}
+	for _, query := range queries {
+		for repetition := 0; repetition < 3; repetition++ {
+			mode := "warm"
+			if repetition == 0 {
+				mode = "cold"
+				if _, err := h.db.Exec("PRAGMA shrink_memory"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			profile.reset()
+			start := time.Now()
+			resp := h.request(t, "POST", "/items/search", map[string]any{"query": query}, alice)
+			elapsed := time.Since(start)
+			page := decodeBody(t, resp)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("query %q: status=%d body=%v", query, resp.StatusCode, page)
+			}
+			if _, ok := page["items"].([]any); !ok {
+				t.Fatalf("query %q: items missing from %v", query, page)
+			}
+			t.Logf("search sample query=%q mode=%s elapsed_ms=%.3f sql_ms=%.3f decrypt_ms=%.3f json_ms=%.3f match_ms=%.3f",
+				query, mode, float64(elapsed.Microseconds())/1000,
+				float64(profile.get(vault.SearchPhaseSQL).Microseconds())/1000,
+				float64(profile.get(vault.SearchPhaseDecrypt).Microseconds())/1000,
+				float64(profile.get(vault.SearchPhaseJSON).Microseconds())/1000,
+				float64(profile.get(vault.SearchPhaseMatch).Microseconds())/1000)
+		}
 	}
 }

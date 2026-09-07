@@ -1,8 +1,12 @@
 package vault
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tiny-password/tiny-password/internal/platform/crypto"
 )
 
 func TestMatchQueryFields(t *testing.T) {
@@ -17,12 +21,12 @@ func TestMatchQueryFields(t *testing.T) {
 	ssh := &SSHKeyPayload{Name: "lab", Comment: "root@homelab"}
 
 	cases := []struct {
-		name   string
-		query  string
-		tag    string
-		tags   []string
-		typed  any
-		want   bool
+		name  string
+		query string
+		tag   string
+		tags  []string
+		typed any
+		want  bool
 	}{
 		{"name match", "github", "", nil, login, true},
 		{"name case-insensitive", "GITHUB", "", nil, login, true},
@@ -44,6 +48,42 @@ func TestMatchQueryFields(t *testing.T) {
 				t.Fatalf("match=%v want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDecryptRowProfileReportsDecryptAndJSONPhases(t *testing.T) {
+	key, err := crypto.NewMasterKey(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := itemRow{
+		ID: "item-profile", Scope: string(ScopePersonal),
+		OwnerID:  sql.NullString{String: "owner-1", Valid: true},
+		ItemType: TypeLogin, PayloadVersion: crypto.PayloadVersion,
+		Revision: 1,
+	}
+	plain := []byte(`{"v":1,"login":{"name":"profiled"}}`)
+	enc, err := key.Encrypt(plain, AADFor(row.ID, row.Scope, row.OwnerID.String, "", row.PayloadVersion, row.Revision))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row.Nonce, row.Ciphertext = enc.Nonce[:], enc.Ciphertext
+
+	seen := map[SearchPhase]time.Duration{}
+	service := &Service{key: key}
+	_, typed, _, err := service.decryptRowWithProfile(row, func(phase SearchPhase, elapsed time.Duration) {
+		seen[phase] += elapsed
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if TitleOf(typed) != "profiled" {
+		t.Fatalf("title = %q, want profiled", TitleOf(typed))
+	}
+	for _, phase := range []SearchPhase{SearchPhaseDecrypt, SearchPhaseJSON} {
+		if seen[phase] <= 0 {
+			t.Fatalf("phase %q was not profiled: %s", phase, seen[phase])
+		}
 	}
 }
 
