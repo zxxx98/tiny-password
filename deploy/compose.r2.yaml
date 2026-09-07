@@ -1,0 +1,14 @@
+# Optional R2 credentials. Keep this override out of version control when the
+# source paths are customized; the files are mounted read-only as Docker
+# Secrets at the paths already used by the application.
+services:
+  app:
+    secrets:
+      - r2_access_key
+      - r2_secret_key
+
+secrets:
+  r2_access_key:
+    file: ${TP_R2_ACCESS_KEY_SOURCE:-./secrets/r2_access_key}
+  r2_secret_key:
+    file: ${TP_R2_SECRET_KEY_SOURCE:-./secrets/r2_secret_key}

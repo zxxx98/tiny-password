@@ -8,7 +8,7 @@ services:
     volumes:
       - ${TP_TEST_DATA_DIR:?set TP_TEST_DATA_DIR to an empty temp dir}:/data
     tmpfs:
-      - /tmp:mode=700,uid=10001,gid=10001
+      - /tmp:mode=700,uid=10001,gid=10001,size=512m
     environment:
       TP_TESTING: "1"
 

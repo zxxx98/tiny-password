@@ -1,0 +1,25 @@
+{
+  "name": "Tiny Password",
+  "short_name": "Tiny Password",
+  "description": "Self-hosted encrypted password vault",
+  "lang": "zh-CN",
+  "start_url": "/vault",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#f9f9f7",
+  "background_color": "#f9f9f7",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

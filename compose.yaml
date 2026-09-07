@@ -1,18 +1,68 @@
 # Tiny Password base deployment: single application container.
-# Optional Cloudflare Tunnel profile and LAN overrides are delivered by T29.
+# The application has no host port by default. Use deploy/compose.lan.yaml for
+# a deliberately scoped LAN bind, or enable the tunnel profile below.
 services:
   app:
     build: .
     image: tiny-password:dev
-    # Bind to loopback only; LAN/Tunnel deployments are covered in T29 docs.
-    ports:
-      - "127.0.0.1:8080:8080"
     volumes:
       - app-data:/data
     tmpfs:
       # Restricted scratch space for sensitive temporary files (D11).
-      - /tmp:mode=700,uid=10001,gid=10001
+      - /tmp:mode=700,uid=10001,gid=10001,size=512m
+    secrets:
+      - master_key
+      - backup_passphrase
+    environment:
+      TP_ADDR: ":8080"
+      TP_DATA_DIR: /data
+      TP_TRUSTED_PROXY_CIDRS: ${TP_TRUSTED_PROXY_CIDRS:-}
+    read_only: true
+    init: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+          pids: 256
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+  tunnel:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/run/secrets/tunnel_token"]
+    depends_on:
+      app:
+        condition: service_healthy
+    secrets:
+      - tunnel_token
+    read_only: true
+    init: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
     restart: unless-stopped
 
 volumes:
   app-data:
+
+secrets:
+  master_key:
+    file: ${TP_MASTER_KEY_SOURCE:-./secrets/master_key}
+  backup_passphrase:
+    file: ${TP_BACKUP_PASSPHRASE_SOURCE:-./secrets/backup_passphrase}
+  tunnel_token:
+    # The inactive profile must not make the default app deployment depend on
+    # a Tunnel file. Set TP_TUNNEL_TOKEN_SOURCE before enabling the profile.
+    file: ${TP_TUNNEL_TOKEN_SOURCE:-/dev/null}

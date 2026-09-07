@@ -1,0 +1,46 @@
+# Secret 生成与保管
+
+Tiny Password 不生成替代主密钥，也不把 secret 写入数据库、备份 manifest、审计或 API 响应。Docker Secret 文件以只读方式挂载，应用在响应中最多暴露“凭据文件是否存在”的布尔状态。
+
+## 文件
+
+默认 Compose 需要：
+
+| 文件 | 用途 | 丢失后果 |
+| --- | --- | --- |
+| `secrets/master_key` | 解密保险库、实例幂等指纹和恢复目标密钥 | 加密负载不可解密；不能重置替代 |
+| `secrets/backup_passphrase` | 创建/读取加密实例归档 | 该口令保护的归档不可读取 |
+| `secrets/tunnel_token` | 仅启用 Tunnel profile 时给 cloudflared | Tunnel 无法连接；不会影响本地 app |
+
+R2 需要额外的 `secrets/r2_access_key` 和 `secrets/r2_secret_key`，通过 `deploy/compose.r2.yaml` 挂载；它们不进入应用设置 API 和备份归档。
+
+## 生成
+
+在受控主机执行并保持 umask：
+
+```bash
+umask 077
+mkdir -p secrets
+head -c 32 /dev/urandom > secrets/master_key
+openssl rand -base64 32 > secrets/backup_passphrase
+chmod 0600 secrets/master_key secrets/backup_passphrase
+```
+
+主密钥必须是恰好 32 个原始字节，不要用文本口令、十六进制字符串或带换行的编码替代。备份口令可以是文本；创建归档后应使用独立的密码管理器保存，而不是只留在 Compose 项目目录。
+
+Tunnel token 从 Cloudflare Dashboard 创建 remotely-managed Tunnel 后复制到受限文件：
+
+```bash
+umask 077
+printf '%s' "$CLOUDFLARE_TUNNEL_TOKEN" > secrets/tunnel_token
+chmod 0600 secrets/tunnel_token
+```
+
+不要把 token 作为 Compose `command` 参数、shell 历史、CI 输出或 issue 内容提交。变更 token 后先替换受限文件，再重建/重启 Tunnel service。
+
+## 备份策略
+
+- 主密钥、备份口令和 Tunnel token 分开保存，并至少有一份离线副本；副本不放在同一数据卷。
+- 备份归档包含源主密钥的加密归档材料，因此备份口令与归档必须拥有相同或更严格的访问控制。
+- 忘记备份口令不能通过管理员 UI、数据库或应用日志恢复；忘记主密钥不能通过 `restore` 猜测或重建。
+- 任何 secret 误进入日志、shell history、聊天或 CI artifact，都应立即轮换对应 token/credential；主密钥不能轮换来挽救已经泄漏的明文暴露，需按事件响应处理。

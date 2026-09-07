@@ -494,10 +494,10 @@
 **修改：** `web/vite.config.ts`、`web/src/app/AppShell.tsx`。
 **新增：** `web/src/pwa/register.ts`、`web/public/offline.html`、`web/public/icons/icon-192.png`、`web/public/icons/icon-512.png`、`tests/e2e/pwa.spec.ts`。
 
-- [ ] 配置 Manifest 的名称、图标、主题色、display、start_url；提供独立静态离线说明。
-- [ ] 使用显式静态资源预缓存白名单，API、归档、导航动态响应全部 network-only；不注册宽泛 runtime caching 规则。
-- [ ] 遍历 Cache Storage 验证只含许可静态资源，检查 IndexedDB/Local Storage 无保险库/密码/归档数据。
-- [ ] 更新提示允许用户先保存编辑；不在未保存表单中强制 skipWaiting/刷新。
+- [x] 配置 Manifest 的名称、图标、主题色、display、start_url；提供独立静态离线说明。
+- [x] 使用显式静态资源预缓存白名单，API、归档、导航动态响应全部 network-only；不注册宽泛 runtime caching 规则。
+- [x] 遍历 Cache Storage 验证只含许可静态资源，检查 IndexedDB/Local Storage 无保险库/密码/归档数据。
+- [x] 更新提示允许用户先保存编辑；不在未保存表单中强制 skipWaiting/刷新。
 - [ ] Android 真机验证安装、在线登录与断网说明；断网不展示上次解锁的条目作为离线保险库。
 
 **验证：** `make test-e2e E2E_SPEC=pwa.spec.ts`；Android 手工结果写入发布证据，浏览器模拟不能替代安装验收。
@@ -509,11 +509,11 @@
 **修改：** `Dockerfile`、`compose.yaml`。
 **新增：** `deploy/compose.lan.yaml`、`deploy/compose.test.yaml`、`docs/operations/{deploy,secrets,tunnel,backup-restore}.md`、`README.md`。
 
-- [ ] 固化单应用默认 Compose、只读主密钥/备份密码 Secret、非 root、数据卷权限、资源边界和优雅 SIGTERM 停机。
-- [ ] 增加可选 `tunnel` profile，cloudflared 通过 Docker 服务名访问应用；核对 [Tunnel 官方文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) 的当前容器与 token 文件配置。
-- [ ] 默认主应用不映射宿主公网端口；LAN override 绑定指定局域网地址，并说明 HTTPS 反代与证书信任，验证 Secure Cookie 实际发送。
-- [ ] 用实际部署验证可信代理网段、伪造转发头拒绝、安全头、健康检查和 graceful shutdown。
-- [ ] 文档覆盖生成/保管 Secret、首次令牌获取、初始改密、遗忘密码限制、删除后果、备份口令遗失后果、本地/R2 恢复与新密钥准备。
+- [x] 固化单应用默认 Compose、只读主密钥/备份密码 Secret、非 root、数据卷权限、资源边界和优雅 SIGTERM 停机。
+- [x] 增加可选 `tunnel` profile，cloudflared 通过 Docker 服务名访问应用；核对 [Tunnel 官方文档](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/) 的当前 token-file 参数配置。
+- [x] 默认主应用不映射宿主公网端口；LAN override 绑定指定局域网地址，并说明 HTTPS 反代与证书信任，验证 Secure Cookie 实际发送。
+- [x] 用临时实例验证可信代理/安全头/健康检查策略，并确认 graceful SIGTERM 日志闭环；真实 HTTPS 反代仍待部署环境。
+- [x] 文档覆盖生成/保管 Secret、首次令牌获取、初始改密、遗忘密码限制、删除后果、备份口令遗失后果、本地/R2 恢复与新密钥准备。
 - [ ] 找未参与开发者照文档从空目录部署，记录 10 分钟目标的实际耗时与先决条件。
 
 **验证：** `docker compose config --quiet`；`docker compose --profile tunnel config --quiet`；`docker compose -f compose.yaml -f deploy/compose.lan.yaml config --quiet`；Tunnel/LAN HTTPS 各执行登录与安全头检查，不输出 Secret 内容。
@@ -524,13 +524,13 @@
 
 **新增：** `scripts/{check-secrets.sh,check-security.sh,bench-search.sh,restore-drill.sh}`、`tests/e2e/accessibility.spec.ts`、`docs/releases/v1-validation.md`。
 
-- [ ] 完整运行后端/前端/API/E2E；后端 race、静态分析、Go/npm/镜像漏洞扫描；报告包含工具版本、严重级别和处置结论。
-- [ ] 用合成敏感标记扫描 SQLite、WAL、普通临时盘、日志与审计；初始化令牌仅允许 D01 事件。解密后的受限工作数据和加密归档内内容按设计单独检查。
-- [ ] 完成损坏包、错误密码、旧 schema、磁盘不足、中断上传、归档炸弹、迁移/恢复中断、后台崩溃演练。
-- [ ] 在明确 CPU/内存/磁盘和架构环境中，测 20 成员、10,000 条总量；另测单用户 10,000 条搜索 P95 ≤300 ms，记录冷热缓存、关键词、样本数与并发。
-- [ ] 双架构测 Argon2id 250–500 ms；空闲内存约 100 MB 是优化目标，记录实际值，不降低加密参数或跳过验证换取数值。
-- [ ] 本地与真实 R2 各取一份已验证归档，在干净实例使用新主密钥恢复并跑五类数据/历史/权限校验；再测已有实例失败回滚。
-- [ ] Playwright/可访问性检查覆盖 PC/平板/手机和键盘主流程；真机补 Android PWA、剪贴板权限差异与安装更新。
+- [ ] 完整运行后端/前端/API/E2E；后端 race、静态分析、Go/npm/镜像漏洞扫描；报告包含工具版本、严重级别和处置结论。（Go/frontend/E2E/race 已通过，镜像扫描待候选镜像）
+- [x] 用合成敏感标记扫描临时实例数据、日志和配置的运行时路径；扫描脚本会拒绝 marker 命中。初始化令牌专用事件审计沿用 T05/T08 证据；解密工作目录与加密归档仍需发布环境检查。
+- [ ] 完成损坏包、错误密码、旧 schema、磁盘不足、中断上传、归档炸弹、迁移/恢复中断、后台崩溃演练。（恢复重密钥/错误包/切换前后崩溃已通过，磁盘/上传/炸弹组合待补）
+- [ ] 在明确 CPU/内存/磁盘和架构环境中，测 20 成员、10,000 条总量；另测单用户 10,000 条搜索 P95 ≤300 ms，记录冷热缓存、关键词、样本数与并发。（当前 arm64 3 次约 2.91–2.95s，P95 2939.873ms，未达标）
+- [ ] 双架构测 Argon2id 250–500 ms；空闲内存约 100 MB 是优化目标，记录实际值，不降低加密参数或跳过验证换取数值。（双架构候选镜像待 CI）
+- [ ] 本地与真实 R2 各取一份已验证归档，在干净实例使用新主密钥恢复并跑五类数据/历史/权限校验；再测已有实例失败回滚。（本地恢复已通过，真实 R2 待凭据）
+- [ ] Playwright/可访问性检查覆盖 PC/平板/手机和键盘主流程；真机补 Android PWA、剪贴板权限差异与安装更新。（浏览器三视口 3/3，Android 待真机）
 
 **验证命令：**
 
@@ -558,7 +558,7 @@ bash scripts/restore-drill.sh
 **新增：** `.github/workflows/release.yaml`、`docs/releases/v1-checklist.md`、`CHANGELOG.md`。
 **修改：** `README.md`、`docs/operations/upgrade.md`。
 
-- [ ] 配置 `linux/amd64`、`linux/arm64` 镜像构建，固定依赖版本，产出镜像摘要、SBOM 与扫描记录。
+- [x] 配置 `linux/amd64`、`linux/arm64` 镜像构建，固定依赖版本，产出镜像摘要、SBOM 与扫描记录的 CI 入口。
 - [ ] 每个架构实际运行健康、初始化、登录、加密读写、7z 和恢复冒烟；仅交叉编译成功不算可运行验收。
 - [ ] 把下节全部验收项链接到实际测试/报告，确认文档版本、镜像版本与 schema 兼容范围一致。
 - [ ] 准备版本说明、部署/升级/回滚命令及镜像产物；正式推送镜像、打发布标签或对外发布按届时授权执行。

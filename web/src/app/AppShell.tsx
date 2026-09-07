@@ -1,6 +1,14 @@
+import { useEffect, useState } from "react";
 import { useSession } from "./session";
 import { Link, usePath } from "./router";
 import type { ReactNode } from "react";
+import { Button } from "../design-system/Button";
+import {
+  activatePwaUpdate,
+  dismissPwaUpdate,
+  PWA_UPDATE_EVENT,
+  type PwaUpdateDetail,
+} from "../pwa/register";
 
 /**
  * AppShell: the responsive Newsprint frame. Desktop ≥768px uses a masthead
@@ -46,8 +54,45 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { principal } = useSession();
   const items = navItemsFor(principal?.role ?? null);
   const path = usePath();
+  const [update, setUpdate] = useState<ServiceWorkerRegistration | null>(null);
+
+  useEffect(() => {
+    const onUpdate = (event: Event) => {
+      setUpdate((event as CustomEvent<PwaUpdateDetail>).detail.registration);
+    };
+    window.addEventListener(PWA_UPDATE_EVENT, onUpdate);
+    return () => window.removeEventListener(PWA_UPDATE_EVENT, onUpdate);
+  }, []);
+
+  const deferUpdate = () => {
+    dismissPwaUpdate();
+    setUpdate(null);
+  };
+
+  const applyUpdate = () => {
+    if (!activatePwaUpdate()) setUpdate(null);
+  };
+
   return (
     <div className="flex min-h-screen flex-col">
+      {update && (
+        <aside
+          className="border-b-2 border-accent bg-paper px-4 py-3"
+          role="status"
+          aria-live="polite"
+          data-testid="pwa-update"
+        >
+          <div className="mx-auto flex max-w-screen-xl flex-wrap items-center justify-between gap-3">
+            <p className="font-body text-sm">
+              新版本已准备好。请先保存正在编辑的内容，再更新；应用不会自动刷新。
+            </p>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={deferUpdate}>稍后</Button>
+              <Button onClick={applyUpdate}>保存后更新</Button>
+            </div>
+          </div>
+        </aside>
+      )}
       <header className="border-b-4 border-ink">
         <div className="mx-auto flex w-full max-w-screen-xl items-center justify-between px-4 py-3">
           <Link to="/vault" ariaLabel="Tiny Password 保险库首页">

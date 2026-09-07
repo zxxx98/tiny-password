@@ -50,6 +50,11 @@ export TP_E2E_BASE_URL="$BASE"
 echo "browser-e2e: building frontend"
 npm --prefix "$ROOT/web" run build > /dev/null
 
+if [ ! -x "$ROOT/node_modules/.bin/playwright" ]; then
+  echo "browser-e2e: installing root Playwright dependency"
+  npm ci --ignore-scripts > /dev/null
+fi
+
 echo "browser-e2e: building server"
 go build -o "$WORK/tiny-password-e2e-bin" ./cmd/tiny-password
 
@@ -148,7 +153,8 @@ curl -sf -X POST -b "$JAR" -c "$JAR" -H "Content-Type: application/json" -H "Ori
   "$BASE/api/v1/items" > /dev/null
 
 echo "browser-e2e: running Playwright spec $E2E_SPEC"
-if TP_E2E_MEMBER_PW="$MEMBER_PW" TP_E2E_SECOND_PW="$SECOND_PW" npx playwright test --workers=1 --config "$ROOT/playwright.config.ts" "$E2E_SPEC"; then
+if TP_E2E_MEMBER_PW="$MEMBER_PW" TP_E2E_SECOND_PW="$SECOND_PW" \
+  npx --no-install playwright test --workers=1 --config "$ROOT/playwright.config.ts" "$E2E_SPEC"; then
   echo "browser-e2e: PASS"
 else
   SERVER_FAILED=1

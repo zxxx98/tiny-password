@@ -1,0 +1,9 @@
+# Optional LAN exposure. Bind only to the explicitly selected host address;
+# terminate HTTPS in an existing reverse proxy before sending browser traffic
+# to this port. The default remains loopback for safe local diagnostics.
+services:
+  app:
+    ports:
+      - "${TP_LAN_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    environment:
+      TP_TRUSTED_PROXY_CIDRS: ${TP_TRUSTED_PROXY_CIDRS:-}

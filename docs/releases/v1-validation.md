@@ -383,3 +383,20 @@
 - R2 最终对象在清理 incoming 临时对象前做有界流式 SHA-256 回读校验；retention 只处理配置前缀下的直接 final 对象，incoming 由独立 TTL 清理。
 - 首次备份在在线快照前创建 instance ID，归档快照与 manifest 使用同一值；新增备份配置、运行、维护、恢复和迁移的脱敏审计事件。系统审计 API/UI 增加 UTC 时间范围筛选。
 - 验证：`go vet ./...`、`SEVENZIP_BIN=/tmp/tp-7zz/7zz go test ./... -count=1 -timeout=25m`、前端 typecheck/85 tests/build、关键包 race 均通过。真实 R2 `TestR2Live` 仍需 `TP_R2_TEST_*` 凭据。
+
+## M6 · T28–T31 PWA、部署与发布加固（进行中）
+
+- 日期：2026-09-07；执行环境：Ubuntu Linux arm64（Oracle）、Go 1.26.8 toolchain、Node/Vite 7、Playwright Chromium、Docker Compose v5。
+- T28 交付：Vite build plugin 根据最终 bundle 生成 `sw.js` 的**显式静态 URL 白名单**；`/api/`、归档和导航请求不进入缓存，离线导航只返回独立 `offline.html`；无自动 `skipWaiting`/刷新，用户看到更新提示后自行保存并点击更新。manifest 声明 standalone、`/vault` start URL、主题色和 192/512 PNG 图标；会话模块仍不触碰持久化存储。
+- T28 验证：`bash scripts/test-browser-e2e.sh pwa.spec.ts` → **2/2 通过**（manifest/图标/离线说明、Cache Storage 白名单、API 未缓存、IndexedDB/localStorage/sessionStorage 均为空）；`npm --prefix web run typecheck`、前端 **85/85**、生产 build 通过。Android 真机安装/断网/更新尚未执行。
+- T29 交付：默认 `compose.yaml` 不发布宿主端口，app 为非 root、read-only rootfs、cap drop、no-new-privileges、512MiB/1 CPU/256 PID 资源边界、tmpfs staging、healthcheck 和 30 秒 stop grace；`tunnel` profile 通过 `cloudflare/cloudflared` 服务名和 `/run/secrets/tunnel_token` 的 `--token-file` 连接；新增 LAN 与 R2 overrides 及部署/Secret/Tunnel/恢复文档。Tunnel 参数依据官方当前文档：<https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/>。
+- T29 验证：使用临时 secret 文件执行 `docker compose config --quiet`、`docker compose --profile tunnel config --quiet`、LAN/R2 merge config → 全部通过；临时实例 `check-security.sh` → 安全头/API no-store 通过；`check-secrets.sh` marker 正常路径通过、命中 marker 时按预期失败；SIGTERM 日志出现 shutdown signal/complete。真实 LAN HTTPS 反代与 Tunnel 连接仍待部署环境。
+- T30 交付：新增 `check-secrets.sh`、`check-security.sh`、严格 P95 计算的 `bench-search.sh`、`restore-drill.sh` 和三视口键盘/控件验收 `accessibility.spec.ts`；新增发布清单。
+- T30 验证：
+  1. `go vet ./...` → 通过；`go test ./... -count=1` → 通过（集成包约 89.917s）。
+  2. `go test -race ./... -count=1 -timeout=25m` → 通过；`tests/integration` 用时 863.655s，无 race 报告。
+  3. `bash scripts/test-browser-e2e.sh pwa.spec.ts` → 2/2；`bash scripts/test-browser-e2e.sh accessibility.spec.ts` → **3/3**（360×800、768×1024、1280×900，标签/键盘/44px 控件）。
+  4. `SEVENZIP_BIN=/tmp/tp-7zz/7zz bash scripts/restore-drill.sh` → 通过：新密钥恢复、已有目标前置快照、错误/损坏归档、切换前后崩溃 resume。
+  5. `TP_SEARCH_REPEATS=1 bash scripts/bench-search.sh` → **按预期失败**：单用户 10,000 条加密搜索 2939.873ms，目标 P95 ≤300ms；不以 mock 或降低加密参数掩盖此差距。
+- T31 交付：`.github/workflows/release.yaml` 定义 amd64/arm64 QEMU 实际运行 smoke、GHCR 多架构构建、provenance/SBOM attestation、Trivy 高危/严重扫描；`CHANGELOG.md`、`docs/releases/v1-checklist.md` 和 README/运维文档已补齐。workflow 尚未在 GitHub runner 上执行或推送镜像。
+- 未解决发布阻断项：真实 R2 `TestR2Live` 和 R2→新密钥恢复、Android 真机 PWA、真实 LAN HTTPS/Tunnel、双架构候选镜像 smoke/SBOM/漏洞扫描、20 成员/内存基线，以及搜索 P95 300ms 目标。M6 暂不判定为最终发布完成。
