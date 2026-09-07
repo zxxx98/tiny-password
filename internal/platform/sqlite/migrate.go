@@ -27,6 +27,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 // interrupted upgrade leaves the previous complete schema in place and the
 // pre-upgrade snapshot covers everything else.
 func Upgrade(db *DB, fsys fs.FS, dataDir string, now time.Time) (string, error) {
+	return UpgradeWithHook(db, fsys, dataDir, now, nil)
+}
+
+// UpgradeWithHook applies migrations and invokes onSuccess once after a
+// successful schema upgrade. Keeping the callback generic avoids coupling
+// the SQLite package to any audit implementation (and keeps package tests
+// acyclic); callers may record a display-safe event there.
+func UpgradeWithHook(db *DB, fsys fs.FS, dataDir string, now time.Time, onSuccess func(*sql.DB, int64)) (string, error) {
 	if _, err := db.Exec(migrationsTable); err != nil {
 		return "", fmt.Errorf("create schema_migrations: %w", err)
 	}
@@ -78,10 +86,16 @@ func Upgrade(db *DB, fsys fs.FS, dataDir string, now time.Time) (string, error) 
 		if err := Migrate(db.DB, fsys); err != nil {
 			return presnapshot, err
 		}
+		if onSuccess != nil {
+			onSuccess(db.DB, knownMax)
+		}
 		return presnapshot, nil
 	}
 	if err := Migrate(db.DB, fsys); err != nil {
 		return "", err
+	}
+	if onSuccess != nil {
+		onSuccess(db.DB, knownMax)
 	}
 	return "", nil
 }

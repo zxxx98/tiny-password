@@ -29,6 +29,11 @@ const eventOptions = [
   { value: "vault.item.updated", label: "条目更新" },
   { value: "vault.item.viewed", label: "条目查看" },
   { value: "backup.retention.deleted", label: "备份清理" },
+  { value: "backup.config.updated", label: "备份配置" },
+  { value: "backup.run", label: "备份运行" },
+  { value: "backup.restore", label: "备份恢复" },
+  { value: "backup.maintenance", label: "维护任务" },
+  { value: "database.migration", label: "数据库迁移" },
   { value: "transfer.exported", label: "个人导出" },
   { value: "transfer.imported", label: "个人导入" },
 ];
@@ -49,6 +54,8 @@ export function AuditPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [event, setEvent] = useState("");
   const [result, setResult] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [requestId, setRequestId] = useState<string | undefined>();
 
@@ -71,6 +78,12 @@ export function AuditPage() {
         if (result) {
           params.set("result", result);
         }
+        if (from) {
+          params.set("from", new Date(from).toISOString());
+        }
+        if (to) {
+          params.set("to", new Date(to).toISOString());
+        }
         if (nextCursor) {
           params.set("cursor", nextCursor);
         }
@@ -87,7 +100,7 @@ export function AuditPage() {
         fail(err);
       }
     },
-    [csrfToken, event, result, fail],
+    [csrfToken, event, result, from, to, fail],
   );
 
   useEffect(() => {
@@ -143,6 +156,26 @@ export function AuditPage() {
               </option>
             ))}
           </select>
+        </label>
+        <label className="font-body text-sm">
+          起始时间
+          <input
+            aria-label="起始时间"
+            type="datetime-local"
+            className="mt-1 block border border-ink bg-white px-2 py-1.5"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+          />
+        </label>
+        <label className="font-body text-sm">
+          结束时间
+          <input
+            aria-label="结束时间"
+            type="datetime-local"
+            className="mt-1 block border border-ink bg-white px-2 py-1.5"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+          />
         </label>
         <Button type="submit">应用筛选</Button>
       </form>

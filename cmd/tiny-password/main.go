@@ -25,6 +25,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/idempotency"
 	"github.com/tiny-password/tiny-password/internal/platform/config"
 	"github.com/tiny-password/tiny-password/internal/platform/crypto"
+	"github.com/tiny-password/tiny-password/internal/platform/ephemeral"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
 	"github.com/tiny-password/tiny-password/internal/scheduler"
 	"github.com/tiny-password/tiny-password/internal/settings"
@@ -66,6 +67,7 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("acquire data dir lock: %w", err)
 	}
 	defer dataDirLock.Release()
+	auditService := audit.NewService(audit.Options{})
 
 	db, err := sqlite.Open(filepath.Join(dataDir, "tiny-password.db"))
 	if err != nil {
@@ -74,7 +76,17 @@ func run(logger *slog.Logger) error {
 	defer db.Close()
 	// The upgrade guard snapshots non-empty databases before touching the
 	// schema; the data-dir lock is already held (no parallel online writes).
-	if presnapshot, err := sqlite.Upgrade(db, migrations.FS, dataDir, time.Now()); err != nil {
+	if presnapshot, err := sqlite.UpgradeWithHook(db, migrations.FS, dataDir, time.Now(), func(db *sql.DB, version int64) {
+		// Migrations are already committed; audit persistence is best effort
+		// and must never make a successful upgrade appear failed.
+		_ = auditService.Record(context.Background(), db, audit.Event{
+			Name:       audit.EventDatabaseMigration,
+			ActorID:    audit.Anonymous,
+			TargetType: audit.TargetSystem,
+			TargetID:   fmt.Sprintf("schema-%d", version),
+			Result:     audit.ResultSuccess,
+		})
+	}); err != nil {
 		if presnapshot != "" {
 			return fmt.Errorf("apply migrations: %w (pre-upgrade snapshot: %s)", err, filepath.Base(presnapshot))
 		}
@@ -134,8 +146,6 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("cursor codec: %w", err)
 	}
-	auditService := audit.NewService(audit.Options{})
-
 	// Login rate limits follow the production defaults; test harnesses may
 	// raise the username window explicitly (mirrors TP_SETUP_RATE_LIMIT_PER_MIN).
 	authLimits := auth.Limits{}
@@ -204,15 +214,25 @@ func run(logger *slog.Logger) error {
 		transferDeps = &httpapi.TransferDeps{Service: transferService, Session: authService}
 
 		// Whole-instance backups (M5). The runner stages everything in a
-		// restricted work dir and publishes verified archives only.
+		// restricted work dir and publishes verified archives only. The raw
+		// master key copy passes through staging, so D11 applies: the work
+		// dir is a private child of a verified tmpfs — the default is
+		// discovered, a configured TP_BACKUP_WORK_DIR is refused unless it
+		// really is tmpfs (never a persistent-volume fallback).
+		backupWorkDir, cleanupBackupWorkDir, err := ephemeral.PrepareWorkDir(os.Getenv("TP_BACKUP_WORK_DIR"), "tiny-password-backup-")
+		if err != nil {
+			return fmt.Errorf("backup staging unavailable: %w", err)
+		}
+		defer cleanupBackupWorkDir()
 		backupOptions := backup.Options{
 			DB:                  db,
-			WorkDir:             envOr("TP_BACKUP_WORK_DIR", filepath.Join(dataDir, "backup-tmp")),
+			WorkDir:             backupWorkDir,
 			AppVersion:          version,
 			MasterKeyRaw:        masterKeyRaw,
 			ScheduledPassphrase: backupPassphrase,
 			ScheduledLocalDir:   envOr("TP_BACKUP_DIR", filepath.Join(dataDir, "backups")),
 			R2:                  r2Resolver,
+			Audit:               auditService,
 		}
 		backupRunner, err = backup.NewRunner(backupOptions)
 		if err != nil {
@@ -241,7 +261,7 @@ func run(logger *slog.Logger) error {
 			}
 		}
 	}
-	maintenanceDeps := backup.MaintenanceDeps{DB: db, Vault: vaultService, Idempotency: idempotencyService, R2Incoming: r2Resolver}
+	maintenanceDeps := backup.MaintenanceDeps{DB: db, Vault: vaultService, Idempotency: idempotencyService, R2Incoming: r2Resolver, Audit: auditService}
 	for _, job := range backup.MaintenanceJobs(maintenanceDeps) {
 		if err := sched.Register(job); err != nil {
 			return fmt.Errorf("register %s: %w", job.Name, err)
@@ -263,6 +283,8 @@ func run(logger *slog.Logger) error {
 			Passphrase: backupPassphrase,
 			Session:    authService,
 			Cursor:     cursorCodec,
+			Scheduler:  sched,
+			Audit:      auditService,
 		}
 	}
 

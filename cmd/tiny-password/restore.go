@@ -12,9 +12,12 @@ package main
 import (
 	"context"
 	"log/slog"
+	"os"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/backup"
 	"github.com/tiny-password/tiny-password/internal/platform/config"
+	"github.com/tiny-password/tiny-password/internal/platform/ephemeral"
 	"github.com/tiny-password/tiny-password/migrations"
 )
 
@@ -43,15 +46,29 @@ func runRestoreCommand(args []string, logger *slog.Logger) int {
 		return 1
 	}
 
+	// The archive's source master key is extracted through the work dir
+	// (D11), so staging must be a verified tmpfs: the default is discovered
+	// among the platform's tmpfs mounts, and a configured TP_RESTORE_WORK_DIR
+	// is refused unless it really is tmpfs — never a persistent-volume
+	// fallback.
+	workDir, cleanupWorkDir, err := ephemeral.PrepareWorkDir(os.Getenv("TP_RESTORE_WORK_DIR"), "tiny-password-restore-")
+	if err != nil {
+		logger.Error("restore staging unavailable (TP_RESTORE_WORK_DIR must be a tmpfs mount)", "error", err.Error())
+		logger.Error("restore failed", "stage", "start", "code", backup.RestoreCodeInternal, "request_id", restoreCorrelationID)
+		return 1
+	}
+	defer cleanupWorkDir()
+
 	result, err := backup.Restore(context.Background(), backup.RestoreOptions{
 		DataDir:      dataDir,
-		WorkDir:      envOr("TP_RESTORE_WORK_DIR", dataDir+"/restore-tmp"),
+		WorkDir:      workDir,
 		ArchivePath:  args[0],
 		Passphrase:   passphrase,
 		TargetKeyRaw: targetKeyRaw,
 		Migrations:   migrations.FS,
 		AppVersion:   version,
 		Logger:       logger,
+		Audit:        audit.NewService(audit.Options{}),
 	})
 	if err != nil {
 		if restoreErr, ok := err.(*backup.RestoreError); ok {

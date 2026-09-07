@@ -39,9 +39,24 @@ const (
 	// passphrase never appears anywhere.
 	EventTransferExported = "transfer.exported"
 	EventTransferImported = "transfer.imported"
-	// Instance backup lifecycle (design §7.3, T24): retention deletions
-	// carry the opaque object identifier only (run id / object key), never
-	// passphrases or contents.
+	// Instance backup lifecycle (M05): operation results carry only opaque
+	// target identifiers; passphrases, paths, and contents never enter audit.
+	EventBackupConfigUpdated = "backup.config.updated"
+	EventBackupRun           = "backup.run"
+	EventBackupRestore       = "backup.restore"
+	EventBackupMaintenance   = "backup.maintenance"
+	EventDatabaseMigration   = "database.migration"
+	// Compatibility aliases for callers that describe the persisted row as a
+	// job or the restore as an instance operation.
+	EventBackupJobUpdated = EventBackupConfigUpdated
+	EventRestore          = EventBackupRestore
+	EventBackupRunSuccess = EventBackupRun
+	EventBackupRunFailure = EventBackupRun
+	EventRestoreSuccess   = EventBackupRestore
+	EventRestoreFailure   = EventBackupRestore
+	EventMigration        = EventDatabaseMigration
+	// Retention deletions carry the opaque object identifier only (run id /
+	// object key), never passphrases or contents.
 	EventBackupRetentionDeleted = "backup.retention.deleted"
 )
 
@@ -69,6 +84,11 @@ var allowlist = map[string]bool{
 	EventVaultSecretCopied:        true,
 	EventTransferExported:         true,
 	EventTransferImported:         true,
+	EventBackupConfigUpdated:      true,
+	EventBackupRun:                true,
+	EventBackupRestore:            true,
+	EventBackupMaintenance:        true,
+	EventDatabaseMigration:        true,
 	EventBackupRetentionDeleted:   true,
 }
 
@@ -84,6 +104,7 @@ const (
 	TargetSession = "session"
 	TargetItem    = "item"
 	TargetBackup  = "backup"
+	TargetSystem  = "system"
 )
 
 // Anonymous marks an unresolved actor (e.g. failed login for an unknown

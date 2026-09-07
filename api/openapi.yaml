@@ -1040,6 +1040,14 @@ paths:
         - name: result
           in: query
           schema: { type: string, enum: [success, failure] }
+        - name: from
+          in: query
+          description: Inclusive lower bound in RFC3339; normalized to UTC.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Inclusive upper bound in RFC3339; normalized to UTC.
+          schema: { type: string, format: date-time }
       responses:
         "200":
           description: redacted events

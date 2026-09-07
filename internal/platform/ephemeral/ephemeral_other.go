@@ -1,6 +1,6 @@
 //go:build !linux
 
-package transfer
+package ephemeral
 
 import "fmt"
 

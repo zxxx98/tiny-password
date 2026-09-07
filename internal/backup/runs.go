@@ -1,8 +1,10 @@
 package backup
 
 import (
+	"context"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/platform/ident"
 )
 
@@ -33,6 +35,7 @@ func (r *Runner) succeedRun(runID string, sizeBytes int64, sha256 string) {
 	if err != nil {
 		r.opts.Logger.Error("backup run record update failed", "error", err.Error())
 	}
+	r.auditRun(runID, audit.ResultSuccess)
 }
 
 // failRun closes the row as failed with the stable error code only.
@@ -43,6 +46,7 @@ func (r *Runner) failRun(runID, code string) {
 	); err != nil {
 		r.opts.Logger.Error("backup run record update failed", "error", err.Error())
 	}
+	r.auditRun(runID, audit.ResultFailure)
 }
 
 // recordFailures writes a failed run row for every requested target after
@@ -59,8 +63,24 @@ func (r *Runner) recordFailures(input RunInput, err error) error {
 		); dbErr != nil {
 			r.opts.Logger.Error("backup failure record failed", "error", dbErr.Error())
 		}
+		r.auditRun(runID, audit.ResultFailure)
 	}
 	return err
+}
+
+func (r *Runner) auditRun(runID, result string) {
+	if r.opts.Audit == nil {
+		return
+	}
+	if err := r.opts.Audit.Record(context.Background(), r.opts.DB.DB, audit.Event{
+		Name:       audit.EventBackupRun,
+		ActorID:    audit.Anonymous,
+		TargetType: audit.TargetBackup,
+		TargetID:   runID,
+		Result:     result,
+	}); err != nil {
+		r.opts.Logger.Error("backup audit write failed", "error", err.Error())
+	}
 }
 
 func wrapInternal(err error, what string) error {

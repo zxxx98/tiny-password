@@ -3,9 +3,11 @@ package backup
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/idempotency"
 	"github.com/tiny-password/tiny-password/internal/platform/sqlite"
@@ -91,22 +93,20 @@ type JobUpdate struct {
 var jobUpdateTarget = map[Target]bool{TargetLocal: true, TargetR2: true}
 
 // UpdateJobConfig validates and upserts one target's job row.
-func UpdateJobConfig(db *sql.DB, u JobUpdate) error {
-	if !jobUpdateTarget[u.Target] {
-		return fmt.Errorf("backup: unsupported target %q", u.Target)
-	}
-	if u.ScheduleTime != "" {
-		if _, _, err := scheduler.ParseDailyTime(u.ScheduleTime); err != nil {
-			return err
-		}
-	}
-	if _, err := scheduler.LoadLocation(u.ScheduleTimezone); err != nil {
-		return fmt.Errorf("backup: invalid timezone: %w", err)
-	}
-	for _, n := range []int{u.RetentionDaily, u.RetentionWeekly, u.RetentionMonthly} {
-		if n < 0 || n > 999 {
-			return fmt.Errorf("backup: retention counts must be 0-999")
-		}
+func UpdateJobConfig(db *sql.DB, u JobUpdate) error { return updateJobConfig(db, u) }
+
+// UpdateJobConfigTx applies a validated job update inside the caller's
+// transaction. The HTTP admin path uses this to commit the setting and its
+// audit event atomically.
+func UpdateJobConfigTx(tx *sql.Tx, u JobUpdate) error { return updateJobConfig(tx, u) }
+
+type sqlExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func updateJobConfig(db sqlExecer, u JobUpdate) error {
+	if err := validateJobUpdate(u); err != nil {
+		return err
 	}
 	enabled := 0
 	if u.Enabled {
@@ -128,6 +128,26 @@ func UpdateJobConfig(db *sql.DB, u JobUpdate) error {
 	)
 	if err != nil {
 		return fmt.Errorf("store backup job: %w", err)
+	}
+	return nil
+}
+
+func validateJobUpdate(u JobUpdate) error {
+	if !jobUpdateTarget[u.Target] {
+		return fmt.Errorf("backup: unsupported target %q", u.Target)
+	}
+	if u.ScheduleTime != "" {
+		if _, _, err := scheduler.ParseDailyTime(u.ScheduleTime); err != nil {
+			return err
+		}
+	}
+	if _, err := scheduler.LoadLocation(u.ScheduleTimezone); err != nil {
+		return fmt.Errorf("backup: invalid timezone: %w", err)
+	}
+	for _, n := range []int{u.RetentionDaily, u.RetentionWeekly, u.RetentionMonthly} {
+		if n < 0 || n > 999 {
+			return fmt.Errorf("backup: retention counts must be 0-999")
+		}
 	}
 	return nil
 }
@@ -230,6 +250,11 @@ func (r *Runner) ScheduledJobs() ([]scheduler.Job, error) {
 					return err
 				}
 				_, err = r.Run(ctx, input)
+				if errors.Is(err, ErrBusy) {
+					// The scheduler treats an overlap as a skip and must not
+					// consume the target's once-per-day marker.
+					return scheduler.ErrBusy
+				}
 				return err
 			},
 		})
@@ -273,11 +298,17 @@ type MaintenanceDeps struct {
 	DB          *sqlite.DB
 	Vault       *vault.Service
 	Idempotency *idempotency.Service
+	Audit       *audit.Service
 	// R2Incoming, when set, sweeps interrupted R2 temporary objects. The
 	// resolver is evaluated per execution so settings changes apply without
 	// a restart; a nil result skips the sweep.
 	R2Incoming R2Resolver
 }
+
+// maintenanceDailyAt is the single low-traffic window used for all bounded
+// maintenance jobs. Keeping this in UTC makes the schedule independent of
+// the host's local timezone and avoids DST ambiguity.
+const maintenanceDailyAt = "03:30"
 
 // MaintenanceJobs returns the bounded sweeps registered alongside backups
 // (T23): trash retention, expired sessions and rate-limit rows, expired
@@ -287,7 +318,9 @@ func MaintenanceJobs(deps MaintenanceDeps) []scheduler.Job {
 	jobs := make([]scheduler.Job, 0, 5)
 	if deps.Vault != nil {
 		jobs = append(jobs, scheduler.Job{
-			Name: "maintenance.trash",
+			Name:     "maintenance.trash",
+			Timezone: "UTC",
+			DailyAt:  maintenanceDailyAt,
 			Fn: func(ctx context.Context) error {
 				_, err := deps.Vault.PurgeExpiredTrash(ctx)
 				return err
@@ -296,21 +329,27 @@ func MaintenanceJobs(deps MaintenanceDeps) []scheduler.Job {
 	}
 	if deps.DB != nil {
 		jobs = append(jobs, scheduler.Job{
-			Name: "maintenance.sessions",
+			Name:     "maintenance.sessions",
+			Timezone: "UTC",
+			DailyAt:  maintenanceDailyAt,
 			Fn: func(ctx context.Context) error {
 				_, err := auth.CleanupExpiredSessions(ctx, deps.DB.DB, time.Now())
 				return err
 			},
 		})
 		jobs = append(jobs, scheduler.Job{
-			Name: "maintenance.login_attempts",
+			Name:     "maintenance.login_attempts",
+			Timezone: "UTC",
+			DailyAt:  maintenanceDailyAt,
 			Fn: func(ctx context.Context) error {
 				_, err := auth.CleanupLoginAttempts(ctx, deps.DB.DB, time.Now().Add(-time.Hour))
 				return err
 			},
 		})
 		jobs = append(jobs, scheduler.Job{
-			Name: "maintenance.wal_checkpoint",
+			Name:     "maintenance.wal_checkpoint",
+			Timezone: "UTC",
+			DailyAt:  maintenanceDailyAt,
 			Fn: func(ctx context.Context) error {
 				return deps.DB.Checkpoint()
 			},
@@ -318,7 +357,9 @@ func MaintenanceJobs(deps MaintenanceDeps) []scheduler.Job {
 	}
 	if deps.Idempotency != nil {
 		jobs = append(jobs, scheduler.Job{
-			Name: "maintenance.idempotency",
+			Name:     "maintenance.idempotency",
+			Timezone: "UTC",
+			DailyAt:  maintenanceDailyAt,
 			Fn: func(ctx context.Context) error {
 				_, err := deps.Idempotency.CleanupExpired(ctx)
 				return err
@@ -327,7 +368,9 @@ func MaintenanceJobs(deps MaintenanceDeps) []scheduler.Job {
 	}
 	if deps.R2Incoming != nil {
 		jobs = append(jobs, scheduler.Job{
-			Name: "maintenance.r2_incoming",
+			Name:     "maintenance.r2_incoming",
+			Timezone: "UTC",
+			DailyAt:  maintenanceDailyAt,
 			Fn: func(ctx context.Context) error {
 				delivery, err := deps.R2Incoming(ctx)
 				if err != nil {
@@ -340,6 +383,31 @@ func MaintenanceJobs(deps MaintenanceDeps) []scheduler.Job {
 				return err
 			},
 		})
+	}
+	// Keep maintenance outcomes visible without allowing an audit write to
+	// change the sweep's own success/failure semantics.
+	for i := range jobs {
+		job := jobs[i]
+		fn := job.Fn
+		jobs[i].Fn = func(ctx context.Context) error {
+			err := fn(ctx)
+			if deps.Audit != nil && deps.DB != nil {
+				result := audit.ResultSuccess
+				if err != nil {
+					result = audit.ResultFailure
+				}
+				_ = deps.Audit.Record(ctx, deps.DB.DB, audit.Event{
+					Name:       audit.EventBackupMaintenance,
+					ActorID:    audit.Anonymous,
+					TargetType: audit.TargetBackup,
+					TargetID:   job.Name,
+					Result:     result,
+				})
+				// The scheduler still reports the underlying sweep result;
+				// audit persistence is best effort for background work.
+			}
+			return err
+		}
 	}
 	return jobs
 }

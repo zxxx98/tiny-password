@@ -14,6 +14,14 @@ import (
 // widths (the auth service writes the same format).
 const fixedTimestamp = "2006-01-02T15:04:05.000000000Z"
 
+// TimestampLayout is the canonical UTC representation used by audit rows
+// and range filters. Fixed width keeps keyset ordering lexicographically
+// stable across pages.
+const TimestampLayout = fixedTimestamp
+
+// FormatTimestamp normalizes a time to the audit row representation.
+func FormatTimestamp(t time.Time) string { return t.UTC().Format(fixedTimestamp) }
+
 // Execer abstracts *sql.DB and *sql.Tx so records join the caller's
 // transaction.
 type Execer interface {
@@ -135,6 +143,13 @@ func (s *Service) Activity(ctx context.Context, db *sql.DB, actorID, beforeCreat
 // System queries the redacted audit trail for admins. event and result
 // (success|failure) are optional filters (T27 audit page).
 func (s *Service) System(ctx context.Context, db *sql.DB, event, result, beforeCreated, beforeID string, limit int) (Page, error) {
+	return s.SystemInRange(ctx, db, event, result, "", "", beforeCreated, beforeID, limit)
+}
+
+// SystemInRange returns system audit events with optional inclusive UTC
+// bounds. Callers validate and normalize user-facing values before passing
+// them here; the strings must use TimestampLayout.
+func (s *Service) SystemInRange(ctx context.Context, db *sql.DB, event, result, from, to, beforeCreated, beforeID string, limit int) (Page, error) {
 	predicate := `1 = 1`
 	var args []any
 	if event != "" {
@@ -144,6 +159,14 @@ func (s *Service) System(ctx context.Context, db *sql.DB, event, result, beforeC
 	if result != "" {
 		predicate += ` AND result = ?`
 		args = append(args, result)
+	}
+	if from != "" {
+		predicate += ` AND created_at >= ?`
+		args = append(args, from)
+	}
+	if to != "" {
+		predicate += ` AND created_at <= ?`
+		args = append(args, to)
 	}
 	return s.query(ctx, db, predicate, args, beforeCreated, beforeID, limit)
 }

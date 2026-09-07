@@ -10,14 +10,18 @@ import (
 
 // Restore lifecycle stages persisted in the recovery state file. Every
 // breakpoint restart selects either the complete old database or the
-// complete new one: before "switched" the old database is untouched; at
-// "switched" the candidate is fully built, verified, and atomically in
-// place, so resuming only has to re-run the post-switch check.
+// complete new one: before "switch_ready" the old database is untouched;
+// "switch_ready" (written BEFORE the rename) means the candidate is fully
+// built, verified, and identity-stamped and only the atomic rename remains;
+// "switched" (written AFTER the rename) means the candidate is in place and
+// resuming only has to re-run the post-switch check — which must confirm the
+// backup identity before the restore may report success.
 const (
-	StageSnapshot  = "snapshot"
-	StageCandidate = "candidate"
-	StageRekeyed   = "rekeyed"
-	StageSwitched  = "switched"
+	StageSnapshot    = "snapshot"
+	StageCandidate   = "candidate"
+	StageRekeyed     = "rekeyed"
+	StageSwitchReady = "switch_ready"
+	StageSwitched    = "switched"
 )
 
 // RecoveryState describes an interrupted restore. The file lives in the

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
@@ -52,19 +53,44 @@ func registerAudit(api *http.ServeMux, deps AuditDeps) {
 			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "unknown result filter")
 			return
 		}
+		from, err := parseAuditTime(r.URL.Query().Get("from"))
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid from time")
+			return
+		}
+		to, err := parseAuditTime(r.URL.Query().Get("to"))
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid to time")
+			return
+		}
+		if from != "" && to != "" && from > to {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "from time is after to time")
+			return
+		}
 		p := CurrentPrincipal(r.Context())
-		filters := systemFilters + ":event=" + event + ":result=" + result
+		filters := systemFilters + ":event=" + event + ":result=" + result + ":from=" + from + ":to=" + to
 		beforeCreated, beforeID, limit, ok := DecodeCursorParams(w, r, deps.Cursor, p.UserID, filters)
 		if !ok {
 			return
 		}
-		page, err := deps.Service.System(r.Context(), deps.DB.DB, event, result, beforeCreated, beforeID, limit)
+		page, err := deps.Service.SystemInRange(r.Context(), deps.DB.DB, event, result, from, to, beforeCreated, beforeID, limit)
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the audit query failed")
 			return
 		}
 		writeJSON(w, http.StatusOK, CursorPageResponse(deps.Cursor, p.UserID, filters, page.Entries, page.LastCreated, page.LastID))
 	})))
+}
+
+func parseAuditTime(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return "", err
+	}
+	return audit.FormatTimestamp(t), nil
 }
 
 // RequireAdmin gates a handler behind an authenticated, first-login-completed

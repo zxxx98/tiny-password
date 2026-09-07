@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditPage } from "./AuditPage";
@@ -196,6 +196,25 @@ describe("AuditPage", () => {
     await waitFor(() =>
       expect(calls.some((c) => c.url.includes("result=failure"))).toBe(true),
     );
+  });
+
+  it("sends UTC time bounds with the audit query", async () => {
+    seedAdmin();
+    const { calls } = stubFetch([
+      { status: 200, body: { items: [], next_cursor: null } },
+      { status: 200, body: { items: [], next_cursor: null } },
+    ]);
+    render(<AuditPage />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "应用筛选" })).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("起始时间"), { target: { value: "2026-09-02T00:00" } });
+    fireEvent.change(screen.getByLabelText("结束时间"), { target: { value: "2026-09-04T00:00" } });
+    await userEvent.setup().click(screen.getByRole("button", { name: "应用筛选" }));
+    await waitFor(() => {
+      const url = calls.at(-1)?.url ?? "";
+      expect(url).toContain("from=");
+      expect(url).toContain("to=");
+    });
   });
 
   it("renders events with opaque identifiers only", async () => {

@@ -114,6 +114,65 @@ func New(options Options) (*Scheduler, error) {
 // Register adds a job. Names, time zones and daily times are validated up
 // front so a typo cannot silently disable a backup.
 func (s *Scheduler) Register(job Job) error {
+	if err := validateJob(job); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobs[job.Name] = job
+	return nil
+}
+
+// ReloadPrefix atomically replaces the registered jobs whose names start
+// with prefix. It is used for persisted job groups (for example backup.*)
+// so an admin update takes effect immediately: disabled jobs disappear and
+// changed schedules are visible to the next evaluation. Other groups, such
+// as maintenance jobs, remain untouched.
+func (s *Scheduler) ReloadPrefix(prefix string, jobs []Job) error {
+	if prefix == "" {
+		return errors.New("scheduler: reload prefix is required")
+	}
+	replacement := make(map[string]Job, len(jobs))
+	for _, job := range jobs {
+		if !strings.HasPrefix(job.Name, prefix) {
+			return fmt.Errorf("scheduler: job %s is outside reload prefix %q", job.Name, prefix)
+		}
+		if err := validateJob(job); err != nil {
+			return err
+		}
+		if _, exists := replacement[job.Name]; exists {
+			return fmt.Errorf("scheduler: duplicate job %s", job.Name)
+		}
+		replacement[job.Name] = job
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name := range s.jobs {
+		if strings.HasPrefix(name, prefix) {
+			delete(s.jobs, name)
+		}
+	}
+	for name := range s.lastResult {
+		if strings.HasPrefix(name, prefix) {
+			if _, stillRegistered := replacement[name]; !stillRegistered {
+				delete(s.lastResult, name)
+			}
+		}
+	}
+	for name, job := range replacement {
+		s.jobs[name] = job
+	}
+	return nil
+}
+
+// Reload is a shorthand for ReloadPrefix for callers that manage one named
+// job group.
+func (s *Scheduler) Reload(prefix string, jobs []Job) error {
+	return s.ReloadPrefix(prefix, jobs)
+}
+
+func validateJob(job Job) error {
 	if job.Name == "" || strings.ContainsAny(job.Name, " \t\n") {
 		return fmt.Errorf("scheduler: invalid job name %q", job.Name)
 	}
@@ -128,9 +187,6 @@ func (s *Scheduler) Register(job Job) error {
 	if _, err := LoadLocation(job.Timezone); err != nil {
 		return fmt.Errorf("scheduler: job %s: invalid timezone: %w", job.Name, err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.jobs[job.Name] = job
 	return nil
 }
 
@@ -156,33 +212,41 @@ func (s *Scheduler) Evaluate(ctx context.Context) []Result {
 }
 
 func (s *Scheduler) evaluateJob(ctx context.Context, job Job) *Result {
-	due, runKey, err := s.isDue(job, s.now())
-	if err != nil {
-		res := s.record(job, Result{Job: job.Name, Status: StatusFailed, Detail: "schedule evaluation failed"})
-		return &res
-	}
-	if !due {
-		return nil
-	}
-
 	s.mu.Lock()
 	if s.running[job.Name] {
 		s.mu.Unlock()
 		res := s.record(job, Result{Job: job.Name, Status: StatusSkipped, Detail: "busy"})
 		return &res
 	}
+	// Evaluate the marker only after acquiring the per-job guard. Checking it
+	// before the guard lets concurrent callers all observe an old marker and
+	// one of them start a duplicate run after the first caller finishes.
+	due, runKey, err := s.isDue(job, s.now())
+	if err != nil {
+		s.mu.Unlock()
+		res := s.record(job, Result{Job: job.Name, Status: StatusFailed, Detail: "schedule evaluation failed"})
+		return &res
+	}
+	if !due {
+		s.mu.Unlock()
+		return nil
+	}
 	s.running[job.Name] = true
 	s.mu.Unlock()
 
 	res := s.runJob(ctx, job)
 
-	s.mu.Lock()
-	delete(s.running, job.Name)
-	s.mu.Unlock()
-
+	// Persist the once-per-day marker before releasing the running guard. This
+	// closes the handoff window where a concurrent Evaluate could observe an
+	// idle job while the first execution had finished but had not yet recorded
+	// its marker, causing a duplicate run.
 	if res.Ran {
 		s.rememberRun(job.Name, runKey)
 	}
+
+	s.mu.Lock()
+	delete(s.running, job.Name)
+	s.mu.Unlock()
 	return &res
 }
 

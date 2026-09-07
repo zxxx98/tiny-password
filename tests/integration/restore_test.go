@@ -107,6 +107,7 @@ func (f *restoreFixture) opts() backup.RestoreOptions {
 		TargetKeyRaw: f.targetKey,
 		Migrations:   migrations.FS,
 		AppVersion:   "test",
+		Audit:        audit.NewService(audit.Options{}),
 	}
 }
 
@@ -234,6 +235,25 @@ func TestRestoreFullRoundTripWithNewKey(t *testing.T) {
 	}
 
 	vsvc := f.openRestored(t)
+	var restoreAuditCount int
+	if err := f.source.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE event = ? AND result = 'success'`, audit.EventBackupRestore).Scan(&restoreAuditCount); err != nil {
+		t.Fatal(err)
+	}
+	if restoreAuditCount != 0 {
+		t.Fatal("restore audit was written to source database")
+	}
+	readDB, err := sql.Open(sqlite.DriverName, "file:"+filepath.Join(f.targetDir, "tiny-password.db")+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readDB.Close()
+	var restoredAuditCount int
+	if err := readDB.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE event = ? AND result = 'success'`, audit.EventBackupRestore).Scan(&restoredAuditCount); err != nil {
+		t.Fatal(err)
+	}
+	if restoredAuditCount != 1 {
+		t.Fatalf("restore audit rows=%d, want 1", restoredAuditCount)
+	}
 	actor := &auth.Principal{UserID: f.ownerID, Username: "restore-user", Role: "member"}
 	detail, err := vsvc.Get(context.Background(), actor, f.itemID)
 	if err != nil {
@@ -265,6 +285,16 @@ func TestRestoreFullRoundTripWithNewKey(t *testing.T) {
 		if n != 0 {
 			t.Fatalf("%s: %d rows", query, n)
 		}
+	}
+	// The restored database carries the restore marker identifying the
+	// backup it was built from — the identity the post-switch check relies
+	// on after a restart.
+	var marker string
+	if err := rowDB.QueryRow(`SELECT value FROM system_state WHERE key = 'restore_backup_id'`).Scan(&marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker != result.BackupID {
+		t.Fatalf("restore marker: got %q, want backup %s", marker, result.BackupID)
 	}
 }
 
@@ -555,4 +585,187 @@ func TestRestoreInsufficientSpace(t *testing.T) {
 	if !errors.As(err, &restoreErr) || restoreErr.Code != backup.RestoreCodeSpace {
 		t.Fatalf("code: %v", err)
 	}
+}
+
+// The restore only ever cleans its own session below the configured work
+// dir: unrelated content there must survive (a shared tmpfs mount is a
+// valid target) and no session leftovers stay behind.
+func TestRestoreCleansOnlyItsOwnSessionBelowWorkDir(t *testing.T) {
+	f := newRestoreFixture(t)
+	opts := f.opts()
+	if err := os.MkdirAll(opts.WorkDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(opts.WorkDir, "operator-file.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.Restore(context.Background(), opts); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("work dir content removed by restore: %v", err)
+	}
+	entries, err := os.ReadDir(opts.WorkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "operator-file.txt" {
+		t.Fatalf("work dir not cleaned back to the operator's content: %v", entries)
+	}
+}
+
+// A crash in the rename-pending window (switch-ready state durable, rename
+// not yet executed) leaves the old database untouched, and the rerun
+// completes the pending switch instead of trusting the live database.
+func TestRestoreCrashBeforeSwitchResumes(t *testing.T) {
+	t.Run("empty target", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		opts := f.opts()
+		opts.Hooks.BeforeSwitch = func() error { return backup.ErrRestoreCrash }
+		if _, err := backup.Restore(context.Background(), opts); err == nil {
+			t.Fatal("crash not injected")
+		}
+		state, err := backup.ReadRecoveryState(f.targetDir)
+		if err != nil || state == nil || state.Stage != backup.StageSwitchReady {
+			t.Fatalf("state: %+v %v", state, err)
+		}
+		if _, err := os.Stat(state.CandidatePath); err != nil {
+			t.Fatalf("verified candidate missing while switch pending: %v", err)
+		}
+		// The live database must not exist yet — in particular the restore
+		// must not have manufactured an empty one.
+		if _, err := os.Stat(filepath.Join(f.targetDir, "tiny-password.db")); !os.IsNotExist(err) {
+			t.Fatalf("live database exists before the switch: %v", err)
+		}
+		result, err := backup.Restore(context.Background(), f.opts())
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		if !result.Resumed {
+			t.Fatalf("expected resumed restore: %+v", result)
+		}
+		f.openRestored(t)
+	})
+	t.Run("existing target keeps old database until the switch", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		seedOriginalInstance(t, f.targetDir, f.targetKey)
+		opts := f.opts()
+		opts.Hooks.BeforeSwitch = func() error { return backup.ErrRestoreCrash }
+		if _, err := backup.Restore(context.Background(), opts); err == nil {
+			t.Fatal("crash not injected")
+		}
+		livePath := filepath.Join(f.targetDir, "tiny-password.db")
+		db, err := sqlite.Open(livePath)
+		if err != nil {
+			t.Fatalf("old database unreadable while switch pending: %v", err)
+		}
+		var n int
+		if err := db.QueryRow("SELECT COUNT(*) FROM users WHERE id = 'orig-user'").Scan(&n); err != nil || n != 1 {
+			db.Close()
+			t.Fatalf("old database disturbed while switch pending: %d %v", n, err)
+		}
+		db.Close()
+		result, err := backup.Restore(context.Background(), f.opts())
+		if err != nil {
+			t.Fatalf("resume: %v", err)
+		}
+		if result.PresnapshotPath == "" {
+			t.Fatalf("pre-snapshot lost across resume: %+v", result)
+		}
+		f.openRestored(t)
+	})
+}
+
+// copyDBFile copies a cleanly closed SQLite file (no sidecars) for the
+// crafted-state tests below.
+func copyDBFile(t *testing.T, src, dst string) {
+	t.Helper()
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeCraftedState plants a recovery state file directly, emulating a
+// process death at an arbitrary breakpoint (the tests below forge states
+// the real code no longer produces, to prove the resume path cannot be
+// fooled into reporting success).
+func writeCraftedState(t *testing.T, dataDir string, state *backup.RecoveryState) {
+	t.Helper()
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "restore-state.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Regression: a state file claiming the switch happened must never let the
+// OLD database pass as the restored candidate. A previous instance whose
+// payloads decrypt under the same target key passes integrity and decrypt
+// verification, so the resume path must additionally confirm the backup
+// identity — and roll back when it does not match.
+func TestRestoreResumeVerifiesSwitchedIdentity(t *testing.T) {
+	t.Run("previous instance under the same target key rolls back", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		seedOriginalInstance(t, f.targetDir, f.targetKey)
+		livePath := filepath.Join(f.targetDir, "tiny-password.db")
+		presnapshot := filepath.Join(f.targetDir, "pre-restore-crafted.db")
+		copyDBFile(t, livePath, presnapshot)
+		writeCraftedState(t, f.targetDir, &backup.RecoveryState{
+			Stage:           backup.StageSwitched,
+			BackupID:        "00000000-not-the-live-database",
+			ArchivePath:     f.archive,
+			PresnapshotPath: presnapshot,
+			CandidatePath:   filepath.Join(f.targetDir, "restore-candidate.db"),
+			StartedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+			UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		})
+
+		_, err := backup.Restore(context.Background(), f.opts())
+		var restoreErr *backup.RestoreError
+		if !errors.As(err, &restoreErr) || restoreErr.Code != backup.RestoreCodeRolledBack {
+			t.Fatalf("foreign live database accepted as restored: %v", err)
+		}
+		// The original instance is back in place and the state cleared.
+		db, err := sqlite.Open(livePath)
+		if err != nil {
+			t.Fatalf("rolled-back database unreadable: %v", err)
+		}
+		defer db.Close()
+		if integrity, err := db.IntegrityCheck(); err != nil || integrity != "ok" {
+			t.Fatalf("integrity after rollback: %q %v", integrity, err)
+		}
+		var n int
+		if err := db.QueryRow("SELECT COUNT(*) FROM users WHERE id = 'orig-user'").Scan(&n); err != nil || n != 1 {
+			t.Fatalf("original data lost after identity rollback: %d %v", n, err)
+		}
+		if state, _ := backup.ReadRecoveryState(f.targetDir); state != nil {
+			t.Fatal("recovery state survived rollback")
+		}
+	})
+	t.Run("switched state without a database never reports success", func(t *testing.T) {
+		f := newRestoreFixture(t)
+		writeCraftedState(t, f.targetDir, &backup.RecoveryState{
+			Stage:       backup.StageSwitched,
+			BackupID:    "00000000-no-database",
+			EmptyTarget: true,
+			StartedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		})
+		if _, err := backup.Restore(context.Background(), f.opts()); err == nil {
+			t.Fatal("missing switched database reported as success")
+		} else if restoreErr, ok := err.(*backup.RestoreError); !ok || restoreErr.Code != backup.RestoreCodeRolledBack {
+			t.Fatalf("code: %v", err)
+		}
+		// Opening the live path must not have manufactured an empty database.
+		if _, err := os.Stat(filepath.Join(f.targetDir, "tiny-password.db")); !os.IsNotExist(err) {
+			t.Fatalf("empty database created during resume: %v", err)
+		}
+	})
 }

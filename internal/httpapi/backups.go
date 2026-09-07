@@ -3,9 +3,11 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/backup"
 	tpsqlite "github.com/tiny-password/tiny-password/internal/platform/sqlite"
+	"github.com/tiny-password/tiny-password/internal/scheduler"
 )
 
 // BackupsDeps wires the admin backup endpoints (T27). The runner and the
@@ -21,6 +23,10 @@ type BackupsDeps struct {
 	Passphrase string
 	Session    *auth.Service
 	Cursor     *CursorCodec
+	// Scheduler is refreshed after a successful persisted job update so
+	// changes take effect without restarting the process.
+	Scheduler *scheduler.Scheduler
+	Audit     *audit.Service
 }
 
 // resolveR2 returns the current R2 delivery for this request. A nil
@@ -89,9 +95,54 @@ func registerBackups(api *http.ServeMux, deps BackupsDeps) {
 			RetentionWeekly:  derefOr(input.RetentionWeekly, 4),
 			RetentionMonthly: derefOr(input.RetentionMonthly, 6),
 		}
-		if err := backup.UpdateJobConfig(deps.DB.DB, update); err != nil {
+		tx, err := deps.DB.BeginTx(r.Context(), nil)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the job configuration is unavailable")
+			return
+		}
+		if err := backup.UpdateJobConfigTx(tx, update); err != nil {
+			_ = tx.Rollback()
+			if deps.Audit != nil && (update.Target == backup.TargetLocal || update.Target == backup.TargetR2) {
+				p := CurrentPrincipal(r.Context())
+				_ = deps.Audit.Record(r.Context(), deps.DB.DB, audit.Event{
+					Name:       audit.EventBackupConfigUpdated,
+					ActorID:    p.UserID,
+					TargetType: audit.TargetBackup,
+					TargetID:   string(update.Target),
+					Result:     audit.ResultFailure,
+				})
+			}
 			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "the job configuration is invalid")
 			return
+		}
+		if deps.Audit != nil {
+			p := CurrentPrincipal(r.Context())
+			if err := deps.Audit.Record(r.Context(), tx, audit.Event{
+				Name:       audit.EventBackupConfigUpdated,
+				ActorID:    p.UserID,
+				TargetType: audit.TargetBackup,
+				TargetID:   string(update.Target),
+				Result:     audit.ResultSuccess,
+			}); err != nil {
+				_ = tx.Rollback()
+				writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the job configuration is unavailable")
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the job configuration is unavailable")
+			return
+		}
+		if deps.Scheduler != nil {
+			jobs, err := deps.Runner.ScheduledJobs()
+			if err != nil {
+				writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the scheduler configuration is unavailable")
+				return
+			}
+			if err := deps.Scheduler.ReloadPrefix("backup.", jobs); err != nil {
+				writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the scheduler configuration is invalid")
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"updated": true})
 	}))

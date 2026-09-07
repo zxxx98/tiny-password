@@ -30,12 +30,13 @@ type fakeR2 struct {
 	ops     map[string]int // "PUT /bucket/key" style counters
 
 	// Behavior injection.
-	failPutStatus  int // status to answer PUT with
-	failPutTimes   int // number of failing PUTs left (0 = unlimited)
-	alwaysFailPut  bool
-	corruptGetBody bool
-	failCopyStatus int
-	failDelete     bool
+	failPutStatus       int // status to answer PUT with
+	failPutTimes        int // number of failing PUTs left (0 = unlimited)
+	alwaysFailPut       bool
+	corruptGetBody      bool
+	corruptFinalGetBody bool
+	failCopyStatus      int
+	failDelete          bool
 }
 
 func newFakeR2() *fakeR2 {
@@ -105,7 +106,7 @@ func (f *fakeR2) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out := body
-		if f.corruptGetBody && len(out) > 0 {
+		if (f.corruptGetBody || (f.corruptFinalGetBody && !strings.Contains(key, "/incoming/"))) && len(out) > 0 {
 			out = append([]byte(nil), out...)
 			out[0] ^= 0xFF
 		}
@@ -426,6 +427,21 @@ func TestBackupR2ReadbackMismatchFailsAndTempObjectIsCleanable(t *testing.T) {
 	}
 	if removed == 0 || len(h.fake.objects) != 0 {
 		t.Fatalf("cleanup removed %d, left %d objects", removed, len(h.fake.objects))
+	}
+}
+
+func TestBackupR2FinalSameSizeCorruptionFailsVerification(t *testing.T) {
+	h := newTargetsHarness(t)
+	// Temporary read-back is correct, but the final-object GET is corrupted
+	// with the same length. A HEAD size check alone must not accept it.
+	h.fake.corruptFinalGetBody = true
+
+	_, err := h.runBoth(t, h.runner)
+	if err == nil {
+		t.Fatal("expected final verification failure")
+	}
+	if status, code := h.runsForTarget(t, "r2"); status != "failed" || code != "BACKUP_UPLOAD_VERIFY_FAILED" {
+		t.Fatalf("r2 row: %s/%s", status, code)
 	}
 }
 

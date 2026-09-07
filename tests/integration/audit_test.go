@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tiny-password/tiny-password/internal/audit"
 	"github.com/tiny-password/tiny-password/internal/auth"
@@ -516,5 +517,40 @@ func TestAuditCursorBindsEventFilter(t *testing.T) {
 	t.Logf("changed event with original cursor: status=%d body=%v", status, b)
 	if status != 400 {
 		t.Fatal("cursor not bound to event filter")
+	}
+}
+
+func TestAuditTimeRangeFilter(t *testing.T) {
+	h := newAuditHarness(t)
+	admin := h.directAdmin(t)
+	for _, row := range []struct {
+		id string
+		at time.Time
+	}{
+		{"audit-before", time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)},
+		{"audit-inside", time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)},
+		{"audit-after", time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)},
+	} {
+		if _, err := h.db.Exec(`INSERT INTO audit_events (id,event,actor_id,result,created_at) VALUES (?, ?, 'anonymous', 'failure', ?)`,
+			row.id, audit.EventLoginFailure, audit.FormatTimestamp(row.at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp := h.request(t, "GET", "/admin/audit?event=auth.login.failure&from=2026-09-02T00:00:00Z&to=2026-09-04T00:00:00Z", nil, admin)
+	body := decodeBody(t, resp)
+	items := body["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != "audit-inside" {
+		t.Fatalf("time range items: %v", items)
+	}
+
+	for _, query := range []string{
+		"from=not-a-time",
+		"from=2026-09-05T00:00:00Z&to=2026-09-04T00:00:00Z",
+	} {
+		bad := h.request(t, "GET", "/admin/audit?"+query, nil, admin)
+		if bad.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid audit range %q status=%d", query, bad.StatusCode)
+		}
+		bad.Body.Close()
 	}
 }

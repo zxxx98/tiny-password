@@ -215,3 +215,38 @@ func TestRetentionR2ReconcilesAndRetries(t *testing.T) {
 		t.Fatal("rk2 must be kept")
 	}
 }
+
+func TestRetentionR2ExcludesIncomingObjects(t *testing.T) {
+	h := newTargetsHarness(t)
+	configureRetentionTarget(t, h.backupHarness, "r2", 1, 0, 0)
+	now := time.Now().UTC()
+	seedSucceededRunOn(t, h.backupHarness, "r2", "rk-old", now.Add(-48*time.Hour), h.localDir)
+	seedSucceededRunOn(t, h.backupHarness, "r2", "rk-new", now, h.localDir)
+	for _, obj := range []struct {
+		key string
+		at  time.Time
+	}{
+		{h.prefix + "/rk-old.7z", now.Add(-48 * time.Hour)},
+		{h.prefix + "/rk-new.7z", now},
+		// Interrupted uploads are owned by CleanupIncoming, never GFS
+		// retention, even when they have an archive suffix.
+		{h.prefix + "/incoming/stale.7z", now.Add(-72 * time.Hour)},
+	} {
+		h.fake.objects[obj.key] = []byte("archive")
+		h.fake.modTime[obj.key] = obj.at
+	}
+
+	h.runner.ApplyRetention(context.Background(), backup.TargetR2, backup.RunInput{
+		Targets: []backup.Target{backup.TargetR2},
+		R2:      &backup.R2Delivery{Client: h.client, Prefix: h.prefix},
+	})
+	if _, ok := h.fake.objects[h.prefix+"/rk-old.7z"]; ok {
+		t.Fatal("old final object survived retention")
+	}
+	if _, ok := h.fake.objects[h.prefix+"/rk-new.7z"]; !ok {
+		t.Fatal("new final object was deleted")
+	}
+	if _, ok := h.fake.objects[h.prefix+"/incoming/stale.7z"]; !ok {
+		t.Fatal("incoming object was incorrectly processed by retention")
+	}
+}

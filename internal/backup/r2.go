@@ -17,7 +17,7 @@ import (
 // Stable error codes for the R2 delivery phase (display-safe; persisted in
 // backup_runs.error_code).
 const (
-	CodeUploadFailed      = "BACKUP_UPLOAD_FAILED"
+	CodeUploadFailed       = "BACKUP_UPLOAD_FAILED"
 	CodeUploadVerifyFailed = "BACKUP_UPLOAD_VERIFY_FAILED"
 )
 
@@ -103,6 +103,25 @@ func (d R2Delivery) Deliver(ctx context.Context, stagedPath string, size int64, 
 	}
 	if info.Size != size {
 		return "", fmt.Errorf("%w: final object size %d, want %d", ErrUploadVerify, info.Size, size)
+	}
+	// HEAD only proves the advertised length. Read back the final bytes with
+	// a one-byte bound so a same-size corruption (or an oversized response)
+	// cannot be accepted before the temporary object is removed.
+	final, err := d.Client.GetObject(ctx, finalKey)
+	if err != nil {
+		return "", classifyUpload(err, true)
+	}
+	finalSum := sha256.New()
+	readN, readErr := io.Copy(finalSum, io.LimitReader(final, size+1))
+	closeErr := final.Close()
+	if readErr != nil || closeErr != nil {
+		return "", fmt.Errorf("%w: final read-back failed", ErrUploadVerify)
+	}
+	if readN != size {
+		return "", fmt.Errorf("%w: final object size %d, want %d", ErrUploadVerify, readN, size)
+	}
+	if hex.EncodeToString(finalSum.Sum(nil)) != shaHex {
+		return "", fmt.Errorf("%w: final read-back digest mismatch", ErrUploadVerify)
 	}
 
 	// The final object is delivered and verified. A temporary object whose

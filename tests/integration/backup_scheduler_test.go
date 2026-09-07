@@ -183,6 +183,77 @@ func TestBackupOverlap(t *testing.T) {
 	}
 }
 
+func TestScheduledBackupBusyIsSkippedWithoutMarker(t *testing.T) {
+	h := newBackupHarness(t)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	runner, err := backup.NewRunner(backup.Options{
+		DB:                  h.db,
+		WorkDir:             h.workDir,
+		AppVersion:          "test",
+		MasterKeyRaw:        h.keyRaw,
+		ScheduledPassphrase: "backup-passphrase-1",
+		ScheduledLocalDir:   h.localDir,
+		Hooks: backup.Hooks{AfterArchiveCreated: func(context.Context, string) error {
+			entered <- struct{}{}
+			<-release
+			return nil
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.LoadJobConfigs(h.db.DB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Exec(
+		`UPDATE backup_jobs SET enabled = 1, schedule_time = '03:00', schedule_timezone = 'UTC' WHERE target = 'local'`,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	manualDone := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(context.Background(), backup.RunInput{
+			Targets: []backup.Target{backup.TargetLocal}, Trigger: backup.TriggerManual,
+			Passphrase: "backup-passphrase-1", LocalDir: h.localDir,
+		})
+		manualDone <- runErr
+	}()
+	<-entered // manual run holds the runner mutex
+
+	sched, err := scheduler.New(scheduler.Options{
+		DB:     h.db.DB,
+		Now:    func() time.Time { return time.Date(2026, 9, 6, 4, 0, 0, 0, time.UTC) },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := runner.ScheduledJobs()
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("scheduled jobs: %d %v", len(jobs), err)
+	}
+	if err := sched.Register(jobs[0]); err != nil {
+		t.Fatal(err)
+	}
+	busy := sched.Evaluate(context.Background())
+	if len(busy) != 1 || busy[0].Status != scheduler.StatusSkipped || busy[0].Ran {
+		t.Fatalf("busy scheduled result: %+v", busy)
+	}
+
+	close(release)
+	if err := <-manualDone; err != nil {
+		t.Fatalf("manual run: %v", err)
+	}
+	// The busy skip did not consume the marker; the due scheduled run can
+	// execute once the manual run has released the mutex.
+	done := sched.Evaluate(context.Background())
+	if len(done) != 1 || done[0].Status != scheduler.StatusSucceeded || !done[0].Ran {
+		t.Fatalf("scheduled retry result: %+v", done)
+	}
+}
+
 // The maintenance sweeps remove expired trash, sessions, rate-limit rows
 // and idempotency claims, and run the WAL checkpoint; they are idempotent.
 func TestMaintenanceJobs(t *testing.T) {
@@ -286,5 +357,43 @@ func TestMaintenanceJobs(t *testing.T) {
 		if err := job.Fn(ctx); err != nil {
 			t.Fatalf("%s rerun: %v", job.Name, err)
 		}
+	}
+}
+
+// Maintenance jobs are registered with the scheduler and must execute at
+// their low-peak daily time, rather than only working when callers invoke Fn
+// directly.
+func TestMaintenanceJobsRunThroughScheduler(t *testing.T) {
+	h := newBackupHarness(t)
+	jobs := backup.MaintenanceJobs(backup.MaintenanceDeps{DB: h.db})
+	if len(jobs) != 3 {
+		t.Fatalf("maintenance jobs=%d, want 3", len(jobs))
+	}
+
+	clock := time.Date(2026, 9, 6, 3, 31, 0, 0, time.UTC)
+	sched, err := scheduler.New(scheduler.Options{
+		DB:     h.db.DB,
+		Now:    func() time.Time { return clock },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if err := sched.Register(job); err != nil {
+			t.Fatalf("register %s: %v", job.Name, err)
+		}
+	}
+	results := sched.Evaluate(context.Background())
+	if len(results) != len(jobs) {
+		t.Fatalf("scheduler results=%d, want %d: %+v", len(results), len(jobs), results)
+	}
+	for _, result := range results {
+		if result.Status != scheduler.StatusSucceeded || !result.Ran {
+			t.Fatalf("maintenance result: %+v", result)
+		}
+	}
+	if results = sched.Evaluate(context.Background()); len(results) != 0 {
+		t.Fatalf("maintenance jobs repeated on the same day: %+v", results)
 	}
 }

@@ -208,6 +208,20 @@ func TestBackupLocalSuccessDuringConcurrentWrites(t *testing.T) {
 	if manifest.InstanceID == "" || manifest.BackupID == "" {
 		t.Fatal("manifest missing ids")
 	}
+	// The first backup must snapshot the stable instance identity itself; a
+	// manifest-only identity would make a restored database lose continuity.
+	snapshotDB, err := sql.Open(sqlite.DriverName, "file:"+filepath.Join(dest, backup.SnapshotPath)+"?immutable=1")
+	if err != nil {
+		t.Fatalf("open archived snapshot: %v", err)
+	}
+	defer snapshotDB.Close()
+	var snapshotInstanceID string
+	if err := snapshotDB.QueryRow("SELECT value FROM system_state WHERE key = 'instance_id'").Scan(&snapshotInstanceID); err != nil {
+		t.Fatalf("snapshot instance id: %v", err)
+	}
+	if snapshotInstanceID != manifest.InstanceID {
+		t.Fatalf("snapshot instance id %q, manifest %q", snapshotInstanceID, manifest.InstanceID)
+	}
 	if _, err := time.Parse(time.RFC3339Nano, manifest.CreatedAt); err != nil {
 		t.Fatalf("created_at: %v", err)
 	}

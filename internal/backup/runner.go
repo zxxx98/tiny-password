@@ -415,6 +415,13 @@ func (r *Runner) buildAndVerifyArchive(ctx context.Context, input RunInput) (*st
 			return nil, nil, fmt.Errorf("%w: staging layout", ErrInternal)
 		}
 	}
+	// Establish the stable identity before taking the online snapshot. The
+	// manifest and the first archived database must carry the same value so a
+	// restore preserves instance continuity from the very first backup.
+	instanceID, err := EnsureInstanceID(r.opts.DB.DB)
+	if err != nil {
+		return nil, nil, classifyStep(err, CodeInternal)
+	}
 
 	// 1. Consistent snapshot via the Online Backup API — never a raw copy
 	// of the live WAL files, and no long-held write transaction.
@@ -448,10 +455,6 @@ func (r *Runner) buildAndVerifyArchive(ctx context.Context, input RunInput) (*st
 
 	// 4. Manifest with schema version, ids, and per-file digests.
 	schemaVersion, err := sqlite.SchemaVersion(r.opts.DB.DB)
-	if err != nil {
-		return nil, nil, classifyStep(err, CodeInternal)
-	}
-	instanceID, err := EnsureInstanceID(r.opts.DB.DB)
 	if err != nil {
 		return nil, nil, classifyStep(err, CodeInternal)
 	}

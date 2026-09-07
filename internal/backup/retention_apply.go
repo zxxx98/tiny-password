@@ -128,14 +128,22 @@ func (r *Runner) reconcileR2(ctx context.Context, d *R2Delivery, keep map[string
 		return
 	}
 	sort.Slice(objects, func(i, j int) bool { return objects[i].LastModified.After(objects[j].LastModified) })
-	for i, obj := range objects {
-		if !strings.HasSuffix(obj.Key, ".7z") {
+	finalPrefix := strings.TrimSuffix(d.Prefix, "/") + "/"
+	finalIndex := 0
+	for _, obj := range objects {
+		// Retention owns only final archives directly below the configured
+		// prefix. Nested incoming objects belong to CleanupIncoming and must
+		// never affect the newest guard or the GFS keep set.
+		rel, ok := strings.CutPrefix(obj.Key, finalPrefix)
+		if !ok || strings.Contains(rel, "/") || !strings.HasSuffix(rel, ".7z") {
 			continue
 		}
-		stem := strings.TrimSuffix(filepath.Base(obj.Key), ".7z")
-		if i == 0 || keep[stem] {
+		stem := strings.TrimSuffix(rel, ".7z")
+		if finalIndex == 0 || keep[stem] {
+			finalIndex++
 			continue
 		}
+		finalIndex++
 		if err := d.Client.DeleteObject(ctx, obj.Key); err != nil {
 			r.opts.Logger.Error("retention r2 delete failed")
 			continue

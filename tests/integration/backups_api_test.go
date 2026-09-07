@@ -37,6 +37,7 @@ type backupsAPIHarness struct {
 	r2SecretPath string
 	entered      chan struct{}
 	release      chan struct{}
+	sched        *scheduler.Scheduler
 }
 
 // newBackupsAPIHarness builds the plain harness (no fault injection).
@@ -96,10 +97,15 @@ func newBackupsAPIHarnessWithHooks(t *testing.T, hooks backup.Hooks) *backupsAPI
 	if err != nil {
 		t.Fatal(err)
 	}
-	sched, err := scheduler.New(scheduler.Options{DB: h.db.DB, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	sched, err := scheduler.New(scheduler.Options{
+		DB:     h.db.DB,
+		Now:    func() time.Time { return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.sched = sched
 	// A dedicated bootstrap instance whose logger captures the one-time token.
 	logger := &capturedHandler{}
 	boot, err := bootstrap.NewService(h.db, mustMasterKey(t), slog.New(logger))
@@ -118,6 +124,8 @@ func newBackupsAPIHarnessWithHooks(t *testing.T, hooks backup.Hooks) *backupsAPI
 			Passphrase: "backup-passphrase-1",
 			Session:    h.svc,
 			Cursor:     cursor,
+			Scheduler:  sched,
+			Audit:      audit.NewService(audit.Options{}),
 		},
 		Settings: &httpapi.SettingsDeps{
 			Settings:  settingsService,
@@ -194,6 +202,14 @@ func TestBackupsJobsConfigRoundTrip(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update: %d", resp.StatusCode)
 	}
+	resp.Body.Close()
+	var configAuditCount int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE event = ? AND target_id = 'local' AND result = 'success'`, audit.EventBackupConfigUpdated).Scan(&configAuditCount); err != nil {
+		t.Fatal(err)
+	}
+	if configAuditCount != 1 {
+		t.Fatalf("backup config audit rows=%d, want 1", configAuditCount)
+	}
 
 	resp2 := h.request(t, "GET", "/admin/backups/jobs", nil, h.admin)
 	defer resp2.Body.Close()
@@ -250,6 +266,43 @@ func TestBackupsJobsConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBackupScheduleUpdateReloadsRunningScheduler(t *testing.T) {
+	h := newBackupsAPIHarness(t)
+	// The scheduler is already running before this configuration is saved.
+	// A past schedule makes the reload observable on the next evaluation.
+	resp := h.request(t, "PUT", "/admin/backups/jobs", map[string]any{
+		"target": "local", "enabled": true,
+		"schedule_time": "00:01", "schedule_timezone": "UTC",
+	}, h.admin)
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("enable scheduled backup: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	results := h.sched.Evaluate(context.Background())
+	if len(results) != 1 || results[0].Job != "backup.local" || results[0].Status != scheduler.StatusSucceeded {
+		t.Fatalf("reloaded scheduler results: %+v", results)
+	}
+
+	// Disabling the persisted row unregisters the target from subsequent
+	// evaluations without affecting unrelated scheduler jobs.
+	resp2 := h.request(t, "PUT", "/admin/backups/jobs", map[string]any{
+		"target": "local", "enabled": false,
+	}, h.admin)
+	if resp2.StatusCode != http.StatusOK {
+		resp2.Body.Close()
+		t.Fatalf("disable scheduled backup: %d", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+	if got := h.sched.Evaluate(context.Background()); len(got) != 0 {
+		t.Fatalf("disabled scheduled backup still evaluated: %+v", got)
+	}
+	if _, ok := h.sched.LastResult("backup.local"); ok {
+		t.Fatal("disabled scheduled backup retained a runtime result")
+	}
+}
+
 func TestBackupsManualRunAndHistory(t *testing.T) {
 	h := newBackupsAPIHarnessWithBlockingArchive(t)
 	// Hold the mutex with a blocking hook to prove the 409 path.
@@ -286,6 +339,13 @@ func TestBackupsManualRunAndHistory(t *testing.T) {
 			t.Fatalf("run never succeeded: %+v", body.Items)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	var runAuditCount int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE event = ? AND result = 'success'`, audit.EventBackupRun).Scan(&runAuditCount); err != nil {
+		t.Fatal(err)
+	}
+	if runAuditCount == 0 {
+		t.Fatal("successful backup run was not audited")
 	}
 }
 
@@ -495,7 +555,8 @@ func TestBackupsR2DeliveryResolvedFromSettings(t *testing.T) {
 	}
 }
 
-func seedAuditSuccessAndFailure(t *testing.T, db *sql.DB) {	t.Helper()
+func seedAuditSuccessAndFailure(t *testing.T, db *sql.DB) {
+	t.Helper()
 	for _, e := range []struct {
 		id     string
 		result string

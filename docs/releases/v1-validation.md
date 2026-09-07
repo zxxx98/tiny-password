@@ -365,3 +365,21 @@
 - 测试：`TestBackupsR2DeliveryResolvedFromSettings`（未配置 503 → 挂凭据+写设置 → delivery_ready 翻转 → 手动运行经设置解析的客户端真实交付成功）；backups API harness 重构（阻塞钩子仅 busy 用例安装）；前端新增未配置目标禁用运行按钮用例。
 - 验证命令与结果：`go vet ./...`、`SEVENZIP_BIN=… go test ./... -count=1 -timeout=25m` 全部通过；前端 typecheck + 70 测试（新增 1）通过；E2E backups.spec.ts 3/3（凭据标志断言改为「未挂载」）。
 - 未解决问题：与上节相同的 R2 真实验收缺口不变（TestR2Live 待凭据）；此外修复审查中发现 `TP_R2_ENDPOINT/BUCKET/PREFIX` env 配置路径已移除——部署如曾使用需改为管理设置（文档于 T29 deploy/backup-restore 手册交付）。
+
+## M5 · 审计修复（严重两项）
+
+- 日期：2026-09-06；基于 M5 审查修复后的代码审计（2 严重）。
+- 严重 1 · 明文主密钥默认写入持久卷（D11/T21/T25）：`TP_BACKUP_WORK_DIR` 默认 `<data>/backup-tmp`、`TP_RESTORE_WORK_DIR` 默认 `<data>/restore-tmp` 均落在持久卷，而备份把原始主密钥写入该目录、恢复把归档解压到该目录；删除文件不保证擦除底层数据。修复：tmpfs 选择/校验逻辑下沉为 `internal/platform/ephemeral`（transfer 同源委托，statfs 校验不信任名字）——无配置时自动在 `TMPDIR`→`/tmp`→`/dev/shm` 中选出已验证 tmpfs 并建私有 0700 子目录，显式配置拒绝非 tmpfs（fail-closed，不回退普通磁盘；主服务启动失败、restore 子命令退出 1）。compose 的 `/tmp` tmpfs 挂载即默认合规路径。
+- 严重 1b · 恢复递归删除整个 WorkDir：`restore.go` 成功与 resume 路径原先 `os.RemoveAll(WorkDir)`——管理员按要求配置 `/tmp` 会删掉整个 `/tmp`。修复：恢复只在 WorkDir 下创建以数据目录哈希命名的私有 session 子目录（同名只可能是本实例前次尝试的遗留，跨实例永不碰撞），解压在 session 内进行，成功/失败/重启 resume 都只清该 session。
+- 严重 2 · 恢复可能在切换前误报成功：状态文件原先在 `os.Rename` 之前写 `switched`，进程死在窗口内时 resume 会把当前 live 库（目标密钥相同则通过解密验证；空目标则被 `sqlite.Open` 凭空建库）当已恢复库并报告成功。修复：状态机区分 `switch_ready`（rename 前写，含新增 `BeforeSwitch` 故障注入钩子）与 `switched`（rename 后写）；候选库在迁移阶段写入 `system_state.restore_backup_id` 标识，post-switch 检查（含 resume 路径）必须确认 live 库标识与记录一致才允许成功，缺失/不符一律回滚前置快照（空目标清回空态）；resume 对 `switch_ready`+候选库存在补做 rename、对 switched 状态先验证 live 库存在（绝不经打开制造空库）。
+- 测试：`TestRestoreCrashBeforeSwitchResumes`（空目标/已有目标：崩溃后旧库原样、候选库在位、resume 补切换完成）、`TestRestoreResumeVerifiesSwitchedIdentity`（同密钥旧库伪造 switched 状态→回滚且原数据完整；switched 无库→回滚且不造空库）、`TestRestoreCleansOnlyItsOwnSessionBelowWorkDir`（操作者文件存活、无 session 残留）、完整往返断言 `restore_backup_id` 标识、`internal/platform/ephemeral` 单测（私有子目录/非 tmpfs 拒绝/默认选择）。
+- 验证命令与结果：`go vet ./...`、`go build ./...` 通过；`go test ./internal/platform/ephemeral ./internal/transfer ./internal/backup`、`go test -race` 同三包通过；`SEVENZIP_BIN=/tmp/tp-7zz/7zz go test ./tests/integration -run 'TestBackup|TestRetention|TestMaintenanceJobs|TestJobRestart|TestRestore' -count=1` 通过；`-run TestRestore -race` 通过；`go test ./... -count=1` 全量通过。
+- 未解决问题：与前节相同的 R2 真实验收缺口不变（TestR2Live 待凭据）。
+
+## M5 · 后续代码审查修复
+
+- 日期：2026-09-07。维护清扫任务统一注册为 UTC 03:30，并通过真实 Scheduler 路径验证每日只执行一次；管理页保存备份计划后立即原子热加载，禁用目标会注销任务。
+- 计划运行遇到手动备份占锁时返回 `skipped`，不消耗当日标记；并发调度在释放运行锁前持久化标记，避免重复执行。
+- R2 最终对象在清理 incoming 临时对象前做有界流式 SHA-256 回读校验；retention 只处理配置前缀下的直接 final 对象，incoming 由独立 TTL 清理。
+- 首次备份在在线快照前创建 instance ID，归档快照与 manifest 使用同一值；新增备份配置、运行、维护、恢复和迁移的脱敏审计事件。系统审计 API/UI 增加 UTC 时间范围筛选。
+- 验证：`go vet ./...`、`SEVENZIP_BIN=/tmp/tp-7zz/7zz go test ./... -count=1 -timeout=25m`、前端 typecheck/85 tests/build、关键包 race 均通过。真实 R2 `TestR2Live` 仍需 `TP_R2_TEST_*` 凭据。
