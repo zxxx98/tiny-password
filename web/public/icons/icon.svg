@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Tiny Password</title>
+  <rect width="512" height="512" fill="#111111"/>
+  <path d="M0 128h512M0 256h512M0 384h512M128 0v512M256 0v512M384 0v512" fill="none" stroke="#cc0000" stroke-width="2" opacity=".25"/>
+  <path d="m256 64 128 52 64 140-64 140-128 52-128-52-64-140 64-140z" fill="#cc0000" stroke="#f9f9f7" stroke-width="10"/>
+  <path d="M256 141a63 63 0 0 0-63 63c0 24 13 45 33 56v101h60V260c20-11 33-32 33-56a63 63 0 0 0-63-63Z" fill="#111111"/>
+  <circle cx="256" cy="204" r="20" fill="#f9f9f7"/>
+  <path d="M226 261h60l13 77h-86z" fill="#f9f9f7"/>
+  <path d="M156 398h200" stroke="#111111" stroke-width="8"/>
+</svg>

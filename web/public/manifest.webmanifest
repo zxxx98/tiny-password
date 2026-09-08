@@ -3,6 +3,7 @@
   "short_name": "Tiny Password",
   "description": "Self-hosted encrypted password vault",
   "lang": "zh-CN",
+  "id": "/",
   "start_url": "/vault",
   "scope": "/",
   "display": "standalone",

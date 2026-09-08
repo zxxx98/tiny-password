@@ -6,6 +6,14 @@ import { Router } from "./router";
 import { SESSION_EXPIRED_EVENT, sessionStore } from "./session";
 import { ApiError, request } from "./api";
 
+function dispatchInstallPrompt(
+  prompt: () => Promise<void>,
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>,
+) {
+  const event = Object.assign(new Event("beforeinstallprompt"), { prompt, userChoice });
+  window.dispatchEvent(event);
+}
+
 function stubFetch(responses: Array<{ status: number; body: unknown }>) {
   const queue = [...responses];
   const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit): Promise<Response> => {
@@ -71,6 +79,22 @@ describe("AppShell", () => {
     expect(screen.getAllByRole("link", { name: "备份" }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: "审计" }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: "系统" }).length).toBeGreaterThan(0);
+  });
+
+  it("offers the native install prompt from a user action", async () => {
+    const user = userEvent.setup();
+    const prompt = vi.fn().mockResolvedValue(undefined);
+    dispatchInstallPrompt(prompt, Promise.resolve({ outcome: "accepted", platform: "web" }));
+    render(
+      <AppShell>
+        <p>内容</p>
+      </AppShell>,
+    );
+
+    expect(screen.getByRole("dialog", { name: "安装 Tiny Password" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "安装应用" }));
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("pwa-install")).not.toBeInTheDocument();
   });
 });
 

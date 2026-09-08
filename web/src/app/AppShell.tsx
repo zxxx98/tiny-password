@@ -3,10 +3,15 @@ import { useSession } from "./session";
 import { Link, usePath } from "./router";
 import type { ReactNode } from "react";
 import { Button } from "../design-system/Button";
+import { ConfirmDialog } from "../design-system/Dialog";
 import {
   activatePwaUpdate,
   dismissPwaUpdate,
+  getPwaInstallState,
+  PWA_INSTALL_STATE_EVENT,
   PWA_UPDATE_EVENT,
+  promptPwaInstall,
+  type PwaInstallState,
   type PwaUpdateDetail,
 } from "../pwa/register";
 
@@ -55,6 +60,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const items = navItemsFor(principal?.role ?? null);
   const path = usePath();
   const [update, setUpdate] = useState<ServiceWorkerRegistration | null>(null);
+  const [installState, setInstallState] = useState<PwaInstallState>(() => getPwaInstallState());
+  const [installDialogOpen, setInstallDialogOpen] = useState(() => getPwaInstallState() === "available");
+  const [installing, setInstalling] = useState(false);
+  const [installHelp, setInstallHelp] = useState(false);
 
   useEffect(() => {
     const onUpdate = (event: Event) => {
@@ -62,6 +71,17 @@ export function AppShell({ children }: { children: ReactNode }) {
     };
     window.addEventListener(PWA_UPDATE_EVENT, onUpdate);
     return () => window.removeEventListener(PWA_UPDATE_EVENT, onUpdate);
+  }, []);
+
+  useEffect(() => {
+    const onInstallState = (event: Event) => {
+      const state = (event as CustomEvent<{ state: PwaInstallState }>).detail.state;
+      setInstallState(state);
+      if (state === "available") setInstallDialogOpen(true);
+      if (state === "installed") setInstallDialogOpen(false);
+    };
+    window.addEventListener(PWA_INSTALL_STATE_EVENT, onInstallState);
+    return () => window.removeEventListener(PWA_INSTALL_STATE_EVENT, onInstallState);
   }, []);
 
   const deferUpdate = () => {
@@ -73,8 +93,67 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (!activatePwaUpdate()) setUpdate(null);
   };
 
+  const installApp = async () => {
+    setInstallHelp(false);
+    setInstalling(true);
+    const outcome = await promptPwaInstall();
+    setInstalling(false);
+    if (outcome === "unavailable") setInstallHelp(true);
+  };
+
+  const confirmInstall = () => {
+    setInstallDialogOpen(false);
+    void installApp();
+  };
+
   return (
     <div className="flex min-h-screen flex-col">
+      {installState !== "installed" && (
+        <aside
+          className="border-b border-ink bg-ink px-4 py-3 text-paper"
+          aria-label="安装 Tiny Password"
+          data-testid="pwa-install"
+        >
+          <div className="mx-auto flex max-w-screen-xl flex-wrap items-center justify-between gap-3">
+            <div className="flex items-baseline gap-3">
+              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent">Quick access</span>
+              <p className="font-body text-sm">把 Tiny Password 安装到手机桌面，打开更快。</p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={installApp}
+              disabled={installing}
+              className="border-paper text-paper hover:border-paper hover:bg-paper hover:text-ink"
+            >
+              {installing ? "正在打开…" : "安装到桌面"}
+            </Button>
+            {installHelp && (
+              <p className="basis-full font-mono text-[11px] leading-relaxed text-neutral-400" role="status">
+                {!window.isSecureContext
+                  ? "当前地址不是 HTTPS，Android Chrome 不会提供安装能力。请先通过 HTTPS（或 localhost）访问。"
+                  : "当前浏览器尚未提供一键安装，请打开右上角 ⋮ 菜单，选择“添加到主屏幕”或“安装应用”。"}
+              </p>
+            )}
+          </div>
+        </aside>
+      )}
+      <ConfirmDialog
+        open={installDialogOpen && installState === "available"}
+        title="安装 Tiny Password"
+        description={
+          <div className="flex items-start gap-4">
+            <img src="/icons/icon-192.png" alt="" className="h-16 w-16 shrink-0 border border-ink" />
+            <div className="space-y-2">
+              <p>把保险库放到手机桌面，之后可以像打开普通应用一样直接使用。</p>
+              <p className="font-mono text-[11px] text-neutral-500">数据仍由当前自托管实例提供，不会复制到第三方。</p>
+            </div>
+          </div>
+        }
+        confirmLabel={installing ? "正在打开…" : "安装应用"}
+        cancelLabel="稍后"
+        onCancel={() => setInstallDialogOpen(false)}
+        onConfirm={confirmInstall}
+      />
       {update && (
         <aside
           className="border-b-2 border-accent bg-paper px-4 py-3"
