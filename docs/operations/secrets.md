@@ -1,6 +1,6 @@
 # Secret 生成与保管
 
-Tiny Password 不生成替代主密钥，也不把 secret 写入数据库、备份 manifest、审计或 API 响应。Docker Secret 文件以只读方式挂载，应用在响应中最多暴露“凭据文件是否存在”的布尔状态。
+Tiny Password 不生成替代主密钥，也不把 secret 写入数据库、备份 manifest、审计或 API 响应。凭据通过 Docker Secret 文件或受控环境变量注入，应用在响应中最多暴露“凭据是否已配置”的布尔状态。
 
 ## 文件
 
@@ -13,6 +13,14 @@ Tiny Password 不生成替代主密钥，也不把 secret 写入数据库、备�
 | `secrets/tunnel_token` | 仅启用 Tunnel profile 时给 cloudflared | Tunnel 无法连接；不会影响本地 app |
 
 R2 需要额外的 `secrets/r2_access_key` 和 `secrets/r2_secret_key`，通过 `deploy/compose.r2.yaml` 挂载；它们不进入应用设置 API 和备份归档。
+
+## R2 环境变量方式
+
+受控的内网部署也可以设置 `TP_R2_ACCESS_KEY` 和 `TP_R2_SECRET_KEY`。两个值都必须是非空凭据；每个字段都会优先使用非空环境变量，空白值才回退到对应的 Secret 文件。环境变量方式不会改变凭据不入库、不入日志、不入审计和不入备份归档的约束。
+
+该方式接受更大的运行时暴露面：环境变量可能通过 `docker inspect`、`/proc`、进程转储或部署诊断信息暴露。因此不要把它们写入 Git、shell 历史、未保护的 CI 输出或 issue；如果环境边界变化，应改用上面的 Docker Secret 文件方式并轮换凭据。
+
+即使使用环境变量，R2 的 endpoint、bucket 和 prefix 仍需在管理员系统页配置；endpoint 使用 Cloudflare 账号专属的 R2 S3 endpoint，应用签名区域为 `auto`。
 
 ## 生成
 

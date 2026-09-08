@@ -79,7 +79,20 @@ TP_TUNNEL_TOKEN_SOURCE="$PWD/secrets/tunnel_token" docker compose --profile tunn
 docker compose -f compose.yaml -f deploy/compose.lan.yaml config --quiet
 ```
 
-R2 只在已准备两份 R2 credential 文件时叠加 `deploy/compose.r2.yaml`；R2 endpoint、bucket、prefix 从管理员系统页配置，credential 只通过 Secret 文件提供。启用 R2 前先执行：
+R2 的 endpoint、bucket、prefix 始终从管理员系统页配置。endpoint 必须使用 Cloudflare 显示的、账号专属的 S3 端点（形如 `https://<account>.r2.cloudflarestorage.com`）；应用签名区域固定为 `auto`。
+
+受控的内网部署可以直接通过环境变量配置 R2 凭据。环境变量按字段优先于同名 Secret 文件；值为空或全为空白时才回退到文件。配置后校验并重建 app：
+
+```bash
+export TP_R2_ACCESS_KEY='your-access-key-id'
+export TP_R2_SECRET_KEY='your-secret-access-key'
+docker compose -f compose.yaml config --quiet
+docker compose -f compose.yaml up -d --build --force-recreate app
+```
+
+环境变量会被传入 app 容器，适合已接受该暴露面的受控内网环境。不要把值提交到 Git 或输出到不受保护的 CI 日志。
+
+如果使用推荐的 Docker Secret 文件方式，准备两份 R2 credential 文件并叠加 `deploy/compose.r2.yaml`；这会继续使用 `/run/secrets/r2_access_key` 和 `/run/secrets/r2_secret_key`，环境变量留空即可：
 
 ```bash
 export TP_R2_ACCESS_KEY_SOURCE="$PWD/secrets/r2_access_key"
