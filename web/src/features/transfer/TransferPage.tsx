@@ -17,6 +17,8 @@ type DownloadProgress = {
   totalBytes?: number;
 };
 
+type ImportFormat = "archive" | "bitwarden";
+
 const errorOf = (err: unknown): { message: string; requestId?: string } => {
   if (err instanceof ApiError) {
     return { message: err.message, requestId: err.requestId };
@@ -59,6 +61,7 @@ export function TransferPage() {
 
   const [file, setFile] = useState<File | null>(null);
   const [importPass, setImportPass] = useState("");
+  const [importFormat, setImportFormat] = useState<ImportFormat>("archive");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -151,6 +154,16 @@ export function TransferPage() {
     controllersRef.current.delete(controller);
   };
 
+  const discardPreview = useCallback(() => {
+    const previousToken = previewRef.current?.preview_token;
+    if (previousToken) {
+      previewRef.current = null;
+      void cancelPreview(previousToken, csrfTokenRef.current);
+    }
+    setPreview(null);
+    previewRef.current = null;
+  }, [cancelPreview]);
+
   const fail = useCallback((err: unknown) => {
     if (!mountedRef.current || sessionExpiredRef.current) {
       return;
@@ -238,26 +251,27 @@ export function TransferPage() {
 
   const doPreview = useCallback(async () => {
     setError(null);
-    const previousToken = previewRef.current?.preview_token;
-    if (previousToken) {
-      previewRef.current = null;
-      void cancelPreview(previousToken, csrfTokenRef.current);
-    }
-    setPreview(null);
-    previewRef.current = null;
+    discardPreview();
     if (!file) {
-      setError("请选择要导入的归档文件。");
+      setError(importFormat === "bitwarden" ? "请选择要导入的 Bitwarden JSON 文件。" : "请选择要导入的归档文件。");
       return;
     }
     setImporting(true);
     const controller = beginRequest();
     try {
       const body = new FormData();
-      body.append("archive", file);
-      body.append("passphrase", importPass);
+      const endpoint = importFormat === "bitwarden"
+        ? "/api/v1/transfer/import/bitwarden/preview"
+        : "/api/v1/transfer/import/preview";
+      if (importFormat === "bitwarden") {
+        body.append("file", file);
+      } else {
+        body.append("archive", file);
+        body.append("passphrase", importPass);
+      }
       const data = await request<Preview>(
         "POST",
-        "/api/v1/transfer/import/preview",
+        endpoint,
         body,
         { csrfToken, signal: controller.signal },
       );
@@ -279,7 +293,24 @@ export function TransferPage() {
         setImporting(false);
       }
     }
-  }, [file, importPass, csrfToken, cancelPreview]);
+  }, [file, importFormat, importPass, csrfToken, discardPreview]);
+
+  const changeImportFile = useCallback((next: File | null) => {
+    discardPreview();
+    setFile(next);
+    setError(null);
+    setRequestId(undefined);
+  }, [discardPreview]);
+
+  const changeImportFormat = useCallback((next: ImportFormat) => {
+    discardPreview();
+    setImportFormat(next);
+    setFile(null);
+    setImportPass("");
+    setFileInputKey((key) => key + 1);
+    setError(null);
+    setRequestId(undefined);
+  }, [discardPreview]);
 
   const doConfirm = useCallback(async () => {
     if (!preview) {
@@ -379,27 +410,48 @@ export function TransferPage() {
         <h3 id="import-heading" className="font-display text-xl font-bold">
           导入
         </h3>
+        <div className="space-y-1">
+          <label htmlFor="import-format" className="block font-mono text-xs uppercase tracking-widest">
+            导入格式
+          </label>
+          <select
+            id="import-format"
+            value={importFormat}
+            onChange={(e) => changeImportFormat(e.target.value as ImportFormat)}
+            className="w-full min-h-[44px] border-b-2 border-ink bg-transparent px-3 py-2 font-mono text-sm focus-visible:bg-neutral-100 focus-visible:outline-none"
+          >
+            <option value="archive">Tiny Password 加密归档（.7z）</option>
+            <option value="bitwarden">Bitwarden JSON</option>
+          </select>
+        </div>
         <p className="font-body text-xs text-neutral-500">
           预览不写入任何数据；确认后一次事务完成导入。冲突的条目 ID 会重新编号，不会被覆盖。
         </p>
+        {importFormat === "bitwarden" && (
+          <p className="font-body text-xs text-neutral-500">
+            仅支持未加密的 Bitwarden JSON 导出；CSV 和加密导出暂不支持。导入条目会成为你的个人条目。
+          </p>
+        )}
         <Field
           id="import-file"
-          label="归档文件（.7z）"
+          label={importFormat === "bitwarden" ? "Bitwarden JSON 文件" : "归档文件（.7z）"}
           type="file"
-          accept=".7z"
+          accept={importFormat === "bitwarden" ? ".json,application/json" : ".7z"}
           key={fileInputKey}
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          onChange={(e) => changeImportFile(e.target.files?.[0] ?? null)}
         />
-        <Field
-          id="import-passphrase"
-          label="归档口令（导入）"
-          type="password"
-          autoComplete="off"
-          value={importPass}
-          onChange={(e) => setImportPass(e.target.value)}
-        />
+        {importFormat === "archive" && (
+          <Field
+            id="import-passphrase"
+            label="归档口令（导入）"
+            type="password"
+            autoComplete="off"
+            value={importPass}
+            onChange={(e) => setImportPass(e.target.value)}
+          />
+        )}
         <Button disabled={importing} onClick={() => void doPreview()}>
-          {importing ? "处理中…" : "预览导入"}
+          {importing ? "处理中…" : importFormat === "bitwarden" ? "预览 Bitwarden 导入" : "预览导入"}
         </Button>
 
         {preview && (

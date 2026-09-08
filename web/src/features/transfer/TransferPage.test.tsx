@@ -194,4 +194,68 @@ describe("TransferPage lifecycle", () => {
     expect(expired).not.toHaveBeenCalled();
     window.removeEventListener(SESSION_EXPIRED_EVENT, expired);
   });
+
+  it("previews and confirms a Bitwarden JSON file", async () => {
+    const user = userEvent.setup();
+    sessionStore.set({ principal, csrfToken: "csrf" });
+    const fetchMock = vi.fn(async (url: string | URL, _init?: RequestInit) => {
+      void _init;
+      if (String(url).includes("bitwarden/preview")) {
+        return jsonResponse(200, {
+          preview_token: "bw-preview",
+          counts: { login: 1 },
+          conflicts: 0,
+          missing_references: [],
+        });
+      }
+      return jsonResponse(200, { imported_count: 1 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<TransferPage />);
+
+    await user.selectOptions(screen.getByLabelText("导入格式"), "bitwarden");
+    await user.upload(
+      screen.getByLabelText("Bitwarden JSON 文件"),
+      new File(["{}"], "data.json", { type: "application/json" }),
+    );
+    await user.click(screen.getByRole("button", { name: "预览 Bitwarden 导入" }));
+    await screen.findByRole("region", { name: "导入预览" });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get("file")).toBeInstanceOf(File);
+    expect((init.body as FormData).get("passphrase")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "确认导入" }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/transfer/import/confirm"),
+    );
+  });
+
+  it("cancels the previous preview when the selected file changes", async () => {
+    const user = userEvent.setup();
+    sessionStore.set({ principal, csrfToken: "csrf" });
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes("/import/preview")) {
+        return jsonResponse(200, {
+          preview_token: "preview-1",
+          counts: { login: 1 },
+          conflicts: 0,
+          missing_references: [],
+        });
+      }
+      return jsonResponse(204, {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<TransferPage />);
+
+    const fileInput = screen.getByLabelText("归档文件（.7z）");
+    await user.upload(fileInput, new File(["archive-1"], "one.7z"));
+    await user.click(screen.getByRole("button", { name: "预览导入" }));
+    await screen.findByRole("region", { name: "导入预览" });
+    await user.upload(fileInput, new File(["archive-2"], "two.7z"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/transfer/import/cancel");
+    expect(screen.queryByRole("region", { name: "导入预览" })).not.toBeInTheDocument();
+  });
 });
