@@ -11,6 +11,10 @@ import (
 // type demands. Unknown fields and non-object bodies are rejected: a typo'd
 // field must never silently vanish from an encrypted record.
 func decodePayload(itemType string, raw json.RawMessage) (any, error) {
+	return decodePayloadWithOptions(itemType, raw, false)
+}
+
+func decodePayloadWithOptions(itemType string, raw json.RawMessage, allowEmptySecureNoteBody bool) (any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, fmt.Errorf("%w: payload is required", ErrPayloadInvalid)
 	}
@@ -60,7 +64,7 @@ func decodePayload(itemType string, raw json.RawMessage) (any, error) {
 	case *IdentityPayload:
 		err = p.validate()
 	case *SecureNotePayload:
-		err = p.validate()
+		err = p.validateForImport(allowEmptySecureNoteBody)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrPayloadInvalid, err.Error())

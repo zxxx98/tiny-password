@@ -208,12 +208,12 @@ func convertBitwardenItem(source bitwardenItem, folders map[string]string) (vaul
 	}
 
 	raw, err := json.Marshal(payload)
-	if err != nil || !validateBitwardenPayload(payloadTypeOf(source.Type), raw) {
+	if err != nil || !validateBitwardenPayload(payloadTypeOf(source.Type), raw, source.Type == 2) {
 		return vault.ImportItem{}, false
 	}
 	return vault.ImportItem{
 		ItemType: payloadTypeOf(source.Type), Scope: string(vault.ScopePersonal),
-		Tags: tags, Favorite: source.Favorite, Payload: raw,
+		Tags: tags, Favorite: source.Favorite, AllowEmptySecureNoteBody: source.Type == 2, Payload: raw,
 	}, true
 }
 
@@ -232,8 +232,8 @@ func payloadTypeOf(sourceType int) string {
 	}
 }
 
-func validateBitwardenPayload(itemType string, raw []byte) bool {
-	return itemType != "" && vault.ValidatePayload(itemType, raw) == nil
+func validateBitwardenPayload(itemType string, raw []byte, allowEmptySecureNoteBody bool) bool {
+	return itemType != "" && vault.ValidatePayloadForImport(itemType, raw, allowEmptySecureNoteBody) == nil
 }
 
 func convertBitwardenLogin(source bitwardenItem) vault.LoginPayload {
