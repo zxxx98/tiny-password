@@ -4,30 +4,33 @@ Tiny Password 的默认 Compose 配置不向宿主机发布应用端口。生产
 
 ## 前置条件
 
-- Docker Engine 与 Compose plugin；生产主机至少准备持久化 `/data` 卷、备份所需空间和一个可接受浏览器信任的 HTTPS 入口。
-- 一份只读挂载的主密钥和一份备份口令。两者丢失都会分别导致数据或备份不可恢复。
+- Docker Engine 与 Compose plugin；生产主机至少准备持久化数据盘目录、备份所需空间和一个可接受浏览器信任的 HTTPS 入口。
+- 首次部署会在 `${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}/.secrets/` 自动生成主密钥和备份口令。两者丢失都会分别导致数据或备份不可恢复，因此必须在部署成功后立即做受控的离线备份。
 - 若使用 Tunnel：Cloudflare 账户、已创建的 remotely-managed Tunnel，以及其 token；应用公共 hostname 的 service URL 设为 `http://app:8080`。
 
 ## 首次启动
 
-在仓库目录执行。命令不会把 secret 内容写入日志：
+在仓库目录执行。`init-secrets` 只会输出失败原因，不会把 secret 内容写入日志：
 
 ```bash
-umask 077
-mkdir -p secrets
-head -c 32 /dev/urandom > secrets/master_key
-openssl rand -base64 32 > secrets/backup_passphrase
-chmod 0700 secrets
-sudo chown "$(id -u)":10001 secrets/master_key secrets/backup_passphrase
-chmod 0640 secrets/master_key secrets/backup_passphrase
-
+export TP_DATA_DIR_HOST=/mnt/data/tiny-password
 docker compose build
 docker compose up -d
 docker compose ps
 docker compose logs --since=1m app
 ```
 
-默认 compose 没有 `ports:` 映射；`docker compose ps` 中 app 应为 healthy，但宿主公网不能直接访问它。首次初始化 token 只在初始化状态的启动日志中出现一次。打开 HTTPS 地址完成初始化和管理员首次改密，然后立即保存 token、主密钥和备份口令的受控副本。
+首次部署会先生成：
+
+- `/mnt/data/tiny-password/.secrets/master_key`（32 字节主密钥）
+- `/mnt/data/tiny-password/.secrets/backup_passphrase`（备份口令）
+- `/mnt/data/tiny-password/backups/`（本地备份目录）
+
+如果数据目录中已经存在 `tiny-password.db`，但任一密钥缺失或格式不正确，初始化服务会失败并阻止 app 启动；它不会生成替代密钥。默认 compose 没有 `ports:` 映射；`docker compose ps` 中 app 应为 healthy，但宿主公网不能直接访问它。首次初始化 token 只在初始化状态的启动日志中出现一次。打开 HTTPS 地址完成初始化和管理员首次改密，然后立即保存 token、主密钥和备份口令的受控副本。
+
+## GHCR / DPanel
+
+DPanel 使用 GHCR 镜像时，导入 [`deploy/compose.ghcr.yaml`](/home/ubuntu/code/personal/tiny-password/deploy/compose.ghcr.yaml)。该文件默认使用 `ghcr.io/zxxx98/tiny-password:latest`、将宿主机 `29998` 映射到容器 `8080`，并把数据写入 `/mnt/data/tiny-password`。R2 凭据只在 DPanel 的环境变量中设置：`CF_R2_ACCESS_KEY` 和 `CF_R2_SECRET_KEY`；不要把真实值写进 YAML 或 Git。
 
 健康检查：
 
@@ -80,12 +83,9 @@ docker compose logs -f app
 
 ## 配置校验
 
-准备好本地 secret 文件后，发布前运行：
+初始化服务会在启动时检查数据目录和密钥。发布前可先检查 Compose 配置：
 
 ```bash
-export TP_MASTER_KEY_SOURCE="$PWD/secrets/master_key"
-export TP_BACKUP_PASSPHRASE_SOURCE="$PWD/secrets/backup_passphrase"
-bash scripts/check-compose-secrets.sh
 docker compose config --quiet
 export TP_TUNNEL_TOKEN_SOURCE="$PWD/secrets/tunnel_token"
 TP_CHECK_TUNNEL=1 bash scripts/check-compose-secrets.sh

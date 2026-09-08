@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# `docker compose config` validates interpolation, but it does not require
-# the source files for Compose secrets to exist. Run this gate before config or
-# deployment so a rendered-but-unstartable stack cannot be mistaken for a
-# validated deployment.
+# The app's master key and backup passphrase are initialized in the persistent
+# data directory by the `init-secrets` service. This gate is only for optional
+# Docker Secret files that are enabled through Compose overrides.
 check_file() {
   local label="$1" path="$2"
   if [[ ! -f "$path" || ! -r "$path" ]]; then
@@ -12,9 +11,6 @@ check_file() {
     exit 1
   fi
 }
-
-check_file master_key "${TP_MASTER_KEY_SOURCE:-./secrets/master_key}"
-check_file backup_passphrase "${TP_BACKUP_PASSPHRASE_SOURCE:-./secrets/backup_passphrase}"
 
 if [[ "${TP_CHECK_TUNNEL:-0}" == "1" ]]; then
   check_file tunnel_token "${TP_TUNNEL_TOKEN_SOURCE:-./secrets/tunnel_token}"

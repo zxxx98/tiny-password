@@ -4,17 +4,19 @@ Tiny Password 是一个面向个人与家庭共享保险库的自托管密码管
 
 ## 快速开始
 
+首次执行 `docker compose up -d` 时，Compose 会先运行一次性
+`init-secrets` 服务：在 `${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}` 中自动生成
+主密钥和备份口令，然后再启动 app。已有数据库但缺少密钥时会拒绝启动，不会覆盖或重建密钥。
+
 ```bash
-umask 077
-mkdir -p secrets
-head -c 32 /dev/urandom > secrets/master_key
-openssl rand -base64 32 > secrets/backup_passphrase
-chmod 0700 secrets
-sudo chown "$(id -u)":10001 secrets/master_key secrets/backup_passphrase
-chmod 0640 secrets/master_key secrets/backup_passphrase
+export TP_DATA_DIR_HOST=/mnt/data/tiny-password
 docker compose build
 docker compose up -d
 ```
+
+使用 GHCR 镜像并直接暴露本机 `29998` 端口时，可将
+[`deploy/compose.ghcr.yaml`](/home/ubuntu/code/personal/tiny-password/deploy/compose.ghcr.yaml)
+导入 DPanel；其中 R2 凭据从 `CF_R2_ACCESS_KEY` 和 `CF_R2_SECRET_KEY` 环境变量读取。
 
 默认部署不向宿主机发布端口。生产访问请启用[Cloudflare Tunnel](docs/operations/tunnel.md)或接入已有 HTTPS 反向代理；完整步骤见[部署说明](docs/operations/deploy.md)。
 
@@ -29,7 +31,7 @@ docker compose up -d
 ## 安全边界
 
 - 浏览器会话和 CSRF 状态只在内存中；PWA 只预缓存明确列出的静态资源，不缓存 API、归档或导航响应。
-- 主密钥只从只读 Secret 文件读取，恢复不能覆盖目标 Secret；敏感的归档中间数据只允许进入验证过的 tmpfs。
+- 主密钥只从受控 Secret 文件读取，恢复不能覆盖目标 Secret；敏感的归档中间数据只允许进入验证过的 tmpfs。
 - 默认 Cookie 为 Secure/HttpOnly/SameSite=Lax；普通 HTTP 放宽必须显式设置 `TP_ALLOW_INSECURE_COOKIES=1`，仅限开发/评估。
 - 生产 Tunnel/反代部署必须使用浏览器信任的 HTTPS；可信代理网段通过 `TP_TRUSTED_PROXY_CIDRS` 明确配置，默认不信任转发头。
 

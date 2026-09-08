@@ -4,7 +4,7 @@
 
 ## 配置备份
 
-1. 用 `secrets/backup_passphrase` 提供备份口令。
+1. 用 `${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}/.secrets/backup_passphrase` 提供备份口令。
 2. 启动管理员页面的备份设置，分别配置 local 与 R2 目标的启停、时刻、时区和保留数。
 3. R2 credential 以 `deploy/compose.r2.yaml` 只读 Secret 挂载，endpoint/bucket/prefix 只从管理员系统页写入；不要把 credential 填进设置表单。
 4. 先执行一次手动备份，确认每个启用目标独立成功，再确认 `backup_runs` 和审计页中的脱敏结果。
@@ -30,16 +30,16 @@ docker run --rm \
   -e TP_DATA_DIR=/data \
   -e TP_MASTER_KEY_FILE=/run/secrets/master_key \
   -e TP_BACKUP_PASSPHRASE_FILE=/run/secrets/backup_passphrase \
-  -v tiny-password_app-data:/data \
+  -v "${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}:/data" \
   -v "$PWD/restore/backup.7z:/restore/backup.7z:ro" \
   -v "$PWD/secrets/restore_master_key:/run/secrets/master_key:ro" \
-  -v "$PWD/secrets/backup_passphrase:/run/secrets/backup_passphrase:ro" \
+  -v "${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}/.secrets/backup_passphrase:/run/secrets/backup_passphrase:ro" \
   --tmpfs /tmp:mode=700,uid=10001,gid=10001,size=512m \
   --user 10001:10001 \
   tiny-password:dev restore /restore/backup.7z
 ```
 
-实际项目名或卷名不同时替换 `tiny-password_app-data`。restore 的临时源密钥和解包目录必须位于验证过的 tmpfs；`TP_RESTORE_WORK_DIR` 若显式设置到普通磁盘会 fail closed。不要把 `TP_RESTORE_WORK_DIR` 指向 `/tmp` 根目录，应用会在其下创建并只清理自己的私有 session 子目录。
+restore 的临时源密钥和解包目录必须位于验证过的 tmpfs；`TP_RESTORE_WORK_DIR` 若显式设置到普通磁盘会 fail closed。不要把 `TP_RESTORE_WORK_DIR` 指向 `/tmp` 根目录，应用会在其下创建并只清理自己的私有 session 子目录。恢复成功后，把 `secrets/restore_master_key` 作为数据目录中的 `.secrets/master_key` 受控保存，再启动 Compose。
 
 恢复输出只包含 stage/code/request_id 等脱敏信息。成功后：
 

@@ -1,6 +1,6 @@
 # Secret 生成与保管
 
-Tiny Password 不生成替代主密钥，也不把 secret 写入数据库、备份 manifest、审计或 API 响应。凭据通过 Docker Secret 文件或受控环境变量注入，应用在响应中最多暴露“凭据是否已配置”的布尔状态。
+应用不会生成替代主密钥，也不把 secret 写入数据库、备份 manifest、审计或 API 响应。默认 Compose 的一次性 `init-secrets` 服务只在还没有数据库且对应文件不存在时生成初始主密钥和备份口令；应用本身仍只从文件读取凭据。
 
 ## 文件
 
@@ -8,8 +8,8 @@ Tiny Password 不生成替代主密钥，也不把 secret 写入数据库、备�
 
 | 文件 | 用途 | 丢失后果 |
 | --- | --- | --- |
-| `secrets/master_key` | 解密保险库、实例幂等指纹和恢复目标密钥 | 加密负载不可解密；不能重置替代 |
-| `secrets/backup_passphrase` | 创建/读取加密实例归档 | 该口令保护的归档不可读取 |
+| `${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}/.secrets/master_key` | 解密保险库、实例幂等指纹和恢复目标密钥 | 加密负载不可解密；不能重置替代 |
+| `${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}/.secrets/backup_passphrase` | 创建/读取加密实例归档 | 该口令保护的归档不可读取 |
 | `secrets/tunnel_token` | 仅启用 Tunnel profile 时给 cloudflared | Tunnel 无法连接；不会影响本地 app |
 
 R2 需要额外的 `secrets/r2_access_key` 和 `secrets/r2_secret_key`，通过 `deploy/compose.r2.yaml` 挂载；它们不进入应用设置 API 和备份归档。
@@ -22,29 +22,15 @@ R2 需要额外的 `secrets/r2_access_key` 和 `secrets/r2_secret_key`，通过 
 
 即使使用环境变量，R2 的 endpoint、bucket 和 prefix 仍需在管理员系统页配置；endpoint 使用 Cloudflare 账号专属的 R2 S3 endpoint，应用签名区域为 `auto`。
 
-## 生成
+## 首次生成与保管
 
-在受控主机执行并保持 umask：
+首次执行 `docker compose up -d` 时，`init-secrets` 会在数据盘的 `.secrets/` 目录中生成文件，并设置为 `0600`、归属应用 UID/GID `10001:10001`。主密钥必须是恰好 32 个原始字节，不要用文本口令、十六进制字符串或带换行的编码替代。
 
-```bash
-umask 077
-mkdir -p secrets
-head -c 32 /dev/urandom > secrets/master_key
-openssl rand -base64 32 > secrets/backup_passphrase
-chmod 0600 secrets/master_key secrets/backup_passphrase
-```
+如果 `tiny-password.db` 已经存在而任一密钥缺失、为空或格式不正确，初始化会 fail closed；不要删除数据库或让 Compose 重新生成密钥，应从受控离线副本恢复原密钥。重启和升级会复用现有密钥，不会覆盖它们。
 
-主密钥必须是恰好 32 个原始字节，不要用文本口令、十六进制字符串或带换行的编码替代。备份口令可以是文本；创建归档后应使用独立的密码管理器保存，而不是只留在 Compose 项目目录。
+部署成功后，至少把 `.secrets/master_key` 和 `.secrets/backup_passphrase` 各保存一份不在该数据盘上的受控副本。备份口令可以是文本；创建归档后也应使用独立的密码管理器保存。
 
-本项目的普通 Docker Compose `secrets: file:` 在 Docker Engine 上由宿主文件 bind mount 实现，不会像 Swarm Secret 一样自动改成容器用户可读。应用以 UID/GID `10001` 的非 root 用户运行，因此在使用本地 Compose 时，还要保持 `secrets/` 目录为 `0700`，并让容器组读取文件：
-
-```bash
-chmod 0700 secrets
-sudo chown "$(id -u)":10001 secrets/master_key secrets/backup_passphrase
-chmod 0640 secrets/master_key secrets/backup_passphrase
-```
-
-这不会让其他宿主用户穿过 `secrets/` 目录；若使用支持原生 Secret 对象的编排环境，应使用该环境的 root-owned、只读 Secret 投影方式，不要把宿主文件权限规则直接照搬过去。
+使用支持原生 Secret 对象的编排环境时，应使用该环境的 root-owned、只读 Secret 投影方式，不要把 Compose 数据盘初始化方式直接照搬过去。
 
 Tunnel token 从 Cloudflare Dashboard 创建 remotely-managed Tunnel 后复制到受限文件：
 

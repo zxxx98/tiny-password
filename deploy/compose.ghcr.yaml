@@ -1,12 +1,9 @@
-# Tiny Password base deployment: initialize the data directory, then run the
-# application container.
-# The application has no host port by default. Use deploy/compose.lan.yaml for
-# a deliberately scoped LAN bind, or enable the tunnel profile below.
+# Standalone GHCR/DPanel deployment.
+# The default values match the intended local deployment: data on the data
+# disk, HTTP exposed on host port 29998, and R2 credentials supplied by the
+# CF_R2_ACCESS_KEY / CF_R2_SECRET_KEY environment variables.
 services:
   init-secrets:
-    # Docker Compose resolves `secrets: file:` before it creates any service,
-    # so a normal init container cannot create those files in time. Keep the
-    # bootstrap secrets in the persistent data directory instead.
     image: ${TP_INIT_SECRETS_IMAGE:-alpine:3.22}
     restart: "no"
     volumes:
@@ -29,8 +26,6 @@ services:
           exit 1
         }
 
-        # Never invent a new identity for an existing database. A missing or
-        # malformed key must be repaired from the operator's protected copy.
         if [ -e "$$database" ]; then
           [ -f "$$master_key" ] || fail "existing database found but master_key is missing"
           [ "$$(wc -c < "$$master_key")" -eq 32 ] || fail "existing database found but master_key is not 32 bytes"
@@ -61,8 +56,6 @@ services:
           mv "$$tmp_backup_passphrase" "$$backup_passphrase"
         fi
 
-        # The app image runs as UID/GID 10001 and needs to write SQLite WAL
-        # files and local backups in the bind-mounted data directory.
         chown 10001:10001 "$$data_dir" "$$data_dir/backups" "$$secret_dir" "$$master_key" "$$backup_passphrase"
         for database_file in "$$database" "$$database-wal" "$$database-shm"; do
           if [ -e "$$database_file" ]; then
@@ -72,15 +65,15 @@ services:
         chmod 0600 "$$master_key" "$$backup_passphrase"
 
   app:
-    build: .
-    image: tiny-password:dev
+    image: ${TP_IMAGE:-ghcr.io/zxxx98/tiny-password:latest}
     depends_on:
       init-secrets:
         condition: service_completed_successfully
+    ports:
+      - "${TP_HTTP_PORT:-29998}:8080"
     volumes:
       - "${TP_DATA_DIR_HOST:-/mnt/data/tiny-password}:/data"
     tmpfs:
-      # Restricted scratch space for sensitive temporary files (D11).
       - /tmp:mode=700,uid=10001,gid=10001,size=512m
     environment:
       TP_ADDR: ":8080"
@@ -88,10 +81,10 @@ services:
       TP_MASTER_KEY_FILE: /data/.secrets/master_key
       TP_BACKUP_PASSPHRASE_FILE: /data/.secrets/backup_passphrase
       TP_BACKUP_DIR: /data/backups
-      TP_ALLOW_INSECURE_COOKIES: ${TP_ALLOW_INSECURE_COOKIES:-0}
-      TP_TRUSTED_PROXY_CIDRS: ${TP_TRUSTED_PROXY_CIDRS:-}
-      TP_R2_ACCESS_KEY: "${TP_R2_ACCESS_KEY:-}"
-      TP_R2_SECRET_KEY: "${TP_R2_SECRET_KEY:-}"
+      TP_ALLOW_INSECURE_COOKIES: "${TP_ALLOW_INSECURE_COOKIES:-0}"
+      TP_TRUSTED_PROXY_CIDRS: "${TP_TRUSTED_PROXY_CIDRS:-}"
+      TP_R2_ACCESS_KEY: "${CF_R2_ACCESS_KEY:-}"
+      TP_R2_SECRET_KEY: "${CF_R2_SECRET_KEY:-}"
     read_only: true
     init: true
     cap_drop: [ALL]
@@ -111,26 +104,3 @@ services:
       start_period: 10s
       retries: 3
     restart: unless-stopped
-
-  tunnel:
-    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
-    profiles: ["tunnel"]
-    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/run/secrets/tunnel_token"]
-    depends_on:
-      app:
-        condition: service_healthy
-    secrets:
-      - tunnel_token
-    read_only: true
-    init: true
-    cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    stop_grace_period: 30s
-    restart: unless-stopped
-
-secrets:
-  tunnel_token:
-    # The inactive profile must not make the default app deployment depend on
-    # a Tunnel file. Set TP_TUNNEL_TOKEN_SOURCE before enabling the profile.
-    file: ${TP_TUNNEL_TOKEN_SOURCE:-/dev/null}
