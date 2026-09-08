@@ -19,8 +19,9 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
-  smoke:
-    name: Build and run ${{ matrix.arch }}
+  validate:
+    name: Validate ${{ matrix.arch }} full release
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -30,47 +31,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build architecture image
+      - name: Build validation image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           platforms: linux/${{ matrix.arch }}
           load: true
-          tags: tiny-password:smoke-${{ matrix.arch }}
-          build-args: VERSION=smoke-${{ matrix.arch }}
+          tags: tiny-password:validate-${{ matrix.arch }}
+          build-args: VERSION=validate-${{ matrix.arch }}
+          cache-from: type=gha,scope=tiny-password-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=tiny-password-${{ matrix.arch }}
       - name: Run real application acceptance
         env:
-          IMAGE: tiny-password:smoke-${{ matrix.arch }}
+          IMAGE: tiny-password:validate-${{ matrix.arch }}
         run: bash scripts/test-e2e.sh
       - name: Run the bundled 7-Zip binary
-        run: docker run --rm --platform linux/${{ matrix.arch }} --entrypoint /usr/local/bin/7zz tiny-password:smoke-${{ matrix.arch }} i
-
-  scan:
-    name: Scan ${{ matrix.arch }} candidate
-    needs: smoke
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: Build candidate locally
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/${{ matrix.arch }}
-          load: true
-          tags: tiny-password:scan-${{ matrix.arch }}
-          build-args: VERSION=scan-${{ matrix.arch }}
-      - name: Scan candidate image
+        run: docker run --rm --platform linux/${{ matrix.arch }} --entrypoint /usr/local/bin/7zz tiny-password:validate-${{ matrix.arch }} i
+      - name: Scan validation image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: tiny-password:scan-${{ matrix.arch }}
+          image-ref: tiny-password:validate-${{ matrix.arch }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
@@ -79,9 +60,21 @@ jobs:
 
   publish:
     name: Publish multi-architecture image
-    needs: [smoke, scan]
+    needs: [validate]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # Master/manual dispatch are fast paths; full v*.*.* tags require validate.
+    if: >-
+      always() &&
+      (
+        github.ref == 'refs/heads/master' ||
+        startsWith(github.ref, 'refs/tags/v') ||
+        github.event_name == 'workflow_dispatch'
+      ) &&
+      (
+        github.ref == 'refs/heads/master' ||
+        github.event_name == 'workflow_dispatch' ||
+        needs.validate.result == 'success'
+      )
     permissions:
       contents: read
       packages: write
@@ -116,6 +109,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: |
+            type=gha,scope=tiny-password-publish
+            type=gha,scope=tiny-password-amd64
+            type=gha,scope=tiny-password-arm64
+          cache-to: type=gha,mode=max,scope=tiny-password-publish
           provenance: mode=max
           sbom: true
       - name: Inspect published manifest
