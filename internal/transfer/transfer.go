@@ -197,6 +197,7 @@ func (s *Service) Export(ctx context.Context, actor *auth.Principal, input Expor
 		payloadFile := itemPayloadFile{
 			ItemType: item.Meta.ItemType,
 			Tags:     item.Tags,
+			Favorite: item.Meta.Favorite,
 			Payload:  mustMarshal(item.Payload),
 		}
 		raw, err := json.Marshal(payloadFile)
@@ -300,7 +301,7 @@ func (s *Service) Preview(ctx context.Context, actor *auth.Principal, archiveByt
 		return result, err
 	}
 
-	dest, entries, err := archive.Extract(ctx, uploadPath, passphrase, s.workDir)
+	dest, _, err := archive.Extract(ctx, uploadPath, passphrase, s.workDir)
 	if err != nil {
 		return result, err
 	}
@@ -318,10 +319,8 @@ func (s *Service) Preview(ctx context.Context, actor *auth.Principal, archiveByt
 		return result, fmt.Errorf("%w: %s", archive.ErrBadArchive, err.Error())
 	}
 
-	// Verify digests and decode the payloads; count conflicts and reference
-	// gaps. Nothing touches the database.
+	// Verify digests and decode the payloads. Nothing touches the database.
 	staged := make([]vault.ImportItem, 0, len(manifest.Files))
-	result.Counts = map[string]int{}
 	for _, f := range manifest.Files {
 		relativePath, err := checkedManifestPath(f)
 		if err != nil {
@@ -345,27 +344,62 @@ func (s *Service) Preview(ctx context.Context, actor *auth.Principal, archiveByt
 			return result, fmt.Errorf("%w: %s", archive.ErrBadArchive, err.Error())
 		}
 		staged = append(staged, vault.ImportItem{
-			OriginalID: f.ID, ItemType: f.Type, Scope: f.Scope, Tags: pf.Tags, Payload: pf.Payload,
+			OriginalID: f.ID, ItemType: f.Type, Scope: f.Scope, Tags: pf.Tags,
+			Favorite: pf.Favorite, Payload: pf.Payload,
 		})
-		result.Counts[f.Type]++
+	}
+	return s.previewItems(ctx, actor, staged)
+}
+
+// PreviewBitwarden validates and normalizes an unencrypted Bitwarden JSON
+// export before staging it for the same explicit confirmation flow as archive
+// imports. It performs no database writes.
+func (s *Service) PreviewBitwarden(ctx context.Context, actor *auth.Principal, raw []byte) (PreviewResult, error) {
+	result := PreviewResult{MissingReferences: []string{}}
+	if actor == nil {
+		return result, auth.ErrUnauthorized
+	}
+	items, err := ParseBitwardenJSON(raw)
+	if err != nil {
+		return result, fmt.Errorf("%w: %s", archive.ErrBadArchive, err.Error())
+	}
+	return s.previewItems(ctx, actor, items)
+}
+
+// previewItems computes the preview metadata and stages normalized items for
+// confirmation. Both archive and third-party format previews use this method
+// so the signed token and plaintext cleanup rules cannot diverge.
+func (s *Service) previewItems(ctx context.Context, actor *auth.Principal, staged []vault.ImportItem) (PreviewResult, error) {
+	result := PreviewResult{Counts: map[string]int{}, MissingReferences: []string{}}
+	if actor == nil {
+		return result, auth.ErrUnauthorized
+	}
+	if len(staged) == 0 {
+		return result, fmt.Errorf("%w: preview contains no items", archive.ErrBadArchive)
+	}
+	for _, item := range staged {
+		result.Counts[item.ItemType]++
 	}
 	// Reference check runs after all IDs are known (two passes).
 	archivedIDs := map[string]bool{}
 	for _, item := range staged {
-		archivedIDs[item.OriginalID] = true
+		if item.OriginalID != "" {
+			archivedIDs[item.OriginalID] = true
+		}
 	}
 	for _, item := range staged {
 		if ref, ok := billingRef(item.Payload); ok && !archivedIDs[ref] {
 			result.MissingReferences = append(result.MissingReferences, ref)
 		}
 	}
-	// Conflicts: IDs that already exist for anyone.
+	// Conflicts: IDs that already exist for anyone. External-format imports
+	// intentionally leave OriginalID empty and therefore always allocate a new
+	// local ID during confirmation.
 	for _, item := range staged {
-		if s.vault.IDExists(ctx, item.OriginalID) {
+		if item.OriginalID != "" && s.vault.IDExists(ctx, item.OriginalID) {
 			result.Conflicts++
 		}
 	}
-	_ = entries
 
 	// Stage the payloads for the confirm step and sign the token.
 	tokenPayload, err := json.Marshal(staged)

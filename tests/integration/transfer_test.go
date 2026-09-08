@@ -35,6 +35,7 @@ func newTransferHarness(t *testing.T) *transferHarness {
 
 func TestTransferImportPreservesFavorite(t *testing.T) {
 	h := newTransferHarness(t)
+	h.itemClient(t, "alice")
 	principal := h.principalOf(t, "alice")
 	_, _, err := h.vault.ImportAll(t.Context(), principal, []vault.ImportItem{{
 		ItemType: vault.TypeLogin, Scope: string(vault.ScopePersonal), Favorite: true,
@@ -54,8 +55,9 @@ func TestTransferImportPreservesFavorite(t *testing.T) {
 
 func TestTransferBitwardenPreviewIsWriteFree(t *testing.T) {
 	h := newTransferHarness(t)
+	client := h.itemClient(t, "alice")
 	principal := h.principalOf(t, "alice")
-	before := h.listCount(t, h.itemClient(t, "alice"), "/items")
+	before := h.listCount(t, client, "/items")
 	svc, err := transfer.NewService(h.vault, transfer.Options{
 		WorkDir: t.TempDir(), HMACKey: bytes.Repeat([]byte{0x72}, 32),
 		Audit: audit.NewService(audit.Options{}), DB: h.db.DB, Now: h.clock.Now,
@@ -71,7 +73,7 @@ func TestTransferBitwardenPreviewIsWriteFree(t *testing.T) {
 	if result.Counts["login"] != 1 || result.Token == "" || result.Conflicts != 0 || len(result.MissingReferences) != 0 {
 		t.Fatalf("unexpected preview: %#v", result)
 	}
-	if after := h.listCount(t, h.itemClient(t, "alice"), "/items"); after != before {
+	if after := h.listCount(t, client, "/items"); after != before {
 		t.Fatalf("preview changed row count: before=%d after=%d", before, after)
 	}
 }

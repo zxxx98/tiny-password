@@ -41,6 +41,7 @@ type ManifestFile struct {
 type itemPayloadFile struct {
 	ItemType string          `json:"item_type"`
 	Tags     []string        `json:"tags,omitempty"`
+	Favorite bool            `json:"favorite,omitempty"`
 	Payload  json.RawMessage `json:"payload"`
 }
 

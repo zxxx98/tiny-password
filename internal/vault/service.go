@@ -969,7 +969,7 @@ func (s *Service) ImportAllWithHook(ctx context.Context, actor *auth.Principal, 
 			ID: id, Scope: scope,
 			OwnerID:   sql.NullString{String: ownerID, Valid: ownerID != ""},
 			CreatorID: sql.NullString{String: creatorID, Valid: creatorID != ""},
-			ItemType:  items[i].ItemType, Favorite: false,
+			ItemType:  items[i].ItemType, Favorite: items[i].Favorite,
 			PayloadVersion: enc.Version, Nonce: enc.Nonce[:], Ciphertext: enc.Ciphertext,
 			Revision: 1, CreatedAt: at, UpdatedAt: at,
 		}
