@@ -81,8 +81,21 @@ describe("AppShell", () => {
     expect(screen.getAllByRole("link", { name: "系统" }).length).toBeGreaterThan(0);
   });
 
+  it("keeps the Android install UI out of desktop browsers", () => {
+    dispatchInstallPrompt(vi.fn().mockResolvedValue(undefined), Promise.resolve({ outcome: "accepted", platform: "web" }));
+    render(
+      <AppShell>
+        <p>内容</p>
+      </AppShell>,
+    );
+    expect(screen.queryByTestId("pwa-install")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "安装 Tiny Password" })).not.toBeInTheDocument();
+  });
+
   it("offers the native install prompt from a user action", async () => {
     const user = userEvent.setup();
+    const originalUserAgent = navigator.userAgent;
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: `${originalUserAgent} Android` });
     const prompt = vi.fn().mockResolvedValue(undefined);
     dispatchInstallPrompt(prompt, Promise.resolve({ outcome: "accepted", platform: "web" }));
     render(
@@ -94,7 +107,9 @@ describe("AppShell", () => {
     expect(screen.getByRole("dialog", { name: "安装 Tiny Password" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "安装应用" }));
     await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
-    expect(screen.queryByTestId("pwa-install")).not.toBeInTheDocument();
+    window.dispatchEvent(new Event("appinstalled"));
+    await waitFor(() => expect(screen.queryByTestId("pwa-install")).not.toBeInTheDocument());
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: originalUserAgent });
   });
 });
 

@@ -1,7 +1,7 @@
 export const PWA_UPDATE_EVENT = "tp:pwa-update-available";
 export const PWA_INSTALL_STATE_EVENT = "tp:pwa-install-state";
 
-export type PwaInstallState = "unavailable" | "available" | "installed";
+export type PwaInstallState = "unavailable" | "available" | "installing" | "installed";
 
 export type PwaInstallStateDetail = {
   state: PwaInstallState;
@@ -28,6 +28,14 @@ function isStandaloneDisplayMode(): boolean {
   if (typeof window === "undefined") return false;
   const standaloneNavigator = navigator as Navigator & { standalone?: boolean };
   return Boolean(standaloneNavigator.standalone) || window.matchMedia?.("(display-mode: standalone)").matches === true;
+}
+
+export function isAndroidDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const navigatorWithUserAgentData = navigator as Navigator & {
+    userAgentData?: { platform?: string };
+  };
+  return /Android/i.test(navigator.userAgent) || navigatorWithUserAgentData.userAgentData?.platform === "Android";
 }
 
 function announceInstallState(state: PwaInstallState): void {
@@ -108,15 +116,16 @@ export async function promptPwaInstall(): Promise<PwaInstallOutcome> {
   if (!promptEvent) return "unavailable";
 
   deferredInstallPrompt = null;
-  announceInstallState("unavailable");
+  announceInstallState("installing");
   try {
     await promptEvent.prompt();
     const choice = await promptEvent.userChoice;
-    if (choice.outcome === "accepted") {
-      announceInstallState("installed");
+    if (choice.outcome === "dismissed") {
+      announceInstallState("unavailable");
     }
     return choice.outcome;
   } catch {
+    announceInstallState("unavailable");
     return "unavailable";
   }
 }

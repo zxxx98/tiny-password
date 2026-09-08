@@ -8,6 +8,7 @@ import {
   activatePwaUpdate,
   dismissPwaUpdate,
   getPwaInstallState,
+  isAndroidDevice,
   PWA_INSTALL_STATE_EVENT,
   PWA_UPDATE_EVENT,
   promptPwaInstall,
@@ -59,9 +60,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { principal } = useSession();
   const items = navItemsFor(principal?.role ?? null);
   const path = usePath();
+  const androidDevice = isAndroidDevice();
   const [update, setUpdate] = useState<ServiceWorkerRegistration | null>(null);
   const [installState, setInstallState] = useState<PwaInstallState>(() => getPwaInstallState());
-  const [installDialogOpen, setInstallDialogOpen] = useState(() => getPwaInstallState() === "available");
+  const [installDialogOpen, setInstallDialogOpen] = useState(
+    () => androidDevice && getPwaInstallState() === "available",
+  );
   const [installing, setInstalling] = useState(false);
   const [installHelp, setInstallHelp] = useState(false);
 
@@ -77,12 +81,18 @@ export function AppShell({ children }: { children: ReactNode }) {
     const onInstallState = (event: Event) => {
       const state = (event as CustomEvent<{ state: PwaInstallState }>).detail.state;
       setInstallState(state);
-      if (state === "available") setInstallDialogOpen(true);
+      if (state === "available" && isAndroidDevice()) setInstallDialogOpen(true);
       if (state === "installed") setInstallDialogOpen(false);
     };
     window.addEventListener(PWA_INSTALL_STATE_EVENT, onInstallState);
     return () => window.removeEventListener(PWA_INSTALL_STATE_EVENT, onInstallState);
   }, []);
+
+  useEffect(() => {
+    if (installState !== "installing") return;
+    const timeout = window.setTimeout(() => setInstallHelp(true), 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [installState]);
 
   const deferUpdate = () => {
     dismissPwaUpdate();
@@ -98,7 +108,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     setInstalling(true);
     const outcome = await promptPwaInstall();
     setInstalling(false);
-    if (outcome === "unavailable") setInstallHelp(true);
+    if (outcome !== "accepted") setInstallHelp(true);
   };
 
   const confirmInstall = () => {
@@ -108,7 +118,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-screen flex-col">
-      {installState !== "installed" && (
+      {androidDevice && installState !== "installed" && (
         <aside
           className="border-b border-ink bg-ink px-4 py-3 text-paper"
           aria-label="安装 Tiny Password"
@@ -122,14 +132,16 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Button
               variant="secondary"
               onClick={installApp}
-              disabled={installing}
+              disabled={installing || installState === "installing"}
               className="border-paper text-paper hover:border-paper hover:bg-paper hover:text-ink"
             >
-              {installing ? "正在打开…" : "安装到桌面"}
+              {installing || installState === "installing" ? "正在安装…" : "安装到桌面"}
             </Button>
             {installHelp && (
               <p className="basis-full font-mono text-[11px] leading-relaxed text-neutral-400" role="status">
-                {!window.isSecureContext
+                {installState === "installing"
+                  ? "Chrome 已接受安装请求，但还未确认完成。请稍等片刻；如果桌面仍没有图标，请打开 Chrome 右上角 ⋮ 菜单重试“安装应用”。"
+                  : !window.isSecureContext
                   ? "当前地址不是 HTTPS，Android Chrome 不会提供安装能力。请先通过 HTTPS（或 localhost）访问。"
                   : "当前浏览器尚未提供一键安装，请打开右上角 ⋮ 菜单，选择“添加到主屏幕”或“安装应用”。"}
               </p>
@@ -138,7 +150,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </aside>
       )}
       <ConfirmDialog
-        open={installDialogOpen && installState === "available"}
+        open={androidDevice && installDialogOpen && installState === "available"}
         title="安装 Tiny Password"
         description={
           <div className="flex items-start gap-4">
