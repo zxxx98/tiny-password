@@ -429,7 +429,7 @@ export function TransferPage() {
         </p>
         {importFormat === "bitwarden" && (
           <p className="font-body text-xs text-neutral-500">
-            仅支持未加密的 Bitwarden JSON 导出；CSV 和加密导出暂不支持。导入条目会成为你的个人条目。
+            仅导入登录条目的名称、用户名、密码和网址；卡片、身份、安全笔记、备注、TOTP、自定义字段、附件及文件夹等内容会跳过。仅支持未加密 JSON，CSV 和加密导出暂不支持。
           </p>
         )}
         <Field

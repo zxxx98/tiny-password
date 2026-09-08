@@ -985,12 +985,15 @@ paths:
       tags: [transfer]
       summary: Upload an unencrypted Bitwarden JSON export and get a preview
       description: |
-        Accepts only the unencrypted JSON export produced by Bitwarden. Login,
-        secure note, card, and identity items are converted into personal items
-        owned by the caller. CSV, encrypted exports, SSH-key items, and unknown
-        item types are rejected as a whole. The request is capped at 96 MiB and
-        the file at 64 MiB. Preview performs zero database writes; use the
-        format-neutral confirm endpoint with the returned token to commit.
+        Accepts only the unencrypted JSON export produced by Bitwarden. Only
+        type 1 Login items are imported as personal items owned by the caller,
+        carrying the item name, username, password, and non-empty login URLs.
+        Secure notes, cards, identities, SSH keys, unknown item types, notes,
+        TOTP, custom fields, attachments, folders, and favorites are skipped.
+        An export with no login items is rejected. CSV and encrypted exports
+        are unsupported. The request is capped at 96 MiB and the file at 64
+        MiB. Preview performs zero database writes; use the format-neutral
+        confirm endpoint with the returned token to commit.
       requestBody:
         required: true
         content:

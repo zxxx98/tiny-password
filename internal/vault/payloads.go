@@ -228,16 +228,6 @@ func (p *SecureNotePayload) validate() error {
 	return requiredText("body", p.Body, MaxNoteBodyRunes)
 }
 
-func (p *SecureNotePayload) validateForImport(allowEmptyBody bool) error {
-	if !allowEmptyBody {
-		return p.validate()
-	}
-	if err := requiredText("name", p.Name, MaxNameRunes); err != nil {
-		return err
-	}
-	return optionalText("body", p.Body, MaxNoteBodyRunes)
-}
-
 // requiredText enforces presence (JSON required + minLength 1) and the
 // code-point limit.
 func requiredText(field, value string, maxRunes int) error {

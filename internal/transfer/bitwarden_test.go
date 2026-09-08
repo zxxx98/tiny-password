@@ -8,7 +8,7 @@ import (
 	"github.com/tiny-password/tiny-password/internal/vault"
 )
 
-func TestParseBitwardenJSONMapsSupportedItems(t *testing.T) {
+func TestParseBitwardenJSONImportsOnlyLoginCredentials(t *testing.T) {
 	raw := []byte(`{
   "encrypted": false,
   "folders": [{"id":"folder-1","name":"Personal"}],
@@ -30,11 +30,10 @@ func TestParseBitwardenJSONMapsSupportedItems(t *testing.T) {
 	if err != nil {
 		t.Fatal("parse failed")
 	}
-	if len(items) != 4 {
-		t.Fatalf("items=%d, want 4", len(items))
+	if len(items) != 1 {
+		t.Fatalf("items=%d, want 1 login item", len(items))
 	}
-	if items[0].ItemType != vault.TypeLogin || !items[0].Favorite ||
-		len(items[0].Tags) != 1 || items[0].Tags[0] != "Personal" {
+	if items[0].ItemType != vault.TypeLogin || items[0].Favorite || len(items[0].Tags) != 0 {
 		t.Fatalf("login metadata: %#v", items[0])
 	}
 	var login vault.LoginPayload
@@ -43,30 +42,8 @@ func TestParseBitwardenJSONMapsSupportedItems(t *testing.T) {
 	}
 	if login.Username != "alice" || login.Password != "secret" ||
 		len(login.URLs) != 1 || login.URLs[0] != "https://example.test" ||
-		!strings.Contains(login.Notes, "TOTP") || !strings.Contains(login.Notes, "Recovery") {
+		login.Name != "Example" || login.Notes != "" {
 		t.Fatalf("login payload: %#v", login)
-	}
-	var note vault.SecureNotePayload
-	if err := json.Unmarshal(items[1].Payload, &note); err != nil {
-		t.Fatal(err)
-	}
-	if note.Name != "Empty note" || note.Body != "" {
-		t.Fatalf("note payload: %#v", note)
-	}
-	var card vault.CreditCardPayload
-	if err := json.Unmarshal(items[2].Payload, &card); err != nil {
-		t.Fatal(err)
-	}
-	if card.ExpMonth != 2 || card.ExpYear != 2030 || card.CVV != "123" {
-		t.Fatalf("card payload: %#v", card)
-	}
-	var identity vault.IdentityPayload
-	if err := json.Unmarshal(items[3].Payload, &identity); err != nil {
-		t.Fatal(err)
-	}
-	if identity.FullName != "Alice Example" || identity.AddressLine != "One Way" ||
-		identity.PostalCode != "12345" {
-		t.Fatalf("identity payload: %#v", identity)
 	}
 	for _, item := range items {
 		if item.OriginalID != "" || item.Scope != string(vault.ScopePersonal) {
@@ -87,11 +64,9 @@ func TestParseBitwardenJSONRejectsInvalidExportsWithoutSecrets(t *testing.T) {
 		{name: "missing encrypted flag", raw: `{"items":[{"id":"item-1","type":1,"name":"name","login":{}}]}`, secret: "DO_NOT_LEAK"},
 		{name: "encrypted export", raw: strings.Replace(valid, "false", "true", 1), secret: "DO_NOT_LEAK"},
 		{name: "empty items", raw: `{"encrypted":false,"items":[]}`, secret: "DO_NOT_LEAK"},
+		{name: "no login items", raw: `{"encrypted":false,"items":[{"id":"card-1","type":3,"name":"card"}]}`, secret: "DO_NOT_LEAK"},
 		{name: "duplicate ids", raw: `{"encrypted":false,"items":[{"id":"same","type":1,"name":"one","login":{}},{"id":"same","type":1,"name":"two","login":{}}]}`, secret: "DO_NOT_LEAK"},
-		{name: "missing folder", raw: `{"encrypted":false,"folders":[],"items":[{"id":"item-1","folderId":"missing","type":1,"name":"name","login":{}}]}`, secret: "DO_NOT_LEAK"},
-		{name: "ssh key type", raw: `{"encrypted":false,"items":[{"id":"item-1","type":5,"name":"key"}]}`, secret: "DO_NOT_LEAK"},
-		{name: "unknown type", raw: `{"encrypted":false,"items":[{"id":"item-1","type":99,"name":"unknown"}]}`, secret: "DO_NOT_LEAK"},
-		{name: "invalid card month", raw: `{"encrypted":false,"items":[{"id":"item-1","type":3,"name":"card","card":{"cardholderName":"Alice","number":"1","expMonth":"13","expYear":"2030"}}]}`, secret: "DO_NOT_LEAK"},
+		{name: "only unsupported types", raw: `{"encrypted":false,"items":[{"id":"item-1","type":5,"name":"key"},{"id":"item-2","type":99,"name":"unknown"}]}`, secret: "DO_NOT_LEAK"},
 		{name: "target limit", raw: tooLongName, secret: "DO_NOT_LEAK"},
 	}
 	for _, tc := range cases {

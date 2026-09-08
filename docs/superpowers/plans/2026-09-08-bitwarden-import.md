@@ -2,9 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** Add a safe, previewable Bitwarden JSON importer that converts supported unencrypted exports into append-only personal vault items.
+**Goal:** Add a safe, previewable Bitwarden JSON importer that converts only
+Login credentials from unencrypted exports into append-only personal vault
+items.
 
-**Architecture:** Decode Bitwarden JSON in a pure transfer package component. Normalize it into the existing vault.ImportItem contract and send both archive and Bitwarden previews through one staging helper, preserving the existing signed token, session binding, cleanup, and atomic confirmation. The browser selects the source format; the server parses all secrets.
+**Architecture:** Decode Bitwarden JSON in a pure transfer package component.
+Normalize only Login credentials into the existing vault.ImportItem contract
+and send both archive and Bitwarden previews through one staging helper,
+preserving the existing signed token, session binding, cleanup, and atomic
+confirmation. The browser selects the source format; the server parses the
+credential fields.
 
 **Tech Stack:** Go 1.26, encoding/json, existing SQLite/vault/transfer services, httptest integration tests, React 19, TypeScript, Vitest, Testing Library, OpenAPI YAML.
 
@@ -12,10 +19,9 @@
 
 ## File map
 
-- Create internal/transfer/bitwarden.go for Bitwarden JSON types, validation, and conversion.
+- Create internal/transfer/bitwarden.go for Bitwarden JSON login types, validation, and conversion.
 - Create internal/transfer/bitwarden_test.go for pure parser tests.
 - Modify internal/vault/service.go to carry favorite through ImportItem and ImportAll.
-- Modify internal/vault/validation.go and payloads.go for shared tag validation and empty imported note bodies.
 - Modify internal/transfer/format.go and transfer.go for archive favorite compatibility and common staging.
 - Modify internal/httpapi/transfer.go and tests/integration/transfer_test.go for the endpoint.
 - Modify web/src/features/transfer/TransferPage.tsx and its test for the UI.
@@ -23,15 +29,15 @@
 
 ## Task 1: Define parser behavior with failing tests
 
-**Files:** Create internal/transfer/bitwarden_test.go; modify internal/vault/service.go after the test is red.
+**Files:** Create internal/transfer/bitwarden_test.go.
 
-- [ ] Step 1: Write a unit test named TestParseBitwardenJSONMapsSupportedItems.
+- [ ] Step 1: Write a unit test named TestParseBitwardenJSONImportsOnlyLoginCredentials.
 
 Use one JSON fixture with encrypted false, one folder, one favorite login with
-username/password/URI/TOTP/custom field, an empty secure note, a card with
-string expiration fields, and an identity with names and address. Assert four
-normalized items, folder name as a tag, favorite true, personal scope, empty
-OriginalID, exact mapped secrets, and a labeled extra-field block.
+username/password/URI/notes/TOTP/custom field, a secure note, a card, and an
+identity. Assert one normalized login item, personal scope, empty OriginalID,
+no tags or favorite state, exact name/username/password/URL mapping, and no
+notes or unsupported fields in the target payload.
 
 Use a fixture construction that does not put secrets in assertion failure text:
 
@@ -39,16 +45,14 @@ Use a fixture construction that does not put secrets in assertion failure text:
 raw := []byte("{\"encrypted\":false,\"folders\":[{\"id\":\"f1\",\"name\":\"Personal\"}],\"items\":[{\"id\":\"l1\",\"folderId\":\"f1\",\"type\":1,\"name\":\"Example\",\"favorite\":true,\"login\":{\"username\":\"alice\",\"password\":\"secret\",\"uris\":[{\"uri\":\"https://example.test\"}],\"totp\":\"JBSWY3DPEHPK3PXP\"},\"fields\":[{\"name\":\"Recovery\",\"value\":\"backup\",\"type\":0}]},{\"id\":\"n1\",\"type\":2,\"name\":\"Empty\",\"notes\":null},{\"id\":\"c1\",\"type\":3,\"name\":\"Visa\",\"card\":{\"cardholderName\":\"Alice\",\"number\":\"4111111111111111\",\"expMonth\":\"02\",\"expYear\":\"2030\",\"code\":\"123\"}},{\"id\":\"i1\",\"type\":4,\"name\":\"Alice\",\"identity\":{\"firstName\":\"Alice\",\"lastName\":\"Example\",\"email\":\"alice@example.test\",\"address1\":\"One Way\",\"city\":\"Town\",\"postalCode\":\"12345\"}}]}")
 items, err := ParseBitwardenJSON(raw)
 if err != nil { t.Fatal("parse failed") }
-if len(items) != 4 { t.Fatalf("wrong item count: %d", len(items)) }
+if len(items) != 1 { t.Fatalf("wrong item count: %d", len(items)) }
 ~~~
 
-Decode output payloads into vault.LoginPayload, vault.SecureNotePayload,
-vault.CreditCardPayload, and vault.IdentityPayload. Assert login URL order,
-TOTP/custom-field labels, card month/year integers, identity full name, and
-address. Add table cases rejecting malformed JSON, missing or true encrypted,
-empty items, duplicate IDs, missing folders, type 5, unknown types, invalid
-card dates, and target-limit overflow. Assert errors do not contain a source
-secret.
+Decode the output payload into vault.LoginPayload. Assert login URL order and
+that notes, TOTP, and custom fields are absent. Add table cases rejecting
+malformed JSON, missing or true encrypted, empty items, no Login items,
+duplicate Login IDs, and target-limit overflow. Assert errors do not contain a
+source secret. Non-Login types are skipped.
 
 - [ ] Step 2: Run the red test.
 
@@ -84,15 +88,16 @@ git commit -m "test: define Bitwarden import mappings"
 
 ## Task 2: Implement the pure converter
 
-**Files:** Create internal/transfer/bitwarden.go; modify internal/vault/validation.go and internal/vault/payloads.go; test internal/transfer/bitwarden_test.go.
+**Files:** Create internal/transfer/bitwarden.go; test internal/transfer/bitwarden_test.go.
 
 - [ ] Step 1: Add bounded root decoding.
 
-Define pointer-backed Encrypted, folder records, and Bitwarden item records.
+Define pointer-backed Encrypted and the Bitwarden item/login records needed for
+credential extraction.
 Do not reject unknown JSON fields because Bitwarden exports evolve. Require one
 JSON value with no trailing value, a present false encrypted flag, and at least
-one item. Reject empty/duplicate item IDs, duplicate or malformed folders, and
-item types outside 1 through 4.
+one item. Select type 1 Login records, reject empty/duplicate Login IDs and
+exports with no Login records, and skip every other item type.
 
 Expose:
 
@@ -104,62 +109,21 @@ func ParseBitwardenJSON(raw []byte) ([]vault.ImportItem, error)
 
 The parser must never place source names, IDs, or secret values in an error.
 
-- [ ] Step 2: Add the normalized metadata and extra-value helpers.
+- [ ] Step 2: Implement the normalized credential mapping.
 
-Set Scope to personal, OriginalID to empty, and copy Favorite. Resolve one
-folderId to one tag and validate it using the shared vault tag limit. Preserve
-TOTP, FIDO2 credentials, custom fields, attachment metadata, identity document
-numbers/username, and card brand in a deterministic JSON block appended to
-notes:
+Set Scope to personal and leave OriginalID, Tags, and Favorite empty. Map only
+the Login item's name, username, password, and non-empty URIs in source order.
+Do not copy notes, TOTP, custom fields, attachments, folders, or favorites.
+Marshal the target payload and validate it with the same vault payload
+validator used by archive imports. A malformed or over-limit Login rejects the
+whole preview; non-Login records remain ignored.
 
-~~~go
-func appendBitwardenExtras(notes string, extras bitwardenExtras) (string, error) {
-    if extras.empty() { return notes, nil }
-    raw, err := json.Marshal(extras)
-    if err != nil { return "", err }
-    block := "--- Bitwarden extra fields ---\n" + string(raw)
-    if notes == "" { return block, nil }
-    return notes + "\n\n" + block, nil
-}
-~~~
-
-Use JSON encoding for values so source newlines and quotes cannot alter labels.
-
-- [ ] Step 3: Implement login and secure-note mapping.
-
-Map name, username, password, non-empty URIs in source order, notes, and
-favorite. Map nullable secure-note notes to an empty body. Marshal each target
-payload and call vault.ValidatePayload plus the exported vault.ValidateTags
-before returning it.
-
-- [ ] Step 4: Implement card and identity mapping.
-
-Parse card expMonth and expYear with strconv.Atoi; target validation enforces
-month 1..12 and year 2000..9999. Map cardholder, number, code, name, and
-notes. Join identity first/middle/last with single spaces and address1/2/3
-with newlines. Map company, email, phone, country, state, city, and postal
-code. Missing required card values reject the complete import.
-
-- [ ] Step 5: Share validation and allow empty imported note bodies.
-
-Add to validation.go:
-
-~~~go
-func ValidateTags(tags []string) ([]string, error) {
-    return validateTags(tags)
-}
-~~~
-
-Change only SecureNotePayload.validate to use optionalText for body, retaining
-required name and the 65536-rune body limit. Leave browser authoring validation
-unchanged.
-
-- [ ] Step 6: Run green focused tests and commit.
+- [ ] Step 3: Run green focused tests and commit.
 
 ~~~bash
-gofmt -w internal/transfer/bitwarden.go internal/transfer/bitwarden_test.go internal/vault/validation.go internal/vault/payloads.go internal/vault/service.go
+gofmt -w internal/transfer/bitwarden.go internal/transfer/bitwarden_test.go
 go test ./internal/transfer ./internal/vault -run 'TestParseBitwardenJSON|Test.*SecureNote|Test.*Payload' -count=1
-git add internal/transfer/bitwarden.go internal/transfer/bitwarden_test.go internal/vault/validation.go internal/vault/payloads.go internal/vault/service.go
+git add internal/transfer/bitwarden.go internal/transfer/bitwarden_test.go
 git commit -m "feat: parse Bitwarden JSON exports"
 ~~~
 
@@ -373,9 +337,9 @@ git commit -m "feat: add Bitwarden import controls"
 
 - [ ] Step 1: Add /transfer/import/bitwarden/preview as authenticated POST with
 multipart file binary input, no passphrase, 64 MiB file and 96 MiB request limits,
-and ImportPreview response. State that only unencrypted JSON with login,
-secure note, card, and identity records is accepted; any unsupported type
-rejects the whole preview.
+and ImportPreview response. State that only unencrypted JSON Login records are
+imported; non-Login types are skipped and an export with no Login record is
+rejected.
 
 - [ ] Step 2: Validate and commit.
 
@@ -410,8 +374,8 @@ npm --prefix web run build
 ~~~
 
 - [ ] Step 4: Audit the committed design against files and tests. Verify server
-parser, encrypted rejection, four mappings, extras, folder tags, fresh IDs,
-favorite retention, no-write preview, atomic confirmation, bounded API, UI,
+parser, encrypted rejection, Login-only filtering, omission of unsupported
+fields, fresh IDs, no-write preview, atomic confirmation, bounded API, UI,
 OpenAPI, and tests. Run git diff --check and inspect git status --short.
 
 - [ ] Step 5: Report only after reading fresh exit statuses and pass counts from

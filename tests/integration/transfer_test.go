@@ -87,7 +87,15 @@ func TestBitwardenPreviewAndConfirm(t *testing.T) {
   "folders": [{"id":"folder-1","name":"Personal"}],
   "items": [{
     "id":"login-1","folderId":"folder-1","type":1,"name":"Bitwarden login","favorite":true,
-    "login":{"username":"alice","password":"SYNSECRET-bitwarden","uris":[{"uri":"https://example.test"}]}
+    "notes":"do not import this note","fields":[{"name":"Recovery","value":"do not import"}],
+    "login":{"username":"alice","password":"SYNSECRET-bitwarden","totp":"do-not-import",
+      "uris":[{"uri":"https://example.test"}]}
+  },{
+    "id":"note-1","type":2,"name":"Secure note","notes":"do not import"
+  },{
+    "id":"card-1","type":3,"name":"Card","card":{"number":"4111111111111111"}
+  },{
+    "id":"identity-1","type":4,"name":"Identity","identity":{"email":"do-not-import@example.test"}
   }]
 }`)
 
@@ -118,7 +126,7 @@ func TestBitwardenPreviewAndConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != before+1 || items[0].Title != "Bitwarden login" || !items[0].Favorite || items[0].Scope != string(vault.ScopePersonal) {
+	if len(items) != before+1 || items[0].Title != "Bitwarden login" || items[0].Favorite || items[0].Scope != string(vault.ScopePersonal) {
 		t.Fatalf("imported metadata: %#v", items)
 	}
 	if len(items[0].ID) != 36 || items[0].ID[14] != '7' {
@@ -126,7 +134,8 @@ func TestBitwardenPreviewAndConfirm(t *testing.T) {
 	}
 	detail := h.getDetail(t, client, items[0].ID)
 	payload := detail["payload"].(map[string]any)
-	if payload["password"] != "SYNSECRET-bitwarden" || payload["username"] != "alice" {
+	if payload["password"] != "SYNSECRET-bitwarden" || payload["username"] != "alice" ||
+		payload["notes"] != nil || payload["totp"] != nil {
 		t.Fatalf("imported payload: %#v", payload)
 	}
 

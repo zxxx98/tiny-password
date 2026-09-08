@@ -732,13 +732,6 @@ func ValidatePayload(itemType string, raw json.RawMessage) error {
 	return err
 }
 
-// ValidatePayloadForImport applies the normal payload grammar while allowing
-// a format converter to preserve a genuinely empty secure-note body.
-func ValidatePayloadForImport(itemType string, raw json.RawMessage, allowEmptySecureNoteBody bool) error {
-	_, err := decodePayloadWithOptions(itemType, raw, allowEmptySecureNoteBody)
-	return err
-}
-
 // ExportItem is one decrypted item prepared for the personal archive.
 type ExportItem struct {
 	Meta    Meta
@@ -796,13 +789,12 @@ func (s *Service) ExportAll(ctx context.Context, actor *auth.Principal) ([]Expor
 // ownership mapping: personal items belong to the importer; shared items
 // keep the importer as their creator (decision D10).
 type ImportItem struct {
-	OriginalID               string
-	ItemType                 string
-	Scope                    string
-	Tags                     []string
-	Favorite                 bool
-	AllowEmptySecureNoteBody bool
-	Payload                  json.RawMessage
+	OriginalID string
+	ItemType   string
+	Scope      string
+	Tags       []string
+	Favorite   bool
+	Payload    json.RawMessage
 }
 
 // ImportTxHook runs after validation and conflict mapping, inside the same
@@ -855,7 +847,7 @@ func (s *Service) ImportAllWithHook(ctx context.Context, actor *auth.Principal, 
 		if !Scopes[items[i].Scope] {
 			return 0, 0, fmt.Errorf("%w: unknown scope at position %d", ErrPayloadInvalid, i)
 		}
-		if _, err := decodePayloadWithOptions(items[i].ItemType, items[i].Payload, items[i].AllowEmptySecureNoteBody); err != nil {
+		if _, err := decodePayload(items[i].ItemType, items[i].Payload); err != nil {
 			return 0, 0, fmt.Errorf("payload %d: %w", i, err)
 		}
 		if _, err := validateTags(items[i].Tags); err != nil {
@@ -949,7 +941,7 @@ func (s *Service) ImportAllWithHook(ctx context.Context, actor *auth.Principal, 
 
 	// Pass 3: encrypt and insert.
 	for i := range items {
-		payload, err := decodePayloadWithOptions(items[i].ItemType, items[i].Payload, items[i].AllowEmptySecureNoteBody)
+		payload, err := decodePayload(items[i].ItemType, items[i].Payload)
 		if err != nil {
 			return 0, 0, err
 		}

@@ -11,10 +11,6 @@ import (
 // type demands. Unknown fields and non-object bodies are rejected: a typo'd
 // field must never silently vanish from an encrypted record.
 func decodePayload(itemType string, raw json.RawMessage) (any, error) {
-	return decodePayloadWithOptions(itemType, raw, false)
-}
-
-func decodePayloadWithOptions(itemType string, raw json.RawMessage, allowEmptySecureNoteBody bool) (any, error) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, fmt.Errorf("%w: payload is required", ErrPayloadInvalid)
 	}
@@ -64,7 +60,7 @@ func decodePayloadWithOptions(itemType string, raw json.RawMessage, allowEmptySe
 	case *IdentityPayload:
 		err = p.validate()
 	case *SecureNotePayload:
-		err = p.validateForImport(allowEmptySecureNoteBody)
+		err = p.validate()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrPayloadInvalid, err.Error())
@@ -92,12 +88,6 @@ func validateTags(tags []string) ([]string, error) {
 		out = append(out, tag)
 	}
 	return out, nil
-}
-
-// ValidateTags exposes the same normalization and limits to trusted format
-// converters before their items enter the transactional import path.
-func ValidateTags(tags []string) ([]string, error) {
-	return validateTags(tags)
 }
 
 // buildEnvelope assembles the encrypted envelope for one item and returns
