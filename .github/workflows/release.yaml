@@ -44,7 +44,7 @@ jobs:
           IMAGE: tiny-password:smoke-${{ matrix.arch }}
         run: bash scripts/test-e2e.sh
       - name: Run the bundled 7-Zip binary
-        run: docker run --rm --platform linux/${{ matrix.arch }} tiny-password:smoke-${{ matrix.arch }} /usr/local/bin/7zz i
+        run: docker run --rm --platform linux/${{ matrix.arch }} --entrypoint /usr/local/bin/7zz tiny-password:smoke-${{ matrix.arch }} i
 
   scan:
     name: Scan ${{ matrix.arch }} candidate
