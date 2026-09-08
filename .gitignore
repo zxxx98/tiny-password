@@ -1,6 +1,7 @@
 # keep git from shipping build artifacts and local state
 node_modules/
 web/node_modules/
+.worktrees/
 
 # frontend build output (embedded via go:embed at compile time)
 internal/webassets/dist/*
