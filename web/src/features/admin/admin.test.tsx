@@ -256,7 +256,7 @@ describe("SettingsPage", () => {
           ready: true,
           checks: { database: true },
           settings: { r2_endpoint: "", r2_bucket: "", r2_prefix: "" },
-          r2_credentials_via_file: true,
+          r2_credentials_configured: true,
           scheduler: [
             {
               job: "backup.local",
@@ -273,7 +273,8 @@ describe("SettingsPage", () => {
     render(<SettingsPage />);
 
     await waitFor(() => expect(screen.getByText("运行状态")).toBeInTheDocument());
-    expect(screen.getByText("由 Secret 文件注入")).toBeInTheDocument();
+    expect(screen.getByText("已配置")).toBeInTheDocument();
+    expect(screen.queryByText("由 Secret 文件注入")).not.toBeInTheDocument();
     // The failed scheduler job is visible on the page.
     expect(screen.getByText(/backup.local/)).toBeInTheDocument();
     // The restore section only ever shows the offline command.
@@ -291,7 +292,7 @@ describe("SettingsPage", () => {
           ready: true,
           checks: {},
           settings: { r2_endpoint: "", r2_bucket: "", r2_prefix: "" },
-          r2_credentials_via_file: false,
+          r2_credentials_configured: false,
           scheduler: [],
         },
       },
@@ -303,7 +304,7 @@ describe("SettingsPage", () => {
           ready: true,
           checks: {},
           settings: { r2_endpoint: "https://acc.r2.cloudflarestorage.com", r2_bucket: "b", r2_prefix: "p" },
-          r2_credentials_via_file: false,
+          r2_credentials_configured: false,
           scheduler: [],
         },
       },
@@ -338,7 +339,7 @@ describe("SettingsPage", () => {
           ready: true,
           checks: {},
           settings: { r2_endpoint: "", r2_bucket: "", r2_prefix: "" },
-          r2_credentials_via_file: false,
+          r2_credentials_configured: false,
           scheduler: [],
         },
       },

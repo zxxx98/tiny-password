@@ -25,7 +25,7 @@ type SystemInfo = {
   ready: boolean;
   checks: Record<string, boolean> | null;
   settings: Settings;
-  r2_credentials_via_file: boolean;
+  r2_credentials_configured: boolean;
   scheduler: SchedulerResult[];
 };
 
@@ -36,9 +36,9 @@ const errorMessages: Record<string, string> = {
 
 /**
  * SettingsPage: system state (version, readiness, scheduler failures), the
- * non-sensitive R2 delivery settings, and the restore explanation. Secrets
- * always come from mounted Secret files — this page never displays or
- * accepts them. Restore is offline-only: it never touches the running
+ * non-sensitive R2 delivery settings, and the restore explanation. R2
+ * credentials come from deployment configuration — this page never displays
+ * or accepts them. Restore is offline-only: it never touches the running
  * database through the web.
  */
 export function SettingsPage() {
@@ -95,7 +95,7 @@ export function SettingsPage() {
       <header>
         <h2 className="font-display text-3xl font-bold">系统设置</h2>
         <p className="mt-1 font-body text-sm text-neutral-600">
-          仅包含非敏感配置；所有凭据（主密钥、备份口令、R2 密钥）通过挂载的 Secret 文件注入，本页不显示、不回传。
+          仅包含非敏感配置；所有凭据（主密钥、备份口令、R2 密钥）通过部署配置注入，本页不显示、不回传。
         </p>
       </header>
 
@@ -142,7 +142,7 @@ export function SettingsPage() {
                 ))}
               <div className="flex justify-between gap-4">
                 <dt>R2 凭据</dt>
-                <dd className="font-mono">{info.r2_credentials_via_file ? "由 Secret 文件注入" : "未挂载"}</dd>
+                <dd className="font-mono">{info.r2_credentials_configured ? "已配置" : "未配置"}</dd>
               </div>
             </dl>
             {failingJobs.length > 0 && (

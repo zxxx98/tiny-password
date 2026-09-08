@@ -451,18 +451,31 @@ func jobReady(t *testing.T, h *backupsAPIHarness, client authClient, target stri
 }
 
 // credentialsFlag decodes GET /admin/settings and reports the
-// r2_credentials_via_file presence flag.
+// source-neutral R2 credential presence flag.
 func credentialsFlag(t *testing.T, h *backupsAPIHarness, client authClient) bool {
 	t.Helper()
 	resp := h.request(t, "GET", "/admin/settings", nil, client)
 	defer resp.Body.Close()
 	var body struct {
-		R2CredentialsViaFile bool `json:"r2_credentials_via_file"`
+		R2CredentialsConfigured bool `json:"r2_credentials_configured"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	return body.R2CredentialsViaFile
+	return body.R2CredentialsConfigured
+}
+
+func TestBackupsR2CredentialsConfiguredFromEnvironment(t *testing.T) {
+	h := newBackupsAPIHarness(t)
+	if credentialsFlag(t, h, h.admin) {
+		t.Fatal("credentials reported present before configuration")
+	}
+
+	t.Setenv("TP_R2_ACCESS_KEY", "env-test-access")
+	t.Setenv("TP_R2_SECRET_KEY", "env-test-secret")
+	if !credentialsFlag(t, h, h.admin) {
+		t.Fatal("environment credentials reported absent")
+	}
 }
 
 // The R2 delivery configuration is resolved at request time from the admin
