@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/tiny-password/tiny-password/internal/auth"
 	"github.com/tiny-password/tiny-password/internal/platform/archive"
@@ -44,7 +45,13 @@ func registerTransfer(api *http.ServeMux, deps TransferDeps) {
 			return
 		}
 		defer cleanup()
-		raw, err := os.ReadFile(path)
+		file, err := os.Open(path)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the archive could not be read")
+			return
+		}
+		defer file.Close()
+		info, err := file.Stat()
 		if err != nil {
 			writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the archive could not be read")
 			return
@@ -52,8 +59,12 @@ func registerTransfer(api *http.ServeMux, deps TransferDeps) {
 		w.Header().Set("Content-Type", "application/x-7z-compressed")
 		w.Header().Set("Content-Disposition", `attachment; filename="tiny-password-export.7z"`)
 		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(raw)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = io.Copy(w, file)
 	}))
 
 	api.Handle("POST /api/v1/transfer/import/preview", guarded(func(w http.ResponseWriter, r *http.Request) {

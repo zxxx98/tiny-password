@@ -20,6 +20,9 @@ type ItemsDeps struct {
 	Session     *auth.Service
 	Cursor      *CursorCodec
 	Idempotency *idempotency.Service
+	// LoginProbeClient overrides the network client in tests. Production uses
+	// the SSRF-hardened client created by the probe handler.
+	LoginProbeClient *http.Client
 }
 
 const itemsCreateScope = "items.create"
@@ -60,6 +63,10 @@ func registerItems(api *http.ServeMux, deps ItemsDeps) {
 	guarded := func(handler http.HandlerFunc) http.Handler {
 		return RequireSession(deps.Session, false, handler)
 	}
+
+	api.Handle("POST /api/v1/items/login-page-probe", guarded(func(w http.ResponseWriter, r *http.Request) {
+		deps.probeLoginPage(w, r)
+	}))
 
 	api.Handle("POST /api/v1/items", guarded(func(w http.ResponseWriter, r *http.Request) {
 		deps.create(w, r)

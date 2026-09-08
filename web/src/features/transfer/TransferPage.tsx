@@ -12,11 +12,22 @@ type Preview = {
   missing_references: string[];
 };
 
+type DownloadProgress = {
+  receivedBytes: number;
+  totalBytes?: number;
+};
+
 const errorOf = (err: unknown): { message: string; requestId?: string } => {
   if (err instanceof ApiError) {
     return { message: err.message, requestId: err.requestId };
   }
   return { message: "网络错误，请重试。" };
+};
+
+const revokeDownloadUrl = (url: string): void => {
+  if (typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(url);
+  }
 };
 
 /**
@@ -32,6 +43,8 @@ export function TransferPage() {
   csrfTokenRef.current = csrfToken;
   const previewRef = useRef<Preview | null>(null);
   const controllersRef = useRef(new Set<AbortController>());
+  const downloadUrlRef = useRef<string | null>(null);
+  const downloadCleanupRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const sensitiveRef = useRef<{ passphrase: string; confirm: string; importPass: string; file: File | null }>({
     passphrase: "",
     confirm: "",
@@ -42,6 +55,7 @@ export function TransferPage() {
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<DownloadProgress | null>(null);
 
   const [file, setFile] = useState<File | null>(null);
   const [importPass, setImportPass] = useState("");
@@ -70,6 +84,7 @@ export function TransferPage() {
     setError(null);
     setRequestId(undefined);
     setBanner(null);
+    setExportProgress(null);
   }, []);
 
   const cancelPreview = useCallback(async (previewToken: string, token: string) => {
@@ -106,6 +121,14 @@ export function TransferPage() {
       for (const controller of controllersRef.current) {
         controller.abort();
       }
+      if (downloadCleanupRef.current !== null) {
+        window.clearTimeout(downloadCleanupRef.current);
+      }
+      if (downloadUrlRef.current) {
+        revokeDownloadUrl(downloadUrlRef.current);
+      }
+      downloadCleanupRef.current = null;
+      downloadUrlRef.current = null;
       const token = previewRef.current?.preview_token;
       // React state is no longer observable after unmount; clear the refs
       // directly so no cleanup callback retains file or passphrase values.
@@ -146,14 +169,31 @@ export function TransferPage() {
       setError("两次输入的归档口令不一致。");
       return;
     }
+    const passphraseBytes = new TextEncoder().encode(passphrase).byteLength;
+    if (passphraseBytes < 12 || passphraseBytes > 1024) {
+      setError("归档口令长度需为 12–1024 字节。");
+      return;
+    }
+    if (/\r|\n/.test(passphrase)) {
+      setError("归档口令不能包含换行。");
+      return;
+    }
     setExporting(true);
+    setExportProgress(null);
     const controller = beginRequest();
     try {
       const blob = await requestBlob(
         "POST",
         "/api/v1/transfer/export",
         { passphrase, passphrase_confirm: confirm },
-        { csrfToken, signal: controller.signal },
+        {
+          csrfToken,
+          signal: controller.signal,
+          onDownloadProgress: (receivedBytes, totalBytes) => {
+            if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) return;
+            setExportProgress({ receivedBytes, totalBytes });
+          },
+        },
       );
       if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
         return;
@@ -162,8 +202,21 @@ export function TransferPage() {
       const link = document.createElement("a");
       link.href = url;
       link.download = "tiny-password-export.7z";
+      link.style.display = "none";
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(url);
+      link.remove();
+      // Let the browser claim the object URL before releasing it. Revoking
+      // synchronously can make the download appear to start while saving an
+      // empty/missing file in some browsers.
+      downloadUrlRef.current = url;
+      downloadCleanupRef.current = window.setTimeout(() => {
+        revokeDownloadUrl(url);
+        if (downloadUrlRef.current === url) {
+          downloadUrlRef.current = null;
+          downloadCleanupRef.current = null;
+        }
+      }, 1000);
       setPassphrase("");
       setConfirm("");
       setBanner("归档已下载。请妥善保管归档口令——没有口令将无法恢复。");
@@ -178,6 +231,7 @@ export function TransferPage() {
       endRequest(controller);
       if (mountedRef.current && !sessionExpiredRef.current && !controller.signal.aborted) {
         setExporting(false);
+        setExportProgress(null);
       }
     }
   }, [passphrase, confirm, csrfToken]);
@@ -262,6 +316,11 @@ export function TransferPage() {
     }
   }, [preview, csrfToken, fail]);
 
+  const exportLabel =
+    exportProgress?.totalBytes && exportProgress.totalBytes > 0
+      ? `正在下载… ${Math.min(100, Math.round((exportProgress.receivedBytes / exportProgress.totalBytes) * 100))}%`
+      : "正在生成归档…";
+
   return (
     <div className="mx-auto max-w-3xl space-y-8 px-4 py-10">
       <header>
@@ -291,7 +350,7 @@ export function TransferPage() {
           导出
         </h3>
         <p className="font-body text-xs text-neutral-500">
-          归档使用你输入的口令加密（12–1024 字符）。口令不会存储在任何地方——丢失后归档无法恢复。
+          归档使用你输入的口令加密（12–1024 字节）。口令不会存储在任何地方——丢失后归档无法恢复。
         </p>
         <Field
           id="export-passphrase"
@@ -299,6 +358,7 @@ export function TransferPage() {
           type="password"
           autoComplete="new-password"
           minLength={12}
+          maxLength={1024}
           value={passphrase}
           onChange={(e) => setPassphrase(e.target.value)}
         />
@@ -311,7 +371,7 @@ export function TransferPage() {
           onChange={(e) => setConfirm(e.target.value)}
         />
         <Button disabled={exporting} onClick={() => void doExport()}>
-          {exporting ? "正在导出…" : "下载加密归档"}
+          {exporting ? exportLabel : "下载加密归档"}
         </Button>
       </section>
 

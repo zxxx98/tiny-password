@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { request } from "../../app/api";
+import { createIdempotencyKey } from "../../app/idempotency";
 import { Button } from "../../design-system/Button";
 import { ErrorSummary } from "../../design-system/Status";
 import { CreditCardFields, validateCreditCard } from "./forms/CreditCardFields";
@@ -65,7 +66,7 @@ export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onC
   const [requestId, setRequestId] = useState<string | undefined>();
   const [conflict, setConflict] = useState<number | null>(null);
   // One idempotency key per creation draft: double submits replay safely.
-  const idempotencyKey = useRef<string>(crypto.randomUUID());
+  const idempotencyKey = useRef<string>(createIdempotencyKey());
 
   const changeType = (next: ItemType) => {
     setType(next);
@@ -199,7 +200,7 @@ export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onC
         </>
       )}
 
-      {type === "login" && <LoginFields payload={payload as LoginPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
+      {type === "login" && <LoginFields payload={payload as LoginPayload} errors={errors} disabled={submitting} csrfToken={csrfToken} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "ssh_key" && <SshKeyFields payload={payload as SshKeyPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "credit_card" && <CreditCardFields payload={payload as CreditCardPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "identity" && <IdentityFields payload={payload as IdentityPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}

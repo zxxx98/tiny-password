@@ -7,6 +7,7 @@ import { ItemEditor } from "./ItemEditor";
 import { SensitiveField } from "./SensitiveField";
 import { TrashPage } from "./TrashPage";
 import { VaultPage } from "./VaultPage";
+import { LoginFields } from "./forms/LoginFields";
 import { sessionStore } from "../../app/session";
 import type { ItemDetail as ItemDetailData } from "./types";
 
@@ -253,6 +254,33 @@ describe("ItemEditor", () => {
 });
 
 describe("ItemDetail", () => {
+  it.each([
+    ["example.com", "https://example.com/"],
+    [" example.com/login?q=1#form ", "https://example.com/login?q=1#form"],
+    ["https://example.com/login", "https://example.com/login"],
+    ["http://192.168.1.2:8080/login", "http://192.168.1.2:8080/login"],
+    ["localhost:8080/login", "https://localhost:8080/login"],
+    ["//example.com/login", "https://example.com/login"],
+    ["javascript:alert(1)", null],
+    ["data:text/html,test", null],
+    ["ftp://example.com", null],
+    ["/login", null],
+    ["https://", null],
+    ["not a domain", null],
+  ])("renders saved URL %s with a safe absolute destination", (url, expected) => {
+    render(<ItemDetail
+      detail={{ ...loginDetail, payload: { ...loginDetail.payload, urls: [url] } }}
+      csrfToken={csrf} canManage={true} onEdit={() => {}}
+      onShowHistory={() => {}} onToggleFavorite={() => {}} onTrash={() => {}}
+    />);
+    if (expected) {
+      expect(screen.getByRole("link", { name: url.trim() })).toHaveAttribute("href", expected);
+    } else {
+      expect(screen.queryByRole("link", { name: url.trim() })).not.toBeInTheDocument();
+      expect(screen.getByText(url)).toBeInTheDocument();
+    }
+  });
+
   it("shows the scope text and the creator signature together", () => {
     const shared: ItemDetailData = {
       ...loginDetail,
@@ -303,6 +331,53 @@ describe("ItemDetail", () => {
   });
 });
 
+describe("LoginFields URL probe", () => {
+  it("probes on demand and lets the user apply a detected login URL", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const fetchMock = stubFetch([
+      {
+        status: 200,
+        body: {
+          input_url: "https://example.com/",
+          candidates: [{ url: "https://example.com/login", score: 10, password_field: true, reasons: ["检测到密码输入框"] }],
+        },
+      },
+    ]);
+    render(
+      <LoginFields
+        payload={{ name: "Example", username: "alice", password: "pw", urls: ["example.com"] }}
+        errors={{}}
+        onChange={onChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "查找登录页" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/items/login-page-probe");
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ url: "example.com" });
+    expect(await screen.findByText("https://example.com/login")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "使用此网址" }));
+    expect(onChange).toHaveBeenLastCalledWith({ urls: ["https://example.com/login"] });
+  });
+
+  it("shows a no-match message when the server returns a null candidate list", async () => {
+    const user = userEvent.setup();
+    stubFetch([{ status: 200, body: { input_url: "https://baidu.com/", candidates: null } }]);
+    render(
+      <LoginFields
+        payload={{ name: "Baidu", username: "alice", password: "pw", urls: ["baidu.com"] }}
+        errors={{}}
+        onChange={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "查找登录页" }));
+    expect(await screen.findByText("未找到明显的登录页，你仍可以保存当前网址。")).toBeInTheDocument();
+  });
+});
+
 describe("VaultPage", () => {
   it("renders the workspace grid with list titles, types and owner signature", async () => {
     stubFetch([
@@ -345,6 +420,23 @@ describe("VaultPage", () => {
     await user.click(await screen.findByRole("button", { name: "新建条目" }));
     // The desktop pane remains mounted but hidden; the second form is the
     // narrow-screen editor that must be present for the same action.
+    expect(screen.getAllByRole("form", { name: "新建条目" })).toHaveLength(2);
+  });
+
+  it("opens the new-item editor when crypto.randomUUID is unavailable", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("crypto", {
+      getRandomValues: (values: Uint8Array) => {
+        values.fill(1);
+        return values;
+      },
+    });
+    stubFetch([
+      { status: 200, body: { items: [], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: "新建条目" }));
     expect(screen.getAllByRole("form", { name: "新建条目" })).toHaveLength(2);
   });
 

@@ -162,6 +162,45 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTransferExportSetsContentLengthForStreamingDownload(t *testing.T) {
+	archiveBin(t)
+	h := newTransferHarness(t)
+	alice := h.itemClient(t, "alice")
+	for i := 0; i < 64; i++ {
+		if _, err := h.vault.Create(t.Context(), h.principalOf(t, "alice"), vault.CreateInput{
+			ItemType: vault.TypeSecureNote,
+			Scope:    string(vault.ScopePersonal),
+			Payload: json.RawMessage(fmt.Sprintf(`{"name":"large-%d","body":"%s"}`,
+				i, strings.Repeat(fmt.Sprintf("%08d-0123456789abcdef", i), 128))),
+		}, nil); err != nil {
+			t.Fatalf("create item %d: %v", i, err)
+		}
+	}
+
+	body, err := json.Marshal(map[string]string{
+		"passphrase":         "export-passphrase-1",
+		"passphrase_confirm": "export-passphrase-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := h.request(t, "POST", "/transfer/export", json.RawMessage(body), alice)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", resp.StatusCode, decodeBody(t, resp)["message"])
+	}
+	if resp.Header.Get("Content-Length") == "" || resp.ContentLength <= 0 {
+		t.Fatalf("export response has no content length: header=%q length=%d", resp.Header.Get("Content-Length"), resp.ContentLength)
+	}
+	archiveBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(archiveBytes)) != resp.ContentLength {
+		t.Fatalf("content length=%d, received=%d", resp.ContentLength, len(archiveBytes))
+	}
+}
+
 func TestTransferExportRejectsCapacityOverflow(t *testing.T) {
 	h := newTransferHarness(t)
 	h.itemClient(t, "alice")

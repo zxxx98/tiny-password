@@ -25,6 +25,79 @@ afterEach(() => {
 });
 
 describe("TransferPage lifecycle", () => {
+	it("shows download progress after the export response starts", async () => {
+		const user = userEvent.setup();
+		sessionStore.set({ principal, csrfToken: "csrf" });
+		let finishDownload: (() => void) | undefined;
+		const fetchMock = vi.fn(async (url: string | URL) => {
+			if (!String(url).includes("export")) return jsonResponse(200, {});
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new Uint8Array([1, 2, 3, 4]));
+					finishDownload = () => {
+						controller.enqueue(new Uint8Array([5, 6, 7, 8]));
+						controller.close();
+					};
+				},
+			});
+			return new Response(body, {
+				status: 200,
+				headers: { "Content-Length": "8", "Content-Type": "application/x-7z-compressed" },
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:export"), revokeObjectURL: vi.fn() });
+		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+		render(<TransferPage />);
+
+		await user.type(screen.getByLabelText("归档口令"), "archive-passphrase");
+		await user.type(screen.getByLabelText("确认归档口令"), "archive-passphrase");
+		await user.click(screen.getByRole("button", { name: "下载加密归档" }));
+
+		await waitFor(() => expect(screen.getByRole("button", { name: "正在下载… 50%" })).toBeInTheDocument());
+		finishDownload?.();
+		await screen.findByText("归档已下载。请妥善保管归档口令——没有口令将无法恢复。");
+	});
+
+	it("keeps the blob URL alive after starting the local download", async () => {
+		const user = userEvent.setup();
+		sessionStore.set({ principal, csrfToken: "csrf" });
+		const fetchMock = vi.fn(async () =>
+			new Response(new Blob(["archive"]), {
+				status: 200,
+				headers: { "Content-Type": "application/x-7z-compressed" },
+			}),
+		);
+		const revokeObjectURL = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:export"), revokeObjectURL });
+		vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+		render(<TransferPage />);
+
+		await user.type(screen.getByLabelText("归档口令"), "archive-passphrase");
+		await user.type(screen.getByLabelText("确认归档口令"), "archive-passphrase");
+		await user.click(screen.getByRole("button", { name: "下载加密归档" }));
+
+		await screen.findByText("归档已下载。请妥善保管归档口令——没有口令将无法恢复。");
+		expect(revokeObjectURL).not.toHaveBeenCalled();
+	});
+
+	it("blocks export when the archive passphrase is shorter than the server minimum", async () => {
+    const user = userEvent.setup();
+    sessionStore.set({ principal, csrfToken: "csrf" });
+    const fetchMock = vi.fn(async () => jsonResponse(200, {}));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<TransferPage />);
+
+    await user.type(screen.getByLabelText("归档口令"), "short");
+    await user.type(screen.getByLabelText("确认归档口令"), "short");
+    await user.click(screen.getByRole("button", { name: "下载加密归档" }));
+
+    expect(await screen.findByText("归档口令长度需为 12–1024 字节。"))
+      .toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("clears import secrets and preview after a preview 401", async () => {
     const user = userEvent.setup();
     sessionStore.set({ principal, csrfToken: "csrf" });

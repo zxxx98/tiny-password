@@ -4,6 +4,7 @@ import { sessionStore, type Principal } from "../../app/session";
 import { Button } from "../../design-system/Button";
 import { Field } from "../../design-system/Field";
 import { ErrorSummary } from "../../design-system/Status";
+import { VaultIllustration } from "./VaultIllustration";
 
 type LoginResponse = {
   must_change_password: boolean;
@@ -60,7 +61,8 @@ export function LoginPage({ onDone }: { onDone?: () => void }) {
   );
 
   return (
-    <form onSubmit={submit} noValidate className="max-w-md" aria-labelledby="login-heading">
+    <div className="grid min-h-[calc(100svh-13rem)] items-center gap-12 px-6 py-12 md:min-h-[calc(100svh-8rem)] md:grid-cols-12 md:px-10 md:py-16 lg:gap-20 lg:px-16">
+    <form onSubmit={submit} noValidate className="mx-auto w-full max-w-md md:col-span-5" aria-labelledby="login-heading">
       <h2 id="login-heading" className="font-display text-2xl font-bold">
         登录
       </h2>
@@ -91,5 +93,13 @@ export function LoginPage({ onDone }: { onDone?: () => void }) {
         {submitting ? "正在登录…" : "登录"}
       </Button>
     </form>
+    <figure className="hidden border-l border-divider pl-10 md:col-span-7 md:block lg:pl-16">
+      <VaultIllustration />
+      <figcaption className="mt-6 flex items-center gap-4 border-t border-divider pt-4 font-mono text-xs text-neutral-500">
+        <span className="text-accent">FIG. 01</span>
+        <span>你的密码，有序珍藏。</span>
+      </figcaption>
+    </figure>
+    </div>
   );
 }

@@ -101,7 +101,7 @@ describe("SetupPage", () => {
     await waitFor(() => {
       expect(screen.getByText("管理员已创建")).toBeInTheDocument();
     });
-    expect(screen.getByRole("link", { name: "前往登录" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("link", { name: "前往登录" })).toHaveAttribute("href", "/");
   });
 
   it("shows the token error state without succeeding", async () => {

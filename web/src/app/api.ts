@@ -67,6 +67,8 @@ export type RequestOptions = {
   onResponse?: (response: Response) => void;
   /** Aborts this single request; the global in-flight registry still applies. */
   signal?: AbortSignal;
+  /** Reports bytes received while reading a binary response body. */
+  onDownloadProgress?: (receivedBytes: number, totalBytes?: number) => void;
   /** Best-effort cleanup calls still clear a 401 session, but skip a duplicate expiry event. */
   suppressAuthFailure?: boolean;
 };
@@ -163,7 +165,36 @@ export async function requestBlob(
   body?: unknown,
   options?: RequestOptions,
 ): Promise<Blob> {
-  return requestWithResponse(method, url, body, options, (response) => response.blob());
+  return requestWithResponse(method, url, body, options, async (response) => {
+    const progress = options?.onDownloadProgress;
+    const contentLength = response.headers.get("Content-Length");
+    const parsedLength = contentLength === null ? Number.NaN : Number.parseInt(contentLength, 10);
+    const totalBytes = Number.isFinite(parsedLength) && parsedLength >= 0 ? parsedLength : undefined;
+
+    if (!response.body) {
+      const blob = await response.blob();
+      progress?.(blob.size, totalBytes ?? blob.size);
+      return blob;
+    }
+
+    const reader = response.body.getReader();
+    const chunks: BlobPart[] = [];
+    let receivedBytes = 0;
+    progress?.(0, totalBytes);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        chunks.push(value);
+        receivedBytes += value.byteLength;
+        progress?.(receivedBytes, totalBytes);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return new Blob(chunks, { type: response.headers.get("Content-Type") ?? "" });
+  });
 }
 
 export async function getJSON<T>(url: string): Promise<T> {

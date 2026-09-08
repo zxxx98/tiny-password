@@ -1,12 +1,27 @@
+import { useState } from "react";
+import { request } from "../../../app/api";
 import { Button } from "../../../design-system/Button";
 import { Field } from "../../../design-system/Field";
-import { LIMITS, overLimit, type LoginPayload } from "../types";
+import { LIMITS, errorText, overLimit, type LoginPayload } from "../types";
 
 export type FieldsProps<P> = {
   payload: P;
   errors: Record<string, string>;
   onChange: (patch: Partial<P>) => void;
   disabled?: boolean;
+  csrfToken?: string;
+};
+
+type LoginProbeCandidate = {
+  url: string;
+  score: number;
+  password_field: boolean;
+  reasons: string[];
+};
+
+type LoginProbeResponse = {
+  input_url: string;
+  candidates: LoginProbeCandidate[];
 };
 
 export function validateLogin(p: LoginPayload): Record<string, string> {
@@ -33,7 +48,32 @@ export function validateLogin(p: LoginPayload): Record<string, string> {
   return errors;
 }
 
-export function LoginFields({ payload, errors, onChange, disabled }: FieldsProps<LoginPayload>) {
+export function LoginFields({ payload, errors, onChange, disabled, csrfToken }: FieldsProps<LoginPayload>) {
+  const [probingIndex, setProbingIndex] = useState<number | null>(null);
+  const [probeState, setProbeState] = useState<{ index: number; candidates: LoginProbeCandidate[]; message?: string } | null>(null);
+
+  const probe = async (index: number, value: string) => {
+    if (!value.trim()) {
+      setProbeState({ index, candidates: [], message: "请先填写网址。" });
+      return;
+    }
+    setProbingIndex(index);
+    setProbeState(null);
+    try {
+      const result = await request<LoginProbeResponse>(
+        "POST",
+        "/api/v1/items/login-page-probe",
+        { url: value },
+        { csrfToken },
+      );
+      setProbeState({ index, candidates: result.candidates ?? [] });
+    } catch (err) {
+      setProbeState({ index, candidates: [], message: errorText(err).message || "暂时无法探测该网址。" });
+    } finally {
+      setProbingIndex(null);
+    }
+  };
+
   return (
     <>
       <Field id="f-name" label="名称" required value={payload.name} error={errors.name} disabled={disabled}
@@ -45,20 +85,59 @@ export function LoginFields({ payload, errors, onChange, disabled }: FieldsProps
       <div className="space-y-2">
         <span className="block font-mono text-xs uppercase tracking-widest">网址</span>
         {(payload.urls ?? []).map((url, i) => (
-          <div key={i} className="flex gap-2">
-            <Field id={`f-url-${i}`} label={`网址 ${i + 1}`} hideLabel value={url} disabled={disabled}
-              onChange={(e) => {
-                const urls = [...(payload.urls ?? [])];
-                urls[i] = e.target.value;
-                onChange({ urls });
-              }} />
-            <Button variant="ghost" aria-label={`删除网址 ${i + 1}`}
-              onClick={() => onChange({ urls: (payload.urls ?? []).filter((_, j) => j !== i) })}>
-              删除
+          <div key={i} className="space-y-2">
+            <div className="flex gap-2">
+              <Field id={`f-url-${i}`} label={`网址 ${i + 1}`} hideLabel value={url} disabled={disabled || probingIndex !== null}
+                onChange={(e) => {
+                  const urls = [...(payload.urls ?? [])];
+                  urls[i] = e.target.value;
+                  if (probeState?.index === i) setProbeState(null);
+                  onChange({ urls });
+                }} />
+              <Button variant="ghost" aria-label={`删除网址 ${i + 1}`}
+                disabled={disabled || probingIndex !== null}
+                onClick={() => onChange({ urls: (payload.urls ?? []).filter((_, j) => j !== i) })}>
+                删除
+              </Button>
+            </div>
+            <Button variant="secondary" disabled={disabled || probingIndex !== null} onClick={() => void probe(i, url)}>
+              {probingIndex === i ? "探测中…" : "查找登录页"}
             </Button>
+            {probeState?.index === i && (
+              <div className="border-l-2 border-accent px-3 py-2" role="status" aria-live="polite">
+                {probeState.message ? (
+                  <p className="font-body text-xs text-accent">{probeState.message}</p>
+                ) : probeState.candidates.length > 0 ? (
+                  <>
+                    <p className="font-mono text-xs uppercase tracking-widest">可能的登录页</p>
+                    <ul className="mt-2 space-y-2">
+                      {probeState.candidates.map((candidate) => (
+                        <li key={candidate.url} className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="break-all font-mono text-xs">{candidate.url}</span>
+                          <Button
+                            variant="link"
+                            className="px-0 py-0"
+                            onClick={() => {
+                              const urls = [...(payload.urls ?? [])];
+                              urls[i] = candidate.url;
+                              onChange({ urls });
+                              setProbeState(null);
+                            }}
+                          >
+                            使用此网址
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : (
+                  <p className="font-body text-xs text-neutral-600">未找到明显的登录页，你仍可以保存当前网址。</p>
+                )}
+              </div>
+            )}
           </div>
         ))}
-        <Button variant="secondary" onClick={() => onChange({ urls: [...(payload.urls ?? []), ""] })}>
+        <Button variant="secondary" disabled={disabled || probingIndex !== null} onClick={() => onChange({ urls: [...(payload.urls ?? []), ""] })}>
           添加网址
         </Button>
         {errors.urls && <p className="font-body text-xs text-accent">{errors.urls}</p>}

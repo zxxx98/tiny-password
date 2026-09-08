@@ -36,6 +36,16 @@ chmod 0600 secrets/master_key secrets/backup_passphrase
 
 主密钥必须是恰好 32 个原始字节，不要用文本口令、十六进制字符串或带换行的编码替代。备份口令可以是文本；创建归档后应使用独立的密码管理器保存，而不是只留在 Compose 项目目录。
 
+本项目的普通 Docker Compose `secrets: file:` 在 Docker Engine 上由宿主文件 bind mount 实现，不会像 Swarm Secret 一样自动改成容器用户可读。应用以 UID/GID `10001` 的非 root 用户运行，因此在使用本地 Compose 时，还要保持 `secrets/` 目录为 `0700`，并让容器组读取文件：
+
+```bash
+chmod 0700 secrets
+sudo chown "$(id -u)":10001 secrets/master_key secrets/backup_passphrase
+chmod 0640 secrets/master_key secrets/backup_passphrase
+```
+
+这不会让其他宿主用户穿过 `secrets/` 目录；若使用支持原生 Secret 对象的编排环境，应使用该环境的 root-owned、只读 Secret 投影方式，不要把宿主文件权限规则直接照搬过去。
+
 Tunnel token 从 Cloudflare Dashboard 创建 remotely-managed Tunnel 后复制到受限文件：
 
 ```bash

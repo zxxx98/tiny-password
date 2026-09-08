@@ -17,6 +17,9 @@ umask 077
 mkdir -p secrets
 head -c 32 /dev/urandom > secrets/master_key
 openssl rand -base64 32 > secrets/backup_passphrase
+chmod 0700 secrets
+sudo chown "$(id -u)":10001 secrets/master_key secrets/backup_passphrase
+chmod 0640 secrets/master_key secrets/backup_passphrase
 
 docker compose build
 docker compose up -d
@@ -41,6 +44,7 @@ curl -fsS https://password.example.com/readyz
 
 ```bash
 TP_LAN_BIND_ADDRESS=127.0.0.1 \
+TP_LAN_PORT=28888 \
 docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d
 ```
 
@@ -48,11 +52,21 @@ docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d
 
 ```bash
 TP_LAN_BIND_ADDRESS=192.168.1.20 \
+TP_LAN_PORT=8080 \
 TP_TRUSTED_PROXY_CIDRS=192.168.1.10/32 \
 docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d
 ```
 
 应用默认不信任 `X-Forwarded-*`。配置错误的代理网段不会帮助伪造 HTTPS，反而会让浏览器收不到 Secure Cookie；应先从真实 HTTPS URL 登录并检查浏览器请求中带有 session cookie，再进行远程访问测试。不要设置 `TP_ALLOW_INSECURE_COOKIES=1`，除非是隔离的本地开发/评估环境。
+
+若只是临时验证 HTTP 页面，可显式传入 `TP_ALLOW_INSECURE_COOKIES=1` 后重建 app；这会让密码和会话经过明文 HTTP，只能用于短期测试，测试结束应立即关闭并重新部署：
+
+```bash
+TP_ALLOW_INSECURE_COOKIES=1 \
+TP_LAN_BIND_ADDRESS=0.0.0.0 \
+TP_LAN_PORT=28888 \
+docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d --force-recreate app
+```
 
 ## 更新与停机
 

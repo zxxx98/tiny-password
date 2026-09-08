@@ -12,11 +12,32 @@ export type ItemDetailProps = {
   onTrash: () => void;
 };
 
+function websiteHref(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || /[\u0000-\u0020\u007f\\]/.test(trimmed)) return null;
+  let candidate = trimmed;
+  if (candidate.startsWith("//")) {
+    candidate = `https:${candidate}`;
+  } else if (!/^https?:\/\//i.test(candidate)) {
+    // A host with a numeric port is not a URI scheme (e.g. localhost:8080).
+    const hasScheme = /^[a-z][a-z\d+.-]*:/i.test(candidate);
+    const hasPort = /^[^/:?#]+:\d+(?:[/?#]|$)/.test(candidate);
+    if ((hasScheme && !hasPort) || /^[/?#]/.test(candidate)) return null;
+    candidate = `https://${candidate}`;
+  }
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
       <span className="block font-mono text-xs uppercase tracking-widest">{label}</span>
-      <p className="break-all font-body text-sm">{children}</p>
+      <div className="break-all font-body text-sm">{children}</div>
     </div>
   );
 }
@@ -61,11 +82,14 @@ export function ItemDetail({ detail, csrfToken, canManage, onEdit, onShowHistory
                 {(p.urls?.length ?? 0) > 0 && (
                   <Row label="网址">
                     <ul className="space-y-1">
-                      {p.urls!.map((url, i) => (
+                      {p.urls!.map((url, i) => {
+                        const href = websiteHref(url);
+                        return (
                         <li key={i} className="break-all">
-                          <a href={url} className="underline decoration-accent decoration-2 underline-offset-4" rel="noreferrer noopener">{url}</a>
+                          {href ? <a href={href} className="underline decoration-accent decoration-2 underline-offset-4" rel="noreferrer noopener">{url}</a> : <span>{url}</span>}
                         </li>
-                      ))}
+                        );
+                      })}
                     </ul>
                   </Row>
                 )}

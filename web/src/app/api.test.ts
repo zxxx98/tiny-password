@@ -15,7 +15,31 @@ afterEach(() => {
 });
 
 describe("session-aware request bodies", () => {
-  it("passes FormData through without adding a JSON content type", async () => {
+	it("reports binary download progress while reading the response stream", async () => {
+		const encoder = new TextEncoder();
+		const fetchMock = vi.fn(async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode("abc"));
+						controller.enqueue(encoder.encode("def"));
+						controller.close();
+					},
+				}),
+				{ status: 200, headers: { "Content-Length": "6", "Content-Type": "application/octet-stream" } },
+			),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const progress = vi.fn();
+
+		const blob = await requestBlob("GET", "/api/v1/export", undefined, { onDownloadProgress: progress } as never);
+
+		expect(blob.size).toBe(6);
+		expect(progress).toHaveBeenCalled();
+		expect(progress).toHaveBeenLastCalledWith(6, 6);
+	});
+
+	it("passes FormData through without adding a JSON content type", async () => {
     const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => {
       void init;
       return jsonResponse(200, { ok: true });

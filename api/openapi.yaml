@@ -489,6 +489,55 @@ paths:
                         items: { $ref: "#/components/schemas/ItemMeta" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /items/login-page-probe:
+    post:
+      tags: [items]
+      summary: Find likely login pages for a saved website URL
+      description: |
+        The server fetches a small number of same-origin HTML pages and scores
+        login signals such as password inputs and login controls. Requests are
+        bounded by time and response size. Loopback, private, link-local,
+        metadata and other non-public targets are rejected; redirects cannot
+        change host or downgrade HTTPS. No credentials or cookies are sent.
+        Results are suggestions only and must be explicitly selected by the
+        caller before saving.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              additionalProperties: false
+              properties:
+                url: { type: string, maxLength: 2048 }
+      responses:
+        "200":
+          description: candidate login pages, ordered by confidence
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [input_url, candidates]
+                properties:
+                  input_url: { type: string, format: uri }
+                  candidates:
+                    type: array
+                    maxItems: 8
+                    items:
+                      type: object
+                      required: [url, score, password_field, reasons]
+                      properties:
+                        url: { type: string, format: uri }
+                        score: { type: integer }
+                        password_field: { type: boolean }
+                        reasons:
+                          type: array
+                          items: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /items:
     get:
       tags: [items]

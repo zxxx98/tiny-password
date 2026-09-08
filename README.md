@@ -9,6 +9,9 @@ umask 077
 mkdir -p secrets
 head -c 32 /dev/urandom > secrets/master_key
 openssl rand -base64 32 > secrets/backup_passphrase
+chmod 0700 secrets
+sudo chown "$(id -u)":10001 secrets/master_key secrets/backup_passphrase
+chmod 0640 secrets/master_key secrets/backup_passphrase
 docker compose build
 docker compose up -d
 ```

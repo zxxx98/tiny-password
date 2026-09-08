@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, request } from "../../app/api";
+import { createIdempotencyKey } from "../../app/idempotency";
 import { navigate, navigateWithState } from "../../app/router";
 import { SESSION_EXPIRED_EVENT, useSession } from "../../app/session";
 import { Button } from "../../design-system/Button";
@@ -175,7 +176,7 @@ export function GeneratorPage() {
             fingerprint: sshKey.fingerprint,
           },
         },
-        { csrfToken, idempotencyKey: crypto.randomUUID(), signal: controller.signal },
+        { csrfToken, idempotencyKey: createIdempotencyKey(), signal: controller.signal },
       );
       if (!mountedRef.current || sessionExpiredRef.current || controller.signal.aborted) {
         return;

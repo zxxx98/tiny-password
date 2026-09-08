@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, fetchCsrfToken, getJSON, postJSON } from "../../app/api";
+import { Link } from "../../app/router";
 
 type SetupStatus = { initialized: boolean };
 
@@ -104,12 +105,12 @@ export function SetupPage() {
         <p className="mt-3 font-body">
           初始化完成，该入口已永久关闭。请使用管理员账号登录。
         </p>
-        <a
-          href="/login"
+        <Link
+          to="/"
           className="mt-4 inline-block min-h-[44px] bg-ink px-6 py-3 text-xs font-semibold uppercase tracking-widest text-paper hover:bg-paper hover:text-ink hover:outline hover:outline-2 hover:outline-ink"
         >
           前往登录
-        </a>
+        </Link>
       </div>
     );
   }
