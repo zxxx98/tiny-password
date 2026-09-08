@@ -793,6 +793,7 @@ type ImportItem struct {
 	ItemType   string
 	Scope      string
 	Tags       []string
+	Favorite   bool
 	Payload    json.RawMessage
 }
 
