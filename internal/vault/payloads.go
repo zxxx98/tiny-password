@@ -225,7 +225,7 @@ func (p *SecureNotePayload) validate() error {
 	if err := requiredText("name", p.Name, MaxNameRunes); err != nil {
 		return err
 	}
-	return requiredText("body", p.Body, MaxNoteBodyRunes)
+	return optionalText("body", p.Body, MaxNoteBodyRunes)
 }
 
 // requiredText enforces presence (JSON required + minLength 1) and the

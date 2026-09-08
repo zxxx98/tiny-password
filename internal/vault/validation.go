@@ -90,6 +90,12 @@ func validateTags(tags []string) ([]string, error) {
 	return out, nil
 }
 
+// ValidateTags exposes the same normalization and limits to trusted format
+// converters before their items enter the transactional import path.
+func ValidateTags(tags []string) ([]string, error) {
+	return validateTags(tags)
+}
+
 // buildEnvelope assembles the encrypted envelope for one item and returns
 // its canonical marshaled form. The whole plaintext is bounded by D09's
 // 256 KiB budget: a larger envelope is rejected before any encryption.
