@@ -5,8 +5,8 @@
 // endpoint https://<account>.r2.cloudflarestorage.com, region "auto",
 // PutObject/CopyObject/ListObjectsV2 supported).
 //
-// Credentials are caller-supplied (Docker Secret files); they never appear
-// in logs or errors. Integrity never relies on ETags (R2 ETags are not
+// Credentials are caller-supplied at runtime; they never appear in logs or
+// errors. Integrity never relies on ETags (R2 ETags are not
 // SHA-256 digests): callers verify content by reading bytes back.
 package objectstore
 

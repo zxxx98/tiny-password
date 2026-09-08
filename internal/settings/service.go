@@ -1,8 +1,8 @@
 // Package settings owns the non-sensitive runtime settings store (T27).
 // Values live in app_settings under one namespaced JSON document; the
 // update surface is an explicit whitelist — secrets (R2 access/secret keys,
-// backup passphrase, master key) are always injected via Docker Secret
-// files and never pass through, stored by, or echo out of this package.
+// backup passphrase, master key) are injected via deployment configuration
+// and never pass through, stored by, or echo out of this package.
 package settings
 
 import (

@@ -30,8 +30,8 @@ var (
 )
 
 // R2Delivery configures the R2 target. Credentials live inside the Client
-// (loaded from secret files by the operator); they are never persisted in
-// the database or echoed back (T22).
+// (loaded from runtime configuration by the operator); they are never
+// persisted in the database or echoed back (T22).
 type R2Delivery struct {
 	Client *objectstore.Client
 	// Prefix is the object key namespace, e.g. "tiny-password".

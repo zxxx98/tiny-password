@@ -161,8 +161,9 @@ func run(logger *slog.Logger) error {
 	usersService := users.NewService(db.DB, users.Options{Audit: auditService})
 
 	// Non-sensitive admin settings (T27). The R2 delivery resolver combines
-	// them with the credential secret files on every run, so configuration
-	// changes apply without a restart; credentials never enter the store.
+	// them with credentials from the environment or credential secret files on
+	// every run, so configuration changes apply without a restart; credentials
+	// never enter the store.
 	settingsService := settings.NewService(db.DB)
 	backupPassphrase, err := backup.ReadOptionalSecretFile(
 		envOr("TP_BACKUP_PASSPHRASE_FILE", "/run/secrets/backup_passphrase"),
@@ -273,8 +274,8 @@ func run(logger *slog.Logger) error {
 	defer sched.Stop()
 
 	// Admin backup/settings endpoints (T27). The manual passphrase and
-	// delivery configuration resolve from secret files and the settings
-	// store; secrets never appear in responses.
+	// delivery configuration resolve from their runtime sources and the
+	// settings store; secrets never appear in responses.
 	var backupsDeps *httpapi.BackupsDeps
 	if backupRunner != nil {
 		backupsDeps = &httpapi.BackupsDeps{

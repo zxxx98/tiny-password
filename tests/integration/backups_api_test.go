@@ -69,8 +69,8 @@ func newBackupsAPIHarnessWithHooks(t *testing.T, hooks backup.Hooks) *backupsAPI
 	h := &backupsAPIHarness{authHarness: newAuthHarness(t), localDir: t.TempDir()}
 	h.entered, h.release = make(chan struct{}, 1), make(chan struct{})
 
-	// R2 credential secret files start absent: the target is unconfigured
-	// until a test mounts them.
+	// R2 credential sources start absent: the target is unconfigured until a
+	// test supplies them.
 	h.r2AccessPath = filepath.Join(t.TempDir(), "r2_access_key")
 	h.r2SecretPath = filepath.Join(t.TempDir(), "r2_secret_key")
 	settingsService := settings.NewService(h.db.DB)
@@ -479,7 +479,7 @@ func TestBackupsR2CredentialsConfiguredFromEnvironment(t *testing.T) {
 }
 
 // The R2 delivery configuration is resolved at request time from the admin
-// settings store plus credential secret files (T27): before configuration
+// settings store plus runtime credential sources (T27): before configuration
 // the manual run is refused with MAINTENANCE and the target is not
 // delivery-ready; afterwards the same endpoint delivers through the
 // settings-resolved client without a restart.

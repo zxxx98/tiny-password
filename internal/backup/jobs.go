@@ -227,7 +227,7 @@ func ListRuns(db *sql.DB, target, beforeCreated, beforeID string, limit int) ([]
 
 // ScheduledJobs returns one scheduler job per enabled target that has a
 // daily schedule. The passphrase and delivery configuration come from the
-// runner options (secret files / settings resolver), never from the
+// runner options (runtime credential source / settings resolver), never from the
 // database's sensitive surface.
 func (r *Runner) ScheduledJobs() ([]scheduler.Job, error) {
 	configs, err := LoadJobConfigs(r.opts.DB.DB)

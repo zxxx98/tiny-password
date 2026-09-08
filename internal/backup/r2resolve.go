@@ -44,14 +44,16 @@ func readR2Credential(envName, filePath string) (string, error) {
 }
 
 // NewSettingsR2Resolver combines the admin-maintained non-sensitive R2
-// settings (endpoint, bucket, prefix) with the credential secret files
+// settings (endpoint, bucket, prefix) with credentials from environment
+// variables or credential secret files
 // (T22/T27: the database never stores credentials; secrets never enter the
 // settings store). The resolver is evaluated on every run, so settings and
-// remounted secrets take effect without a restart.
+// remounted secrets or changed environment values take effect without a restart.
 //
 // It returns nil (target not configured) when either half is missing. A
-// present-but-unreadable credential file is an error: the operator must
-// fix the mount rather than run with partial credentials.
+// present-but-unreadable credential file is an error when its environment
+// value is blank: the operator must fix the source rather than run with
+// partial credentials.
 func NewSettingsR2Resolver(db *sql.DB, svc *settings.Service, accessKeyPath, secretKeyPath string) R2Resolver {
 	return func(ctx context.Context) (*R2Delivery, error) {
 		st, err := svc.Get(ctx)

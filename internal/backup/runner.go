@@ -98,8 +98,8 @@ type Options struct {
 	ScheduledLocalDir   string
 	// R2 resolves the R2 delivery at run time (T27): the non-sensitive
 	// endpoint/bucket/prefix come from the admin settings store and the
-	// credentials from secret files, so configuration changes take effect
-	// on the next run without a restart. A nil result (with a nil error)
+	// credentials from their runtime source, so configuration changes take
+	// effect on the next run without a restart. A nil result (with a nil error)
 	// means the target is not configured.
 	R2 R2Resolver
 	// Audit records retention deletions (T24); optional.
@@ -108,7 +108,7 @@ type Options struct {
 
 // R2Resolver returns the current R2 delivery configuration, or nil when
 // the target is not configured. An error reports a resolution failure
-// (settings store, credential file); scheduled runs fail closed on it.
+// (settings store or credential source); scheduled runs fail closed on it.
 type R2Resolver func(ctx context.Context) (*R2Delivery, error)
 
 // Runner produces whole-instance backups. The run mutex is process-wide
