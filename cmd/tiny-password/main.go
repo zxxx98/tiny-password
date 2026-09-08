@@ -170,6 +170,8 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("backup passphrase secret: %w", err)
 	}
+	// R2 endpoint, bucket, and prefix come from admin settings; credentials
+	// come from TP_R2_ACCESS_KEY/TP_R2_SECRET_KEY or the configured files.
 	r2AccessPath := envOr("TP_R2_ACCESS_KEY_FILE", "/run/secrets/r2_access_key")
 	r2SecretPath := envOr("TP_R2_SECRET_KEY_FILE", "/run/secrets/r2_secret_key")
 	r2Resolver := backup.NewSettingsR2Resolver(db.DB, settingsService, r2AccessPath, r2SecretPath)
