@@ -68,7 +68,7 @@ jobs:
           tags: tiny-password:scan-${{ matrix.arch }}
           build-args: VERSION=scan-${{ matrix.arch }}
       - name: Scan candidate image
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: tiny-password:scan-${{ matrix.arch }}
           format: table
