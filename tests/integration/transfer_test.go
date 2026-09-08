@@ -33,6 +33,49 @@ func newTransferHarness(t *testing.T) *transferHarness {
 	return h
 }
 
+func TestTransferImportPreservesFavorite(t *testing.T) {
+	h := newTransferHarness(t)
+	principal := h.principalOf(t, "alice")
+	_, _, err := h.vault.ImportAll(t.Context(), principal, []vault.ImportItem{{
+		ItemType: vault.TypeLogin, Scope: string(vault.ScopePersonal), Favorite: true,
+		Payload: json.RawMessage(`{"name":"favorite import","username":"alice","password":"secret"}`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := h.vault.List(t.Context(), principal, vault.ListFilter{}, "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].Favorite {
+		t.Fatalf("imported favorite=%v items=%d", len(items) == 1 && items[0].Favorite, len(items))
+	}
+}
+
+func TestTransferBitwardenPreviewIsWriteFree(t *testing.T) {
+	h := newTransferHarness(t)
+	principal := h.principalOf(t, "alice")
+	before := h.listCount(t, h.itemClient(t, "alice"), "/items")
+	svc, err := transfer.NewService(h.vault, transfer.Options{
+		WorkDir: t.TempDir(), HMACKey: bytes.Repeat([]byte{0x72}, 32),
+		Audit: audit.NewService(audit.Options{}), DB: h.db.DB, Now: h.clock.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	result, err := svc.PreviewBitwarden(t.Context(), principal, []byte(`{"encrypted":false,"items":[{"id":"login-1","type":1,"name":"imported","login":{"username":"alice","password":"secret"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Counts["login"] != 1 || result.Token == "" || result.Conflicts != 0 || len(result.MissingReferences) != 0 {
+		t.Fatalf("unexpected preview: %#v", result)
+	}
+	if after := h.listCount(t, h.itemClient(t, "alice"), "/items"); after != before {
+		t.Fatalf("preview changed row count: before=%d after=%d", before, after)
+	}
+}
+
 func TestTransferExportImportRoundTrip(t *testing.T) {
 	archiveBin(t)
 	h := newTransferHarness(t)
