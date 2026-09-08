@@ -33,7 +33,7 @@ RUN set -eu; \
     esac; \
     wget -qO /tmp/7z.tar.xz "https://github.com/ip7z/7zip/releases/download/26.03/${TARBALL}"; \
     echo "${SHA256}  /tmp/7z.tar.xz" | sha256sum -c -; \
-    tar -xJf /tmp/7z.tar.xz -C /out 7zz; \
+    xz -dc /tmp/7z.tar.xz | tar -xf - -C /out 7zz; \
     chmod 0555 /out/7zz; \
     rm /tmp/7z.tar.xz
 
