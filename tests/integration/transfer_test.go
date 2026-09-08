@@ -78,6 +78,99 @@ func TestTransferBitwardenPreviewIsWriteFree(t *testing.T) {
 	}
 }
 
+func TestBitwardenPreviewAndConfirm(t *testing.T) {
+	h := newTransferHarness(t)
+	client := h.itemClient(t, "alice")
+	before := h.listCount(t, client, "/items")
+	raw := []byte(`{
+  "encrypted": false,
+  "folders": [{"id":"folder-1","name":"Personal"}],
+  "items": [{
+    "id":"login-1","folderId":"folder-1","type":1,"name":"Bitwarden login","favorite":true,
+    "login":{"username":"alice","password":"SYNSECRET-bitwarden","uris":[{"uri":"https://example.test"}]}
+  }]
+}`)
+
+	previewResp := postMultipartFile(t, h, client, "/transfer/import/bitwarden/preview", "file", "bitwarden.json", raw)
+	defer previewResp.Body.Close()
+	if previewResp.StatusCode != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", previewResp.StatusCode, decodeBody(t, previewResp)["message"])
+	}
+	var preview transfer.PreviewResult
+	if err := json.NewDecoder(previewResp.Body).Decode(&preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Counts["login"] != 1 || preview.Token == "" || preview.Conflicts != 0 || len(preview.MissingReferences) != 0 {
+		t.Fatalf("preview=%#v", preview)
+	}
+	if got := h.listCount(t, client, "/items"); got != before {
+		t.Fatalf("preview changed item count: before=%d after=%d", before, got)
+	}
+
+	confirm := h.request(t, "POST", "/transfer/import/confirm", map[string]any{"preview_token": preview.Token}, client)
+	if confirm.StatusCode != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", confirm.StatusCode, decodeBody(t, confirm)["message"])
+	}
+	if got := decodeBody(t, confirm)["imported_count"]; got != float64(1) {
+		t.Fatalf("imported_count=%v", got)
+	}
+	items, err := h.vault.List(t.Context(), h.principalOf(t, "alice"), vault.ListFilter{}, "", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != before+1 || items[0].Title != "Bitwarden login" || !items[0].Favorite || items[0].Scope != string(vault.ScopePersonal) {
+		t.Fatalf("imported metadata: %#v", items)
+	}
+	if len(items[0].ID) != 36 || items[0].ID[14] != '7' {
+		t.Fatalf("imported id is not UUIDv7: %q", items[0].ID)
+	}
+	detail := h.getDetail(t, client, items[0].ID)
+	payload := detail["payload"].(map[string]any)
+	if payload["password"] != "SYNSECRET-bitwarden" || payload["username"] != "alice" {
+		t.Fatalf("imported payload: %#v", payload)
+	}
+
+	encrypted := postMultipartFile(t, h, client, "/transfer/import/bitwarden/preview", "file", "encrypted.json", []byte(`{"encrypted":true,"items":[{"id":"e","type":1,"name":"encrypted","login":{}}]}`))
+	defer encrypted.Body.Close()
+	if encrypted.StatusCode != http.StatusBadRequest {
+		t.Fatalf("encrypted export status=%d", encrypted.StatusCode)
+	}
+	if body := decodeBody(t, encrypted); body["code"] != "BAD_ARCHIVE" || strings.Contains(body["message"].(string), "SYNSECRET") {
+		t.Fatalf("encrypted export response=%v", body)
+	}
+}
+
+func postMultipartFile(t *testing.T, h *transferHarness, client authClient, path, field, name string, contents []byte) *http.Response {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile(field, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(contents); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("POST", h.server.URL+"/api/v1"+path, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Origin", h.server.URL)
+	req.Header.Set("X-CSRF-Token", client.csrf)
+	if client.cookie != nil {
+		req.AddCookie(client.cookie)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
 func TestTransferExportImportRoundTrip(t *testing.T) {
 	archiveBin(t)
 	h := newTransferHarness(t)

@@ -114,6 +114,43 @@ func registerTransfer(api *http.ServeMux, deps TransferDeps) {
 		writeJSON(w, http.StatusOK, result)
 	}))
 
+	api.Handle("POST /api/v1/transfer/import/bitwarden/preview", guarded(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > archive.MaxTransferRequestBytes {
+			writeError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "the Bitwarden export exceeds the allowed size")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, archive.MaxTransferRequestBytes)
+		if err := r.ParseMultipartForm(archive.MaxArchiveBytes); err != nil {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+			writeError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "the Bitwarden export exceeds the allowed size")
+			return
+		}
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Bitwarden JSON file is required")
+			return
+		}
+		defer file.Close()
+		raw, err := io.ReadAll(io.LimitReader(file, int64(archive.MaxArchiveBytes)+1))
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Bitwarden JSON could not be read")
+			return
+		}
+		if len(raw) > archive.MaxArchiveBytes {
+			writeError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "the Bitwarden export exceeds the allowed size")
+			return
+		}
+		result, err := deps.Service.PreviewBitwarden(r.Context(), CurrentPrincipal(r.Context()), raw)
+		if err != nil {
+			writeTransferError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	}))
+
 	api.Handle("POST /api/v1/transfer/import/cancel", guarded(func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			PreviewToken string `json:"preview_token"`
@@ -161,6 +198,8 @@ func writeTransferError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "the archive exceeds the allowed size")
 	case errors.Is(err, transfer.ErrInvalidInput):
 		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid transfer input")
+	case errors.Is(err, transfer.ErrInvalidBitwarden):
+		writeError(w, r, http.StatusBadRequest, "BAD_ARCHIVE", "the Bitwarden export is invalid")
 	case errors.Is(err, archive.ErrBadArchive):
 		writeError(w, r, http.StatusBadRequest, "BAD_ARCHIVE", "the archive is invalid")
 	case errors.Is(err, vault.ErrPayloadInvalid), errors.Is(err, vault.ErrReferenceForbidden):
