@@ -118,6 +118,32 @@ describe("BackupsPage", () => {
     expect(screen.getByText(/BACKUP_UPLOAD_FAILED/)).toBeInTheDocument();
   });
 
+  it("uses constrained controls for schedule, timezone, and retention", async () => {
+    seedAdmin();
+    stubFetch([
+      { status: 200, body: jobsBody },
+      { status: 200, body: runsBody },
+    ]);
+    render(<BackupsPage />);
+
+    await waitFor(() => expect(screen.getByText("本地备份")).toBeInTheDocument());
+
+    const scheduleInputs = screen.getAllByLabelText("每日执行时间");
+    expect(scheduleInputs[0]).toHaveAttribute("type", "time");
+    expect(scheduleInputs[0]).toHaveValue("03:30");
+
+    const timezoneSelects = screen.getAllByLabelText("时区（IANA）");
+    expect(timezoneSelects[0].tagName).toBe("SELECT");
+    expect(timezoneSelects[0]).toHaveValue("UTC");
+    // Empty legacy timezone values are rendered as the existing UTC default.
+    expect(timezoneSelects[1]).toHaveValue("UTC");
+
+    const retentionInputs = screen.getAllByLabelText("日备份保留数");
+    expect(retentionInputs[0]).toHaveAttribute("type", "number");
+    expect(retentionInputs[0]).toHaveAttribute("min", "0");
+    expect(retentionInputs[0]).toHaveAttribute("max", "999");
+  });
+
   it("saves a job configuration and triggers a manual run", async () => {
     const user = userEvent.setup();
     seedAdmin();
@@ -132,12 +158,21 @@ describe("BackupsPage", () => {
     render(<BackupsPage />);
     await waitFor(() => expect(screen.getByText("本地备份")).toBeInTheDocument());
 
+    fireEvent.change(screen.getAllByLabelText("每日执行时间")[0], {
+      target: { value: "04:45" },
+    });
+    await user.selectOptions(screen.getAllByLabelText("时区（IANA）")[0], "America/Los_Angeles");
+
     await user.click(screen.getAllByRole("button", { name: "保存配置" })[0]);
     await waitFor(() =>
       expect(calls.some((c) => c.method === "PUT" && c.url.includes("/admin/backups/jobs"))).toBe(true),
     );
     const put = calls.find((c) => c.method === "PUT");
-    expect(put?.body).toMatchObject({ target: "local", schedule_time: "03:30" });
+    expect(put?.body).toMatchObject({
+      target: "local",
+      schedule_time: "04:45",
+      schedule_timezone: "America/Los_Angeles",
+    });
 
     await user.click(screen.getAllByRole("button", { name: "立即执行" })[0]);
     await waitFor(() =>

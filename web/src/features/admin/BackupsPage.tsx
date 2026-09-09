@@ -50,6 +50,41 @@ const errorMessages: Record<string, string> = {
   FORBIDDEN: "需要管理员角色。",
 };
 
+const selectClasses =
+  "w-full min-h-[44px] border-b-2 border-ink bg-transparent px-3 py-2 font-mono text-sm " +
+  "focus-visible:bg-neutral-100 focus-visible:outline-none";
+
+const fallbackTimezones = [
+  "America/Los_Angeles",
+  "America/New_York",
+  "Europe/London",
+  "Asia/Shanghai",
+  "Asia/Hong_Kong",
+  "Asia/Tokyo",
+  "Asia/Singapore",
+  "Australia/Sydney",
+];
+
+function getTimezoneOptions(current: string) {
+  const intl = Intl as typeof Intl & {
+    supportedValuesOf?: (key: "timeZone") => string[];
+  };
+  let supported: string[] = [];
+  try {
+    supported = intl.supportedValuesOf?.("timeZone") ?? [];
+  } catch {
+    supported = [];
+  }
+
+  const options = new Set(["UTC", ...(supported.length > 0 ? supported : fallbackTimezones)]);
+  if (current) options.add(current);
+  return [...options].sort((a, b) => {
+    if (a === "UTC") return -1;
+    if (b === "UTC") return 1;
+    return a.localeCompare(b);
+  });
+}
+
 /**
  * BackupsPage: per-target schedule/enabled/retention configuration, a
  * manual run trigger, and the independent run history. Local and R2 results
@@ -220,32 +255,67 @@ export function BackupsPage() {
                 </label>
                 <Field
                   id={`schedule-${job.target}`}
-                  label="每日执行时间（HH:MM）"
+                  label="每日执行时间"
+                  type="time"
+                  step={60}
                   value={job.schedule_time}
                   onChange={(e) => patchJob(job.target, { schedule_time: e.target.value })}
-                  hint="按本目标的时区执行；留空表示不按日调度。"
+                  hint="使用时间选择器设置本目标时区下的每日执行时间；留空表示不按日调度。"
                 />
-                <Field
-                  id={`timezone-${job.target}`}
-                  label="时区（IANA，如 Asia/Shanghai）"
-                  value={job.schedule_timezone}
-                  onChange={(e) => patchJob(job.target, { schedule_timezone: e.target.value })}
-                />
+                <div className="space-y-1">
+                  <label
+                    htmlFor={`timezone-${job.target}`}
+                    className="block font-mono text-xs uppercase tracking-widest"
+                  >
+                    时区（IANA）
+                  </label>
+                  <select
+                    id={`timezone-${job.target}`}
+                    name={`timezone-${job.target}`}
+                    className={selectClasses}
+                    value={job.schedule_timezone || "UTC"}
+                    onChange={(e) => patchJob(job.target, { schedule_timezone: e.target.value })}
+                  >
+                    {getTimezoneOptions(job.schedule_timezone).map((timezone) => (
+                      <option key={timezone} value={timezone}>
+                        {timezone}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="font-body text-xs text-neutral-500">
+                    从浏览器支持的 IANA 时区中选择；旧配置留空时按 UTC 显示并继续按 UTC 执行。
+                  </p>
+                </div>
                 <Field
                   id={`retention-daily-${job.target}`}
                   label="日备份保留数"
+                  type="number"
+                  min={0}
+                  max={999}
+                  step={1}
+                  inputMode="numeric"
                   value={String(job.retention_daily)}
                   onChange={(e) => patchJob(job.target, { retention_daily: Number(e.target.value) || 0 })}
                 />
                 <Field
                   id={`retention-weekly-${job.target}`}
                   label="周备份保留数"
+                  type="number"
+                  min={0}
+                  max={999}
+                  step={1}
+                  inputMode="numeric"
                   value={String(job.retention_weekly)}
                   onChange={(e) => patchJob(job.target, { retention_weekly: Number(e.target.value) || 0 })}
                 />
                 <Field
                   id={`retention-monthly-${job.target}`}
                   label="月备份保留数"
+                  type="number"
+                  min={0}
+                  max={999}
+                  step={1}
+                  inputMode="numeric"
                   value={String(job.retention_monthly)}
                   onChange={(e) => patchJob(job.target, { retention_monthly: Number(e.target.value) || 0 })}
                 />
