@@ -31,6 +31,7 @@ const (
 	EventVaultItemRestored        = "vault.item.restored"
 	EventVaultItemPurged          = "vault.item.purged"
 	EventVaultItemHistoryRestored = "vault.item.history_restored"
+	EventVaultItemMoved           = "vault.item.moved"
 	// Sensitive-field interaction events (design §6.4, §7.3): the field
 	// category is recorded, never the value.
 	EventVaultSecretRevealed = "vault.secret.revealed"
@@ -80,6 +81,7 @@ var allowlist = map[string]bool{
 	EventVaultItemRestored:        true,
 	EventVaultItemPurged:          true,
 	EventVaultItemHistoryRestored: true,
+	EventVaultItemMoved:           true,
 	EventVaultSecretRevealed:      true,
 	EventVaultSecretCopied:        true,
 	EventTransferExported:         true,
@@ -131,3 +133,6 @@ var ErrFieldTooLong = errors.New("audit: field exceeds the allowed length")
 
 // ErrInvalidResult reports a result outside success/failure.
 var ErrInvalidResult = errors.New("audit: invalid result")
+
+// ErrInvalidScope reports an invalid move-audit scope.
+var ErrInvalidScope = errors.New("audit: invalid scope")

@@ -199,3 +199,27 @@ func TestPolicyAdminHasNoPersonalPrivilege(t *testing.T) {
 		t.Fatal("unidentified actors must be denied")
 	}
 }
+
+func TestMoveUsesExistingUpdatePermission(t *testing.T) {
+	personal := Item{Scope: ScopePersonal, OwnerID: "owner"}
+	shared := Item{Scope: ScopeShared, CreatorID: "creator"}
+	cases := []struct {
+		name    string
+		role    Role
+		actor   string
+		item    Item
+		allowed bool
+	}{
+		{"personal owner", RoleMember, "owner", personal, true},
+		{"personal admin", RoleAdmin, "admin", personal, false},
+		{"shared creator", RoleMember, "creator", shared, true},
+		{"shared reader", RoleMember, "reader", shared, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Can(tc.role, tc.actor, tc.item, ActionUpdate); got != tc.allowed {
+				t.Fatalf("update permission = %v, want %v", got, tc.allowed)
+			}
+		})
+	}
+}

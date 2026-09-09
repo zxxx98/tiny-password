@@ -295,6 +295,23 @@ func (repo repository) deleteItemCompletely(ctx context.Context, q Queryer, item
 	return err
 }
 
+// deleteItemAtRevision permanently removes an active item only when its
+// optimistic-lock revision is still the expected one. Item history cascades
+// through the vault_items foreign key.
+func (repository) deleteItemAtRevision(ctx context.Context, q Queryer, itemID string, revision uint64) (bool, error) {
+	res, err := q.ExecContext(ctx,
+		`DELETE FROM vault_items WHERE id=? AND revision=? AND deleted_at IS NULL`,
+		itemID, revision)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
 // expiredTrashIDs lists trashed items whose retention deadline has passed.
 func (repo repository) expiredTrashIDs(ctx context.Context, q Queryer, cutoff string) ([]string, error) {
 	rows, err := q.QueryContext(ctx,

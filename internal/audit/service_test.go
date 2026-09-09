@@ -74,3 +74,29 @@ func TestRecordEmptyActorBecomesAnonymous(t *testing.T) {
 		t.Fatalf("actor=%q", actor)
 	}
 }
+
+func TestRecordMoveCarriesOpaqueSourceAndScopeContext(t *testing.T) {
+	svc := NewService(Options{})
+	db := newAuditDB(t)
+	event := Event{
+		Name:        EventVaultItemMoved,
+		ActorID:     "actor-id",
+		TargetType:  "item",
+		TargetID:    "target-id",
+		Result:      ResultSuccess,
+		SourceID:    "source-id",
+		SourceScope: "personal",
+		TargetScope: "shared",
+	}
+	if err := svc.Record(context.Background(), db, event); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID, sourceScope, targetScope string
+	if err := db.QueryRow(`SELECT source_id, source_scope, target_scope FROM audit_events`).
+		Scan(&sourceID, &sourceScope, &targetScope); err != nil {
+		t.Fatal(err)
+	}
+	if sourceID != event.SourceID || sourceScope != event.SourceScope || targetScope != event.TargetScope {
+		t.Fatalf("move context = %q/%q/%q", sourceID, sourceScope, targetScope)
+	}
+}
