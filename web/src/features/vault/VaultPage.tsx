@@ -320,6 +320,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
     setConfirmTrash(false);
     setTrashError(null);
     editorBusyRef.current = false;
+    setStatusMessage(null);
     setDirtyState(false);
     setModal({ kind: "closed" });
     if (!routeItemId) {
@@ -423,7 +424,8 @@ export function VaultPage({ section }: { section?: "trash" }) {
         // Establish the route before yielding to the list refresh. Otherwise
         // the route synchronizer sees a newly saved detail on `/vault` and
         // treats it as a stale modal that should be closed.
-        navigate(`/vault/${detail.id}`, { source: "list", modal: "item" });
+        const updateRoute = sourceScope && sourceScope !== detail.vault_scope ? replace : navigate;
+        updateRoute(`/vault/${detail.id}`, { source: "list", modal: "item" });
       }
       await loadPage(null, false);
       if (!mountedRef.current || refreshSequenceRef.current !== sequence) return;
@@ -597,6 +599,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
                   type="button"
                   onClick={() => {
                     modalSourceRef.current = "list";
+                    setStatusMessage(null);
                     navigate(`/vault/${item.id}`, { source: "list", modal: "item" });
                   }}
                   className={`grid w-full min-w-0 grid-cols-1 gap-1 px-4 py-3 text-left hover:bg-neutral-100 md:grid-cols-[minmax(0,1fr)_8rem_12rem_2rem] md:items-center md:gap-4 ${routeItemId === item.id ? "border-l-4 border-accent" : ""}`}

@@ -653,6 +653,37 @@ describe("VaultPage", () => {
     expect(window.location.pathname).toBe("/vault/item-3");
   });
 
+  it("returns to the list and clears the move status before reopening an item", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/vault");
+    const movedDetail = { ...loginDetail, id: "item-2", vault_scope: "shared" as const, revision: 1, owner_id: undefined, creator_id: "user-alice" };
+    const fetchMock = stubFetch([
+      { status: 200, body: { items: [{ ...meta }], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: loginDetail },
+      { status: 200, body: movedDetail },
+      { status: 200, body: { items: [movedDetail], next_cursor: null } },
+      { status: 200, body: movedDetail },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: /Family bank/ }));
+    await user.click(await screen.findByRole("button", { name: "编辑条目" }));
+    await user.click(screen.getByLabelText("共享"));
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await user.click(await screen.findByRole("button", { name: "确认移动" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    expect(screen.getByText("已移至共享")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "关闭弹窗" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(window.location.pathname).toBe("/vault"));
+    expect(screen.queryByText("已移至共享")).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: /Family bank/ }));
+
+    expect(await screen.findByRole("dialog", { name: "Family bank" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
   it("returns to detail when the editor cancel discards a dirty draft", async () => {
     const user = userEvent.setup();
     window.history.replaceState({}, "", "/vault");
