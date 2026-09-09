@@ -8,7 +8,8 @@ import { scheduleClipboardCleanup } from "./clipboardCleanup";
  * only after an explicit, audited reveal, re-masked after 30 seconds or on
  * blur, and copied through the clipboard with an honest best-effort cleanup
  * 30 seconds later. The value never sits in a focusable plaintext input
- * while masked — masking is not CSS-only.
+ * while masked — masking is not CSS-only. Plain display is an explicit local
+ * mode for values such as card numbers that are intentionally visible.
  */
 export function SensitiveField({
   label,
@@ -16,13 +17,16 @@ export function SensitiveField({
   field,
   itemId,
   csrfToken,
+  displayMode = "masked",
 }: {
   label: string;
   value: string;
   field: string;
   itemId: string;
   csrfToken: string;
+  displayMode?: "masked" | "plain";
 }) {
+  const plain = displayMode === "plain";
   const [revealed, setRevealed] = useState(false);
   const [copyState, setCopyState] = useState<string | null>(null);
   const hideTimer = useRef<number | undefined>(undefined);
@@ -92,7 +96,7 @@ export function SensitiveField({
     <div className="space-y-1">
       <span className="block font-mono text-xs uppercase tracking-widest">{label}</span>
       <div className="flex flex-wrap items-center gap-2">
-        {revealed ? (
+        {plain || revealed ? (
           <output
             data-testid={`secret-value-${field}`}
             tabIndex={0}
@@ -110,14 +114,16 @@ export function SensitiveField({
             ••••••••
           </span>
         )}
-        {revealed ? (
-          <Button variant="secondary" onClick={mask}>
-            遮蔽
-          </Button>
-        ) : (
-          <Button variant="secondary" onClick={reveal}>
-            显示
-          </Button>
+        {!plain && (
+          revealed ? (
+            <Button variant="secondary" onClick={mask}>
+              遮蔽
+            </Button>
+          ) : (
+            <Button variant="secondary" onClick={reveal}>
+              显示
+            </Button>
+          )
         )}
         <Button variant="ghost" onClick={() => void copy()}>
           复制

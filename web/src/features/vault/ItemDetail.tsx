@@ -142,7 +142,7 @@ export function ItemDetail({
             return (
               <div className="space-y-5">
                 <Row label="持卡人">{p.cardholder}</Row>
-                <SensitiveField label="卡号" field="number" value={p.number} itemId={detail.id} csrfToken={csrfToken} />
+                <SensitiveField label="卡号" field="number" value={p.number} itemId={detail.id} csrfToken={csrfToken} displayMode="plain" />
                 <Row label="有效期">{p.exp_month}/{p.exp_year}</Row>
                 {(p.cvv ?? "") !== "" && (
                   <SensitiveField label="CVV" field="cvv" value={p.cvv ?? ""} itemId={detail.id} csrfToken={csrfToken} />

@@ -37,8 +37,8 @@ export function CreditCardFields({ payload, errors, onChange, disabled }: Fields
         onChange={(e) => onChange({ name: e.target.value })} />
       <Field id="f-cardholder" label="持卡人" required value={payload.cardholder} error={errors.cardholder} disabled={disabled}
         onChange={(e) => onChange({ cardholder: e.target.value })} />
-      <Field id="f-number" label="卡号" type="password" autoComplete="off" required value={payload.number} error={errors.number} disabled={disabled}
-        onChange={(e) => onChange({ number: e.target.value })} hint="保存后以遮蔽形式显示。" />
+      <Field id="f-number" label="卡号" type="text" inputMode="numeric" autoComplete="off" required value={payload.number} error={errors.number} disabled={disabled}
+        onChange={(e) => onChange({ number: e.target.value })} />
       <div className="grid grid-cols-2 gap-4">
         <Field id="f-exp-month" label="有效月份" type="number" min={1} max={12} required value={String(payload.exp_month)} error={errors.exp_month} disabled={disabled}
           onChange={(e) => onChange({ exp_month: Number(e.target.value) })} />
