@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { Button } from "../../design-system/Button";
 import { describeItem, TYPE_LABELS, type CreditCardPayload, type IdentityPayload, type ItemDetail as ItemDetailData, type LoginPayload, type SecureNotePayload, type SshKeyPayload } from "./types";
 import { SensitiveField } from "./SensitiveField";
+import { scheduleClipboardCleanup } from "./clipboardCleanup";
+import { formatIdentityClipboard } from "./identityClipboard";
 
 export type ItemDetailProps = {
   detail: ItemDetailData;
@@ -59,6 +62,8 @@ export function ItemDetail({
   onToggleFavorite,
   onTrash,
 }: ItemDetailProps) {
+  const [identityCopyState, setIdentityCopyState] = useState<string | null>(null);
+
   return (
     <article className="space-y-6" aria-label={`条目 ${detail.title}`}>
       {showHeader && (
@@ -161,6 +166,28 @@ export function ItemDetail({
                 {rows.filter(([, v]) => !!v).map(([label, value]) => (
                   <Row key={label} label={label}>{value}</Row>
                 ))}
+                <div className="flex flex-wrap items-center gap-2 border-t border-divider pt-4">
+                  <Button
+                    variant="secondary"
+                    onClick={async () => {
+                      try {
+                        const copied = formatIdentityClipboard(p);
+                        await navigator.clipboard.writeText(copied);
+                        setIdentityCopyState("已复制身份地址");
+                        void scheduleClipboardCleanup(copied);
+                      } catch {
+                        setIdentityCopyState("复制失败，请重试或手动复制");
+                      }
+                    }}
+                  >
+                    复制身份地址
+                  </Button>
+                  {identityCopyState && (
+                    <p role="status" className="font-body text-xs text-neutral-600">
+                      {identityCopyState}
+                    </p>
+                  )}
+                </div>
               </div>
             );
           }
