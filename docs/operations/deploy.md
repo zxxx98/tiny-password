@@ -71,6 +71,35 @@ TP_LAN_PORT=28888 \
 docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d --force-recreate app
 ```
 
+## Argon2 密码哈希资源配置
+
+默认密码哈希策略保持为 Argon2id `64 MiB / t=3 / p=2`，但运行时额外限制整个进程最多同时使用 128 MiB Argon2 内存、最多 2 个并发计算。可通过以下环境变量调整：
+
+- `TP_ARGON2_MEMORY_MIB`：新密码 hash 的内存成本，默认 `64`。
+- `TP_ARGON2_ITERATIONS`：新密码 hash 的迭代次数，默认 `3`。
+- `TP_ARGON2_PARALLELISM`：新密码 hash 的并行度，默认 `2`。
+- `TP_ARGON2_MEMORY_BUDGET_MIB`：整个进程允许 Argon2 同时占用的总内存预算，默认 `128`。
+- `TP_ARGON2_MAX_CONCURRENCY`：同时执行的 Argon2 计算上限，默认 `2`。
+- `TP_ARGON2_VERIFY_MAX_MEMORY_MIB`：允许验证的旧 hash 单次最大内存，默认 `128`。
+
+低内存机器可使用：
+
+```bash
+export TP_ARGON2_MEMORY_MIB=19
+export TP_ARGON2_ITERATIONS=2
+export TP_ARGON2_PARALLELISM=1
+export TP_ARGON2_MEMORY_BUDGET_MIB=64
+export TP_ARGON2_MAX_CONCURRENCY=2
+export TP_ARGON2_VERIFY_MAX_MEMORY_MIB=64
+docker compose up -d --force-recreate app
+```
+
+如果现有用户仍保存旧的 64 MiB hash，第一次降级时 `TP_ARGON2_MEMORY_BUDGET_MIB` 和 `TP_ARGON2_VERIFY_MAX_MEMORY_MIB` 仍必须至少为 64 MiB。应用启动会扫描已保存的 PHC 参数；配置不足以验证旧 hash 时会拒绝启动并给出明确错误，而不是让用户登录时失败。
+
+用户成功登录后，如果保存的 Argon2 参数与当前目标参数不同，会在同一登录事务中自动重新 hash。这个迁移是双向的：既可把旧的高内存 hash 渐进迁移到低内存配置，也可在以后提高参数时自动升级。错误密码、禁用账户和失败的并发登录不会修改保存的 hash。
+
+支持的新 hash 目标范围为 7–256 MiB、1–10 次迭代、并行度 1–4。低于 19 MiB 会在启动日志中产生提醒；一般优先使用 19 MiB / t=2 / p=1，而不是继续压低内存。
+
 ## 更新与停机
 
 ```bash
