@@ -42,6 +42,7 @@ export type ItemEditorProps = {
   onCancel: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   onBusyChange?: (busy: boolean) => void;
+  onMoveConfirm?: (from: "personal" | "shared", to: "personal" | "shared") => Promise<boolean>;
 };
 
 function editorSnapshot(type: ItemType, scope: "personal" | "shared", payload: ItemPayload, tagText: string, favorite: boolean) {
@@ -61,6 +62,7 @@ export function ItemEditor({
   onCancel,
   onDirtyChange,
   onBusyChange,
+  onMoveConfirm,
 }: ItemEditorProps) {
   const [type, setType] = useState<ItemType>(initial?.item_type ?? "login");
   const [scope, setScope] = useState<"personal" | "shared">(initial?.vault_scope ?? "personal");
@@ -84,6 +86,9 @@ export function ItemEditor({
   const conflictReloadSequenceRef = useRef(0);
   // One idempotency key per creation draft: double submits replay safely.
   const idempotencyKey = useRef<string>(createIdempotencyKey());
+  // A move creates a new resource, so retries must reuse one key for this
+  // editor draft to replay the same target instead of creating another one.
+  const moveIdempotencyKey = useRef<string>(createIdempotencyKey());
   const initialSnapshot = useRef<string | null>(null);
   if (initialSnapshot.current === null) {
     initialSnapshot.current = editorSnapshot(type, scope, payload, tagText, favorite);
@@ -122,6 +127,11 @@ export function ItemEditor({
     if (Object.keys(clientErrors).length > 0) {
       return;
     }
+    const moving = Boolean(initial && scope !== initial.vault_scope);
+    if (moving && initial && onMoveConfirm) {
+      const confirmed = await onMoveConfirm(initial.vault_scope, scope);
+      if (!confirmed || !mountedRef.current) return;
+    }
     setSubmitting(true);
     const tags = tagText
       .split(/[,，]/)
@@ -133,8 +143,8 @@ export function ItemEditor({
         saved = await request<ItemDetailData>(
           "PUT",
           `/api/v1/items/${initial.id}`,
-          { revision, payload, tags, favorite },
-          { csrfToken },
+          { revision, payload, tags, favorite, ...(moving ? { vault_scope: scope } : {}) },
+          { csrfToken, ...(moving ? { idempotencyKey: moveIdempotencyKey.current } : {}) },
         );
       } else {
         saved = await request<ItemDetailData>(
@@ -144,7 +154,13 @@ export function ItemEditor({
           { csrfToken, idempotencyKey: idempotencyKey.current },
         );
       }
-      initialSnapshot.current = editorSnapshot(type, scope, payload, tagText, favorite);
+      initialSnapshot.current = editorSnapshot(
+        saved.item_type,
+        saved.vault_scope,
+        saved.payload as ItemPayload,
+        (saved.tags ?? []).join(", "),
+        saved.favorite,
+      );
       onDirtyChange?.(false);
       onSaved(saved);
     } catch (err) {
@@ -197,7 +213,8 @@ export function ItemEditor({
                       if (typeof fresh.revision === "number") {
                         setRevision(fresh.revision);
                       }
-                      initialSnapshot.current = editorSnapshot(type, fresh.vault_scope, freshPayload, freshTags, freshFavorite);
+                      setScope(fresh.vault_scope);
+                      initialSnapshot.current = editorSnapshot(fresh.item_type, fresh.vault_scope, freshPayload, freshTags, freshFavorite);
                       onDirtyChange?.(false);
                     })
                     .catch((err) => {
@@ -236,21 +253,22 @@ export function ItemEditor({
               ))}
             </select>
           </div>
-          <fieldset>
-            <legend className="font-mono text-xs uppercase tracking-widest">保存位置</legend>
-            <div className="mt-2 flex gap-3">
-              <label className="flex min-h-[44px] items-center gap-2 font-body text-sm">
-                <input type="radio" name="scope" checked={scope === "personal"} onChange={() => setScope("personal")} />
-                个人保险库
-              </label>
-              <label className="flex min-h-[44px] items-center gap-2 font-body text-sm">
-                <input type="radio" name="scope" checked={scope === "shared"} onChange={() => setScope("shared")} />
-                共享
-              </label>
-            </div>
-          </fieldset>
-        </>
-      )}
+          </>
+        )}
+
+      <fieldset>
+        <legend className="font-mono text-xs uppercase tracking-widest">保存位置</legend>
+        <div className="mt-2 flex gap-3">
+          <label className="flex min-h-[44px] items-center gap-2 font-body text-sm">
+            <input type="radio" name="scope" disabled={submitting} checked={scope === "personal"} onChange={() => setScope("personal")} />
+            个人保险库
+          </label>
+          <label className="flex min-h-[44px] items-center gap-2 font-body text-sm">
+            <input type="radio" name="scope" disabled={submitting} checked={scope === "shared"} onChange={() => setScope("shared")} />
+            共享
+          </label>
+        </div>
+      </fieldset>
 
       {type === "login" && <LoginFields payload={payload as LoginPayload} errors={errors} disabled={submitting} csrfToken={csrfToken} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "ssh_key" && <SshKeyFields payload={payload as SshKeyPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}

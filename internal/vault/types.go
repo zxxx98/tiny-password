@@ -41,7 +41,7 @@ const TimestampFormat = "2006-01-02T15:04:05.000000000Z"
 // plus tags) at 256 KiB before encryption (decision D09).
 const MaxPayloadBytes = 256 << 10
 
-// Scopes accepted on create.
+// Scopes accepted on create and cross-vault moves.
 var Scopes = map[string]bool{"personal": true, "shared": true}
 
 // Errors surfaced to the HTTP layer, which maps each to a stable code.

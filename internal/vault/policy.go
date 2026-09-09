@@ -48,9 +48,8 @@ type Item struct {
 	CreatorID string // shared: the creating member
 }
 
-// ErrOwnershipImmutable rejects an update that attempts to move an item
-// across scopes or to another owner/creator; scope and ownership are fixed
-// at creation time.
+// ErrOwnershipImmutable rejects an update that attempts to change scope or
+// owner/creator outside the dedicated, server-controlled move path.
 var ErrOwnershipImmutable = errors.New("vault: scope and owner/creator cannot be changed")
 
 // IsSelf reports whether the actor holds the write identity of the item:
@@ -122,9 +121,9 @@ func CanCreate(role Role, actorID string, scope Scope, ownerID, creatorID string
 }
 
 // ValidateImmutableOwnership compares the stored ownership view against the
-// values an update request carries. Nil pointers mean "field absent" (the
-// normal case: update DTOs carry no ownership); present-and-different is
-// rejected so ownership cannot move through an update.
+// values an update request carries. Nil pointers mean "field absent";
+// present-and-different is rejected so ownership cannot change through an
+// unapproved update path.
 func ValidateImmutableOwnership(current Item, scope *Scope, ownerID, creatorID *string) error {
 	if scope != nil && *scope != current.Scope {
 		return ErrOwnershipImmutable

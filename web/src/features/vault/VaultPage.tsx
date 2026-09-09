@@ -29,6 +29,8 @@ import {
 type Page = { items: ItemMeta[]; next_cursor: string | null };
 type ModalState = { kind: "closed" } | ItemDialogMode;
 type ModalSource = "list" | "direct" | null;
+type VaultScope = "personal" | "shared";
+type MoveConfirmation = { from: VaultScope; to: VaultScope };
 type PendingLeave =
   | { kind: "discard-edit"; detail: ItemDetailData }
   | { kind: "push"; path: string; meta?: NavigationMeta }
@@ -58,6 +60,8 @@ export function VaultPage({ section }: { section?: "trash" }) {
   const [confirmTrash, setConfirmTrash] = useState(false);
   const [trashBusy, setTrashBusy] = useState(false);
   const [trashError, setTrashError] = useState<{ message: string; requestId?: string } | null>(null);
+  const [moveConfirmation, setMoveConfirmation] = useState<MoveConfirmation | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const dirtyRef = useRef(false);
   const modalSourceRef = useRef<ModalSource>(null);
@@ -80,11 +84,14 @@ export function VaultPage({ section }: { section?: "trash" }) {
   const favoriteBusyRef = useRef(false);
   const trashRequestRef = useRef<{ controller: AbortController; sequence: number } | null>(null);
   const trashSequenceRef = useRef(0);
+  const moveResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      moveResolverRef.current?.(false);
+      moveResolverRef.current = null;
     };
   }, []);
 
@@ -95,6 +102,21 @@ export function VaultPage({ section }: { section?: "trash" }) {
 
   const setEditorBusy = useCallback((value: boolean) => {
     editorBusyRef.current = value;
+  }, []);
+
+  const requestMoveConfirmation = useCallback((from: VaultScope, to: VaultScope): Promise<boolean> => {
+    moveResolverRef.current?.(false);
+    setMoveConfirmation({ from, to });
+    return new Promise<boolean>((resolve) => {
+      moveResolverRef.current = resolve;
+    });
+  }, []);
+
+  const resolveMoveConfirmation = useCallback((confirmed: boolean) => {
+    const resolve = moveResolverRef.current;
+    moveResolverRef.current = null;
+    setMoveConfirmation(null);
+    resolve?.(confirmed);
   }, []);
 
   const failList = useCallback((err: unknown) => {
@@ -389,11 +411,14 @@ export function VaultPage({ section }: { section?: "trash" }) {
   }, [finishClose, setDirtyState]);
 
   const refreshAfterChange = useCallback(
-    async (detail: ItemDetailData) => {
+    async (detail: ItemDetailData, sourceScope?: VaultScope) => {
       if (!mountedRef.current) return;
       const sequence = ++refreshSequenceRef.current;
       setModal({ kind: "detail", detail });
       setDirtyState(false);
+      if (sourceScope && sourceScope !== detail.vault_scope) {
+        setStatusMessage(detail.vault_scope === "shared" ? "已移至共享" : "已移至个人保险库");
+      }
       if (path !== `/vault/${detail.id}`) {
         // Establish the route before yielding to the list refresh. Otherwise
         // the route synchronizer sees a newly saved detail on `/vault` and
@@ -413,6 +438,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
     editorBusyRef.current = false;
     setModal({ kind: "create" });
     modalSourceRef.current = null;
+    setStatusMessage(null);
     setDirtyState(false);
   }, [abortDetailRequest, abortFavoriteRequest, setDirtyState]);
 
@@ -421,6 +447,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
     abortFavoriteRequest();
     editorBusyRef.current = false;
     setModal({ kind: "edit", detail: modal.detail });
+    setStatusMessage(null);
     setDirtyState(false);
   }, [abortFavoriteRequest, modal, setDirtyState]);
 
@@ -549,6 +576,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
               密码健康：弱密码 {health.weak} · 重复 {health.reused} · 已过期 {health.expired}
             </p>
           )}
+          {statusMessage && <p className="border border-ink px-3 py-2 font-body text-sm" role="status">{statusMessage}</p>}
           <ErrorSummary message={listError ?? ""} requestId={listRequestId} onDismiss={() => setListError(null)} />
         </div>
 
@@ -607,7 +635,8 @@ export function VaultPage({ section }: { section?: "trash" }) {
           onTrash={() => { setTrashError(null); setConfirmTrash(true); }}
           onSaved={(detail) => {
             editorBusyRef.current = false;
-            void refreshAfterChange(detail);
+            const sourceScope = modal.kind === "edit" ? modal.detail.vault_scope : undefined;
+            void refreshAfterChange(detail, sourceScope);
           }}
           onCancelEdit={() => {
             editorBusyRef.current = false;
@@ -622,6 +651,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
           }}
           onDirtyChange={setDirtyState}
           onBusyChange={setEditorBusy}
+          onMoveConfirm={requestMoveConfirmation}
           onRestored={(detail) => void refreshAfterChange(detail)}
           onHistoryClose={() => {
             if (modal.kind === "history") setModal({ kind: "detail", detail: modal.detail });
@@ -642,6 +672,17 @@ export function VaultPage({ section }: { section?: "trash" }) {
           pendingLeaveRef.current = null;
         }}
         onConfirm={confirmDiscardChanges}
+      />
+      <ConfirmDialog
+        open={moveConfirmation !== null}
+        danger
+        title="移动条目？"
+        description={moveConfirmation?.to === "shared"
+          ? "移动后将创建一个新的共享条目并删除当前条目，历史记录不会保留。仍要继续吗？"
+          : "移动后将创建一个新的个人条目并删除当前条目，历史记录不会保留。仍要继续吗？"}
+        confirmLabel="确认移动"
+        onCancel={() => resolveMoveConfirmation(false)}
+        onConfirm={() => resolveMoveConfirmation(true)}
       />
       <ConfirmDialog
         open={confirmTrash}

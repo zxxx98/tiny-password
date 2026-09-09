@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -202,6 +203,30 @@ func (h *itemsHarness) createItemIdem(t *testing.T, client authClient, body map[
 		t.Fatal(err)
 	}
 	req, err := http.NewRequest("POST", h.server.URL+"/api/v1/items", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", h.server.URL)
+	req.Header.Set("X-CSRF-Token", client.csrf)
+	req.Header.Set("Idempotency-Key", key)
+	if client.cookie != nil {
+		req.AddCookie(client.cookie)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func (h *itemsHarness) updateItemIdem(t *testing.T, client authClient, itemID string, body map[string]any, key string) *http.Response {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest("PUT", h.server.URL+"/api/v1/items/"+itemID, bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -874,9 +899,8 @@ func TestItemUpdateRevisionHistoryAndImmutability(t *testing.T) {
 		t.Fatalf("absent tags dropped: %v", got["tags"])
 	}
 
-	// Ownership, scope and type cannot travel through an update.
+	// Ownership and type cannot travel through an update.
 	for name, extra := range map[string]map[string]any{
-		"scope":   {"vault_scope": "shared"},
 		"owner":   {"owner_id": "someone"},
 		"creator": {"creator_id": "someone"},
 	} {
@@ -927,6 +951,276 @@ func TestItemUpdateRevisionHistoryAndImmutability(t *testing.T) {
 	}
 	if ok200 != 1 || conflict409 != 1 {
 		t.Fatalf("concurrent updates: 200=%d 409=%d", ok200, conflict409)
+	}
+}
+
+func TestItemMoveRoundTripPreservesCurrentState(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	aliceID := h.lookupUserID(t, "alice")
+
+	types := []string{"login", "ssh_key", "credit_card", "identity", "secure_note"}
+	for _, typ := range types {
+		t.Run(typ, func(t *testing.T) {
+			initial := payloadFixtureWithoutReference(typ)
+			initial["name"] = typ + " original"
+			source := h.mustCreateItem(t, alice, "personal", typ, initial, []string{"original"})
+			sourceID := source["id"].(string)
+			current := payloadFixtureWithoutReference(typ)
+			current["name"] = typ + " current"
+			update := h.request(t, "PUT", "/items/"+sourceID, map[string]any{
+				"revision": 1, "payload": current, "tags": []string{"history"},
+			}, alice)
+			expectStatus(t, update, http.StatusOK)
+			update.Body.Close()
+
+			moveBody := map[string]any{
+				"revision": 2, "vault_scope": "shared", "payload": current,
+				"tags": []string{"moved", typ}, "favorite": true,
+			}
+			moved := h.request(t, "PUT", "/items/"+sourceID, moveBody, alice)
+			if moved.StatusCode != http.StatusOK {
+				t.Fatalf("move to shared: %d", moved.StatusCode)
+			}
+			shared := decodeBody(t, moved)
+			sharedID := shared["id"].(string)
+			if sharedID == sourceID || shared["vault_scope"] != "shared" || shared["revision"].(float64) != 1 {
+				t.Fatalf("shared metadata: %v", shared)
+			}
+			if shared["owner_id"] != nil || shared["creator_id"] != aliceID {
+				t.Fatalf("shared ownership: %v", shared)
+			}
+			assertItemState(t, shared, current, []string{"moved", typ}, true)
+
+			var sourceItems, sourceVersions, targetVersions, moveAudits int
+			if err := h.db.QueryRow(`SELECT COUNT(*) FROM vault_items WHERE id=?`, sourceID).Scan(&sourceItems); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.db.QueryRow(`SELECT COUNT(*) FROM item_versions WHERE item_id=?`, sourceID).Scan(&sourceVersions); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.db.QueryRow(`SELECT COUNT(*) FROM item_versions WHERE item_id=?`, sharedID).Scan(&targetVersions); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE event=? AND source_id=? AND target_id=?`, audit.EventVaultItemMoved, sourceID, sharedID).Scan(&moveAudits); err != nil {
+				t.Fatal(err)
+			}
+			if sourceItems != 0 || sourceVersions != 0 || targetVersions != 0 || moveAudits != 1 {
+				t.Fatalf("move cleanup: source=%d sourceVersions=%d targetVersions=%d audits=%d", sourceItems, sourceVersions, targetVersions, moveAudits)
+			}
+			oldSource := h.request(t, "GET", "/items/"+sourceID, nil, alice)
+			oldSourceBody := decodeBody(t, oldSource)
+			if oldSource.StatusCode != http.StatusNotFound || oldSourceBody["code"] != "NOT_FOUND" {
+				t.Fatalf("deleted source remains readable: %d %v", oldSource.StatusCode, oldSourceBody)
+			}
+
+			back := h.request(t, "PUT", "/items/"+sharedID, map[string]any{
+				"revision": 1, "vault_scope": "personal", "payload": current,
+				"tags": []string{"moved", typ}, "favorite": true,
+			}, alice)
+			if back.StatusCode != http.StatusOK {
+				t.Fatalf("move to personal: %d", back.StatusCode)
+			}
+			personal := decodeBody(t, back)
+			personalID := personal["id"].(string)
+			if personalID == sourceID || personalID == sharedID || personal["vault_scope"] != "personal" || personal["revision"].(float64) != 1 {
+				t.Fatalf("personal metadata: %v", personal)
+			}
+			if personal["owner_id"] != aliceID || personal["creator_id"] != nil {
+				t.Fatalf("personal ownership: %v", personal)
+			}
+			assertItemState(t, personal, current, []string{"moved", typ}, true)
+			if err := h.db.QueryRow(`SELECT COUNT(*) FROM vault_items WHERE id=?`, sharedID).Scan(&sourceItems); err != nil {
+				t.Fatal(err)
+			}
+			if sourceItems != 0 {
+				t.Fatalf("shared source survived reverse move: %d", sourceItems)
+			}
+		})
+	}
+}
+
+func TestItemMovePreservesExistingBillingReference(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	identity := h.mustCreateItem(t, alice, "personal", "identity", payloadFixtureWithoutReference("identity"), nil)
+	cardPayload := payloadFixtureWithoutReference("credit_card")
+	cardPayload["billing_address_item_id"] = identity["id"]
+	card := h.mustCreateItem(t, alice, "personal", "credit_card", cardPayload, nil)
+	resp := h.request(t, "PUT", "/items/"+card["id"].(string), map[string]any{
+		"revision": 1, "vault_scope": "shared", "payload": cardPayload,
+	}, alice)
+	got := decodeBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("move card with existing reference: %d %v", resp.StatusCode, got)
+	}
+	if gotPayload := got["payload"].(map[string]any); gotPayload["billing_address_item_id"] != identity["id"] {
+		t.Fatalf("billing reference = %v, want %v", gotPayload["billing_address_item_id"], identity["id"])
+	}
+}
+
+func TestItemMoveRejectsInvalidPermissionAndRevision(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	bob := h.itemClient(t, "bob")
+	item := h.mustCreateItem(t, alice, "personal", "secure_note", map[string]any{"name": "move", "body": "body"}, nil)
+	id := item["id"].(string)
+	body := map[string]any{"revision": 1, "vault_scope": "shared", "payload": map[string]any{"name": "move", "body": "body"}}
+
+	for name, client := range map[string]authClient{"admin": h.admin, "other": bob} {
+		resp := h.request(t, "PUT", "/items/"+id, body, client)
+		out := decodeBody(t, resp)
+		if resp.StatusCode != http.StatusNotFound || out["code"] != "NOT_FOUND" {
+			t.Fatalf("%s permission: %d %v", name, resp.StatusCode, out)
+		}
+	}
+
+	invalid := h.request(t, "PUT", "/items/"+id, map[string]any{
+		"revision": 1, "vault_scope": "team", "payload": body["payload"],
+	}, alice)
+	invalidOut := decodeBody(t, invalid)
+	if invalid.StatusCode != http.StatusBadRequest || invalidOut["code"] != "VALIDATION_ERROR" {
+		t.Fatalf("invalid scope: %d %v", invalid.StatusCode, invalidOut)
+	}
+
+	conflict := h.request(t, "PUT", "/items/"+id, map[string]any{
+		"revision": 2, "vault_scope": "shared", "payload": body["payload"],
+	}, alice)
+	conflictOut := decodeBody(t, conflict)
+	if conflict.StatusCode != http.StatusConflict || conflictOut["code"] != "REVISION_CONFLICT" || conflictOut["current_revision"].(float64) != 1 {
+		t.Fatalf("stale move: %d %v", conflict.StatusCode, conflictOut)
+	}
+
+	trash := h.request(t, "DELETE", "/items/"+id, nil, alice)
+	expectStatus(t, trash, http.StatusNoContent)
+	trash.Body.Close()
+	trashedMove := h.request(t, "PUT", "/items/"+id, body, alice)
+	trashedOut := decodeBody(t, trashedMove)
+	if trashedMove.StatusCode != http.StatusNotFound || trashedOut["code"] != "NOT_FOUND" {
+		t.Fatalf("trashed move: %d %v", trashedMove.StatusCode, trashedOut)
+	}
+}
+
+func TestItemMoveRollsBackWhenAuditFails(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	aliceID := h.lookupUserID(t, "alice")
+	payload := map[string]any{"name": "rollback", "body": "body"}
+	item := h.mustCreateItem(t, alice, "personal", "secure_note", payload, []string{"before"})
+	id := item["id"].(string)
+	updatedPayload := map[string]any{"name": "rollback", "body": "changed"}
+	resp := h.request(t, "PUT", "/items/"+id, map[string]any{"revision": 1, "payload": updatedPayload}, alice)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	faultyAudit := audit.NewService(audit.Options{Fault: func() error { return errInjectedAudit }})
+	faultyVault, err := vault.NewService(h.db.DB, mustMasterKey(t), vault.Options{Audit: faultyAudit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetScope := "shared"
+	updatedRaw, err := json.Marshal(updatedPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = faultyVault.Update(context.Background(), &auth.Principal{UserID: aliceID, Role: "member"}, id, vault.UpdateInput{
+		Revision:   2,
+		VaultScope: &targetScope,
+		Payload:    updatedRaw,
+	})
+	if err == nil {
+		t.Fatal("move succeeded despite audit failure")
+	}
+	var itemCount, versionCount, sharedCount int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM vault_items WHERE id=?`, id).Scan(&itemCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM item_versions WHERE item_id=?`, id).Scan(&versionCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM vault_items WHERE vault_scope='shared' AND item_type='secure_note'`).Scan(&sharedCount); err != nil {
+		t.Fatal(err)
+	}
+	if itemCount != 1 || versionCount != 1 || sharedCount != 0 {
+		t.Fatalf("rollback state: item=%d versions=%d shared=%d", itemCount, versionCount, sharedCount)
+	}
+}
+
+func TestItemMoveIdempotencyReplaysTarget(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	item := h.mustCreateItem(t, alice, "personal", "secure_note", map[string]any{"name": "retry", "body": "body"}, nil)
+	sourceID := item["id"].(string)
+	body := map[string]any{
+		"revision": 1, "vault_scope": "shared",
+		"payload": map[string]any{"name": "retry", "body": "body"},
+	}
+	key := "move-retry-key-0001"
+	first := h.updateItemIdem(t, alice, sourceID, body, key)
+	firstBody := decodeBody(t, first)
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first move: %d %v", first.StatusCode, firstBody)
+	}
+	targetID := firstBody["id"].(string)
+
+	replay := h.updateItemIdem(t, alice, sourceID, body, key)
+	replayBody := decodeBody(t, replay)
+	if replay.StatusCode != http.StatusOK {
+		t.Fatalf("replay move: %d %v", replay.StatusCode, replayBody)
+	}
+	if replayBody["id"] != targetID {
+		t.Fatalf("replay id=%v want %s", replayBody["id"], targetID)
+	}
+
+	conflict := h.updateItemIdem(t, alice, sourceID, map[string]any{
+		"revision": 1, "vault_scope": "shared", "favorite": true, "payload": body["payload"],
+	}, key)
+	conflictBody := decodeBody(t, conflict)
+	if conflict.StatusCode != http.StatusConflict || conflictBody["code"] != "IDEMPOTENCY_KEY_CONFLICT" {
+		t.Fatalf("idempotency conflict: %d %v", conflict.StatusCode, conflictBody)
+	}
+
+	malformed := h.updateItemIdem(t, alice, sourceID, body, "bad-key")
+	malformedBody := decodeBody(t, malformed)
+	if malformed.StatusCode != http.StatusBadRequest || malformedBody["code"] != "VALIDATION_ERROR" {
+		t.Fatalf("malformed idempotency key: %d %v", malformed.StatusCode, malformedBody)
+	}
+}
+
+var errInjectedAudit = errors.New("injected move audit failure")
+
+func assertItemState(t *testing.T, item map[string]any, payload map[string]any, tags []string, favorite bool) {
+	t.Helper()
+	gotPayload := item["payload"].(map[string]any)
+	for key, want := range payload {
+		gotJSON, err := json.Marshal(gotPayload[key])
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantJSON, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gotJSON, wantJSON) {
+			t.Fatalf("payload[%s] = %#v, want %#v", key, gotPayload[key], want)
+		}
+	}
+	gotTags := item["tags"].([]any)
+	if len(gotTags) != len(tags) || gotTags[0] != tags[0] {
+		t.Fatalf("tags = %v, want %v", gotTags, tags)
+	}
+	for i := range tags {
+		if gotTags[i] != tags[i] {
+			t.Fatalf("tags = %v, want %v", gotTags, tags)
+		}
+	}
+	if item["favorite"] != favorite {
+		t.Fatalf("favorite = %v, want %v", item["favorite"], favorite)
 	}
 }
 

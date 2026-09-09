@@ -25,7 +25,10 @@ type ItemsDeps struct {
 	LoginProbeClient *http.Client
 }
 
-const itemsCreateScope = "items.create"
+const (
+	itemsCreateScope          = "items.create"
+	itemsMoveIdempotencyScope = "items.move"
+)
 
 // itemsMaxBodyBytes bounds item JSON bodies: the plaintext envelope is
 // capped at 256 KiB (D09) and this adds headroom for tags and structure.
@@ -53,10 +56,11 @@ type itemCreateRequest struct {
 }
 
 type itemUpdateRequest struct {
-	Revision uint64          `json:"revision"`
-	Tags     *[]string       `json:"tags"`
-	Favorite *bool           `json:"favorite"`
-	Payload  json.RawMessage `json:"payload"`
+	Revision   uint64          `json:"revision"`
+	VaultScope *string         `json:"vault_scope"`
+	Tags       *[]string       `json:"tags"`
+	Favorite   *bool           `json:"favorite"`
+	Payload    json.RawMessage `json:"payload"`
 }
 
 func registerItems(api *http.ServeMux, deps ItemsDeps) {
@@ -95,11 +99,58 @@ func registerItems(api *http.ServeMux, deps ItemsDeps) {
 			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "payload is required")
 			return
 		}
-		update := vault.UpdateInput{Revision: input.Revision, Tags: input.Tags, Favorite: input.Favorite, Payload: input.Payload}
+		var claim *idempotency.Claim
+		if input.VaultScope != nil && deps.Idempotency != nil {
+			key, present, invalid := IdempotencyKey(r)
+			if invalid {
+				writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid idempotency key")
+				return
+			}
+			if present {
+				principal := CurrentPrincipal(r.Context())
+				scope := ScopeFor(itemsMoveIdempotencyScope, principal.UserID)
+				fingerprint := deps.updateFingerprint(r.PathValue("itemId"), input)
+				c, outcome, err := deps.Idempotency.Claim(r.Context(), scope, key, fingerprint)
+				if err != nil {
+					writeError(w, r, http.StatusInternalServerError, "INTERNAL", "the request could not be processed")
+					return
+				}
+				switch outcome {
+				case idempotency.OutcomeFresh:
+					claim = c
+				case idempotency.OutcomeInFlight:
+					writeError(w, r, http.StatusConflict, "CONFLICT", "an identical request is still in progress")
+					return
+				case idempotency.OutcomeConflict:
+					writeError(w, r, http.StatusConflict, "IDEMPOTENCY_KEY_CONFLICT", "this idempotency key was used with different content")
+					return
+				default: // Replay the target created by the original move.
+					resourceID, err := deps.Idempotency.ReplayResourceID(r.Context(), scope, key, fingerprint)
+					if err != nil {
+						writeError(w, r, http.StatusConflict, "CONFLICT", "idempotency record is unavailable")
+						return
+					}
+					detail, err := deps.Service.Get(r.Context(), principal, resourceID)
+					if err != nil {
+						writeError(w, r, http.StatusConflict, "CONFLICT", "the original resource no longer exists")
+						return
+					}
+					writeJSON(w, http.StatusOK, detail)
+					return
+				}
+			}
+		}
+		update := vault.UpdateInput{Revision: input.Revision, VaultScope: input.VaultScope, Tags: input.Tags, Favorite: input.Favorite, Payload: input.Payload, Claim: claim}
 		detail, err := deps.Service.Update(r.Context(), principal, r.PathValue("itemId"), update)
 		if err != nil {
+			claim.Release(r.Context())
 			writeItemsError(w, r, err)
 			return
+		}
+		// A same-scope request may have supplied vault_scope explicitly. It is
+		// still an ordinary update, so do not leave a pending move claim behind.
+		if claim != nil && claim.ResourceID == "" {
+			claim.Release(r.Context())
 		}
 		writeJSON(w, http.StatusOK, detail)
 	}))
@@ -343,6 +394,33 @@ func (d ItemsDeps) createFingerprint(input itemCreateRequest) string {
 	tags := strings.Join(input.Tags, "\x00")
 	return d.Idempotency.Fingerprint(itemsCreateScope, input.ItemType, input.VaultScope,
 		strconv.FormatBool(input.Favorite), tags, string(canonical))
+}
+
+// updateFingerprint binds a move retry to the exact source and submitted
+// draft. Presence is included for optional fields so omitted values cannot
+// replay a request that explicitly supplied an empty value.
+func (d ItemsDeps) updateFingerprint(itemID string, input itemUpdateRequest) string {
+	canonical, err := json.Marshal(input.Payload)
+	if err != nil {
+		canonical = input.Payload
+	}
+	targetScope := "absent"
+	if input.VaultScope != nil {
+		targetScope = "present:" + *input.VaultScope
+	}
+	tags := "absent"
+	if input.Tags != nil {
+		raw, err := json.Marshal(*input.Tags)
+		if err == nil {
+			tags = "present:" + string(raw)
+		}
+	}
+	favorite := "absent"
+	if input.Favorite != nil {
+		favorite = "present:" + strconv.FormatBool(*input.Favorite)
+	}
+	return d.Idempotency.Fingerprint(itemsMoveIdempotencyScope, itemID,
+		strconv.FormatUint(input.Revision, 10), targetScope, tags, favorite, string(canonical))
 }
 
 // search implements POST /items/search with a body-carried cursor and limit.

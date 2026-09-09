@@ -27,6 +27,7 @@ export type ItemDialogProps = {
   onCancelEdit?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   onBusyChange?: (busy: boolean) => void;
+  onMoveConfirm?: (from: "personal" | "shared", to: "personal" | "shared") => Promise<boolean>;
   onRestored?: (detail: ItemDetailData) => void;
   onHistoryClose?: () => void;
   onRetry?: () => void;
@@ -131,6 +132,7 @@ export function ItemDialog({
   onCancelEdit,
   onDirtyChange,
   onBusyChange,
+  onMoveConfirm,
   onRestored,
   onHistoryClose,
   onRetry,
@@ -182,6 +184,7 @@ export function ItemDialog({
             onCancel={onCancelEdit ?? onClose}
             onDirtyChange={onDirtyChange}
             onBusyChange={onBusyChange}
+            onMoveConfirm={onMoveConfirm}
           />
         )}
         {mode.kind === "edit" && (
@@ -192,6 +195,7 @@ export function ItemDialog({
             onCancel={onCancelEdit ?? onClose}
             onDirtyChange={onDirtyChange}
             onBusyChange={onBusyChange}
+            onMoveConfirm={onMoveConfirm}
           />
         )}
         {mode.kind === "history" && (

@@ -248,10 +248,12 @@ describe("ItemEditor", () => {
       { status: 200, body: fresh },
     ]);
     render(<ItemEditor csrfToken={csrf} initial={loginDetail} onSaved={() => {}} onCancel={() => {}} />);
+    await user.click(screen.getByLabelText("共享"));
     await user.click(screen.getByRole("button", { name: "保存修改" }));
     await screen.findByRole("alert");
     await user.click(screen.getByRole("button", { name: "重新加载服务端内容" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("个人保险库")).toBeChecked();
     await user.click(screen.getByRole("button", { name: "保存修改" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     const body = JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string);
@@ -274,6 +276,73 @@ describe("ItemEditor", () => {
     await user.clear(screen.getByLabelText("名称"));
     await user.type(screen.getByLabelText("名称"), "Renamed");
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("keeps an edit draft until move confirmation and sends the target scope", async () => {
+    const user = userEvent.setup();
+    const onMoveConfirm = vi.fn().mockResolvedValue(false);
+    const onSaved = vi.fn();
+    const fetchMock = stubFetch([{ status: 200, body: { ...loginDetail, id: "item-2", vault_scope: "shared", revision: 1 } }]);
+    render(
+      <ItemEditor
+        csrfToken={csrf}
+        initial={loginDetail}
+        onSaved={onSaved}
+        onCancel={() => {}}
+        onMoveConfirm={onMoveConfirm}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("共享"));
+    expect(screen.getByLabelText("共享")).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(onMoveConfirm).toHaveBeenCalledWith("personal", "shared"));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("共享")).toBeChecked();
+
+    onMoveConfirm.mockResolvedValue(true);
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: "item-2" })));
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toMatchObject({ revision: 1, vault_scope: "shared", payload: loginDetail.payload, tags: ["bank"], favorite: false });
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({ "Idempotency-Key": expect.any(String) });
+  });
+
+  it("confirms a shared-to-personal move before sending it", async () => {
+    const user = userEvent.setup();
+    const onMoveConfirm = vi.fn().mockResolvedValue(false);
+    const onSaved = vi.fn();
+    const sharedDetail: ItemDetailData = {
+      ...loginDetail,
+      vault_scope: "shared",
+      owner_id: undefined,
+      creator_id: "user-alice",
+    };
+    const fetchMock = stubFetch([
+      { status: 200, body: { ...sharedDetail, id: "item-3", vault_scope: "personal", owner_id: "user-alice", creator_id: undefined, revision: 1 } },
+    ]);
+    render(
+      <ItemEditor
+        csrfToken={csrf}
+        initial={sharedDetail}
+        onSaved={onSaved}
+        onCancel={() => {}}
+        onMoveConfirm={onMoveConfirm}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("个人保险库"));
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(onMoveConfirm).toHaveBeenCalledWith("shared", "personal"));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("个人保险库")).toBeChecked();
+
+    onMoveConfirm.mockResolvedValue(true);
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ id: "item-3" })));
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toMatchObject({ revision: 1, vault_scope: "personal", payload: sharedDetail.payload, tags: ["bank"], favorite: false });
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({ "Idempotency-Key": expect.any(String) });
   });
 
   it("re-masks after reveal even when copy is used", async () => {
@@ -505,6 +574,83 @@ describe("VaultPage", () => {
     await user.click(within(discardDialog).getByRole("button", { name: "取消" }));
     expect(screen.getByLabelText("名称")).toHaveValue("Draft title");
     expect(window.location.pathname).toBe("/vault/item-1");
+  });
+
+  it("confirms a move, switches to the returned ID, and keeps success when list refresh fails", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/vault");
+    const movedDetail = { ...loginDetail, id: "item-2", vault_scope: "shared" as const, revision: 1, owner_id: undefined, creator_id: "user-alice" };
+    const fetchMock = stubFetch([
+      { status: 200, body: { items: [{ ...meta }], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: loginDetail },
+      { status: 200, body: movedDetail },
+      { status: 500, body: { code: "INTERNAL", message: "列表刷新失败", request_id: "list-1" } },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: /Family bank/ }));
+    await user.click(await screen.findByRole("button", { name: "编辑条目" }));
+    await user.click(screen.getByLabelText("共享"));
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+
+    const confirm = await screen.findByRole("dialog", { name: "移动条目？" });
+    expect(confirm).toHaveTextContent("移动后将创建一个新的共享条目并删除当前条目，历史记录不会保留。仍要继续吗？");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await user.click(within(confirm).getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("共享")).toBeChecked();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await user.click(await screen.findByRole("button", { name: "确认移动" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    const [url, init] = fetchMock.mock.calls[3];
+    expect(url).toBe("/api/v1/items/item-1");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ vault_scope: "shared", revision: 1 });
+    expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": expect.any(String) });
+    expect(await screen.findByText("已移至共享")).toBeInTheDocument();
+    expect(screen.getByText("列表刷新失败")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/vault/item-2");
+  });
+
+  it("confirms a shared-to-personal move and shows its success status", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/vault");
+    const sharedMeta = { ...meta, vault_scope: "shared" as const, owner_id: undefined, creator_id: "user-alice" };
+    const sharedDetail: ItemDetailData = {
+      ...loginDetail,
+      vault_scope: "shared",
+      owner_id: undefined,
+      creator_id: "user-alice",
+    };
+    const movedDetail = { ...sharedDetail, id: "item-3", vault_scope: "personal" as const, owner_id: "user-alice", creator_id: undefined, revision: 1 };
+    const fetchMock = stubFetch([
+      { status: 200, body: { items: [sharedMeta], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: sharedDetail },
+      { status: 200, body: movedDetail },
+      { status: 200, body: { items: [movedDetail], next_cursor: null } },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: /Family bank/ }));
+    await user.click(await screen.findByRole("button", { name: "编辑条目" }));
+    await user.click(screen.getByLabelText("个人保险库"));
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+
+    const confirm = await screen.findByRole("dialog", { name: "移动条目？" });
+    expect(confirm).toHaveTextContent("移动后将创建一个新的个人条目并删除当前条目，历史记录不会保留。仍要继续吗？");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await user.click(within(confirm).getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("个人保险库")).toBeChecked();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await user.click(await screen.findByRole("button", { name: "确认移动" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    const [url, init] = fetchMock.mock.calls[3];
+    expect(url).toBe("/api/v1/items/item-1");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ vault_scope: "personal", revision: 1 });
+    expect(await screen.findByText("已移至个人保险库")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/vault/item-3");
   });
 
   it("returns to detail when the editor cancel discards a dirty draft", async () => {

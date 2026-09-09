@@ -298,12 +298,15 @@ func (s *Service) List(ctx context.Context, actor *auth.Principal, filter ListFi
 }
 
 // UpdateInput carries the update request. Absent tags keep the stored tags;
-// ownership, scope and type are not part of the request at all.
+// VaultScope is only used by the dedicated cross-vault move path and type and
+// ownership are never client-controlled.
 type UpdateInput struct {
-	Revision uint64
-	Tags     *[]string
-	Favorite *bool
-	Payload  json.RawMessage
+	Revision   uint64
+	Tags       *[]string
+	Favorite   *bool
+	Payload    json.RawMessage
+	VaultScope *string
+	Claim      *idempotency.Claim
 }
 
 // Update applies one effective change under optimistic locking. The previous
@@ -345,6 +348,9 @@ func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id stri
 	if input.Revision < 1 {
 		return Detail{}, fmt.Errorf("%w: revision must be at least 1", ErrPayloadInvalid)
 	}
+	if input.VaultScope != nil && !Scopes[*input.VaultScope] {
+		return Detail{}, ErrInvalidScope
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Detail{}, err
@@ -366,6 +372,9 @@ func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id stri
 	// reaches the write path, and the CAS below guards the remaining race.
 	if row.Revision != input.Revision {
 		return Detail{}, &RevisionConflictError{CurrentRevision: row.Revision}
+	}
+	if input.VaultScope != nil && *input.VaultScope != row.Scope {
+		return s.moveOnce(ctx, tx, actor, row, input)
 	}
 
 	// The type is fixed by the stored row; the payload must match it.
@@ -438,6 +447,99 @@ func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id stri
 	meta.Favorite = favorite
 	meta.UpdatedAt = updatedAt
 	return Detail{Meta: meta, Tags: envelope.Tags, Payload: payload}, nil
+}
+
+// moveOnce creates a new target item from the submitted current payload and
+// removes the source in the same transaction. Scope and ownership are bound
+// into the new item's AAD, so the source row is never rewritten in place.
+func (s *Service) moveOnce(ctx context.Context, tx *sql.Tx, actor *auth.Principal, source itemRow, input UpdateInput) (Detail, error) {
+	targetScope := *input.VaultScope
+	payload, err := decodePayload(source.ItemType, input.Payload)
+	if err != nil {
+		return Detail{}, err
+	}
+	if ref, ok := referenceTarget(payload); ok {
+		if err := s.checkReference(ctx, actor, source.policyView(), ref); err != nil {
+			return Detail{}, err
+		}
+	}
+	_, _, oldEnvelope, err := s.decryptRow(source)
+	if err != nil {
+		return Detail{}, err
+	}
+	tags := oldEnvelope.Tags
+	if input.Tags != nil {
+		tags, err = validateTags(*input.Tags)
+		if err != nil {
+			return Detail{}, err
+		}
+	}
+	favorite := source.Favorite
+	if input.Favorite != nil {
+		favorite = *input.Favorite
+	}
+
+	envelope, plaintext, err := buildEnvelope(source.ItemType, tags, payload)
+	if err != nil {
+		return Detail{}, err
+	}
+	targetID := ident.NewUUIDv7()
+	owner, creator := "", ""
+	if targetScope == string(ScopePersonal) {
+		owner = actor.UserID
+	} else {
+		creator = actor.UserID
+	}
+	targetAt := s.now().UTC().Format(TimestampFormat)
+	enc, err := s.key.Encrypt(plaintext, AADFor(targetID, targetScope, owner, creator, crypto.PayloadVersion, 1))
+	if err != nil {
+		return Detail{}, err
+	}
+	target := itemRow{
+		ID: targetID, Scope: targetScope,
+		OwnerID:        sql.NullString{String: owner, Valid: owner != ""},
+		CreatorID:      sql.NullString{String: creator, Valid: creator != ""},
+		ItemType:       source.ItemType,
+		Favorite:       favorite,
+		PayloadVersion: enc.Version, Nonce: enc.Nonce[:], Ciphertext: enc.Ciphertext,
+		Revision: 1, CreatedAt: targetAt, UpdatedAt: targetAt,
+	}
+	if err := s.repo.insertItem(ctx, tx, target); err != nil {
+		return Detail{}, err
+	}
+	if err := s.audit.Record(ctx, tx, audit.Event{
+		Name: audit.EventVaultItemCreated, ActorID: actor.UserID,
+		TargetType: audit.TargetItem, TargetID: targetID, Result: audit.ResultSuccess,
+	}); err != nil {
+		return Detail{}, err
+	}
+	if err := s.audit.Record(ctx, tx, audit.Event{
+		Name: audit.EventVaultItemMoved, ActorID: actor.UserID,
+		TargetType: audit.TargetItem, TargetID: targetID, Result: audit.ResultSuccess,
+		SourceID: source.ID, SourceScope: source.Scope, TargetScope: targetScope,
+	}); err != nil {
+		return Detail{}, err
+	}
+	if input.Claim != nil {
+		if err := input.Claim.Complete(ctx, tx, targetID); err != nil {
+			return Detail{}, err
+		}
+	}
+	deleted, err := s.repo.deleteItemAtRevision(ctx, tx, source.ID, source.Revision)
+	if err != nil {
+		return Detail{}, err
+	}
+	if !deleted {
+		current, err := s.repo.currentRevision(ctx, tx, source.ID)
+		if err != nil {
+			return Detail{}, ErrNotFound
+		}
+		return Detail{}, &RevisionConflictError{CurrentRevision: current}
+	}
+	if err := tx.Commit(); err != nil {
+		return Detail{}, err
+	}
+	return s.decorateDetail(ctx, s.db, Detail{Meta: target.toMeta(), Tags: envelope.Tags, Payload: payload}), nil
 }
 
 // decryptRow opens the current version of a row and returns the canonical

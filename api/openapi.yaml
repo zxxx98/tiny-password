@@ -645,11 +645,19 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [items]
-      summary: Update with optimistic locking on revision
-      description: Each effective update archives one encrypted history version
-        (max 10 retained). Scope, owner/creator and type are immutable.
+      summary: Update or move with optimistic locking on revision
+      description: |
+        Each effective same-scope update archives one encrypted history version
+        (max 10 retained). If vault_scope is present and differs from the
+        current scope, the server creates a new target item with a new ID and
+        revision 1 from the submitted current payload, deletes the source item
+        and all of its history in the same transaction, and returns the target
+        detail. Move history is not retained. Ownership is derived from the
+        acting user and cannot be supplied by the client. Omit vault_scope or
+        send the current scope to use ordinary update behavior.
       parameters:
         - $ref: "#/components/parameters/ItemId"
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -1376,6 +1384,18 @@ components:
         target_id:
           allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
           nullable: true
+        source_id:
+          allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
+          nullable: true
+          description: source item ID for vault.item.moved events
+        source_scope:
+          allOf: [{ $ref: "#/components/schemas/VaultScope" }]
+          nullable: true
+          description: source vault scope for vault.item.moved events
+        target_scope:
+          allOf: [{ $ref: "#/components/schemas/VaultScope" }]
+          nullable: true
+          description: target vault scope for vault.item.moved events
         result: { type: string, enum: [success, failure] }
         request_id:
           allOf: [{ $ref: "#/components/schemas/OpaqueId" }]
@@ -1431,6 +1451,10 @@ components:
       required: [revision, payload]
       properties:
         revision: { type: integer, minimum: 1 }
+        vault_scope:
+          allOf: [{ $ref: "#/components/schemas/VaultScope" }]
+          nullable: true
+          description: optional target scope; omission or current scope performs an ordinary update
         tags:
           type: array
           maxItems: 32
