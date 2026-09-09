@@ -42,6 +42,26 @@ describe("GeneratorPage", () => {
     expect(screen.getByLabelText("生成的密码")).not.toHaveTextContent("GENERATED-PASSWORD");
   });
 
+  it("copies a generated password without revealing it", async () => {
+    const user = userEvent.setup();
+    sessionStore.set({ principal, csrfToken: "csrf" });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const readText = vi.fn().mockResolvedValue("CHANGED");
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      clipboard: { writeText, readText },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(200, { value: "COPY-ME" })));
+
+    render(<GeneratorPage />);
+    await user.click(screen.getByRole("button", { name: "生成密码" }));
+    await user.click(await screen.findByRole("button", { name: "复制密码" }));
+
+    expect(writeText).toHaveBeenCalledWith("COPY-ME");
+    expect(screen.getByLabelText("生成的密码")).not.toHaveTextContent("COPY-ME");
+    expect(screen.getByText(/已复制。30 秒后将尽力清除剪贴板/)).toBeInTheDocument();
+  });
+
   it("saves SSH passphrase and comment from generation A after inputs are edited to B", async () => {
     const user = userEvent.setup();
     sessionStore.set({ principal, csrfToken: "csrf" });
