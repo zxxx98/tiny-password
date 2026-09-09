@@ -93,8 +93,8 @@ export function TrashPage({ csrfToken, onChanged }: TrashPageProps) {
                   <Button variant="secondary" disabled={busy !== null} onClick={() => setRestoreTarget(item)}>
                     恢复
                   </Button>
-                  <Button variant="ghost" disabled={busy !== null} onClick={() => setPurgeTarget(item)}>
-                    永久删除
+                  <Button variant="danger" disabled={busy !== null} onClick={() => setPurgeTarget(item)}>
+                    彻底删除
                   </Button>
                 </div>
               </li>
@@ -118,9 +118,9 @@ export function TrashPage({ csrfToken, onChanged }: TrashPageProps) {
       <ConfirmDialog
         open={purgeTarget !== null}
         danger
-        title="永久删除？"
+        title="彻底删除？"
         description="条目及其全部历史版本将被永久清除，无法通过产品恢复。"
-        confirmLabel={busy !== null ? "删除中…" : "永久删除"}
+        confirmLabel={busy !== null ? "删除中…" : "彻底删除"}
         confirmDisabled={busy !== null}
         onCancel={() => { if (busy === null) setPurgeTarget(null); }}
         onConfirm={() => { if (purgeTarget && busy === null) void act(purgeTarget, "purge"); }}

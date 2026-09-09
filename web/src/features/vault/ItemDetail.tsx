@@ -182,7 +182,7 @@ export function ItemDetail({
             {detail.favorite ? "取消收藏" : "收藏"}
           </Button>
           <Button variant="ghost" onClick={onShowHistory}>历史</Button>
-          <Button variant="ghost" onClick={onTrash}>移入回收站</Button>
+          <Button variant="danger" onClick={onTrash}>移入回收站</Button>
         </footer>
       )}
       {showActions && !canManage && (

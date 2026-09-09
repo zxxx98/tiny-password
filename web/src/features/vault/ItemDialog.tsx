@@ -109,7 +109,7 @@ function detailFooter({
       )}
       <Button variant="ghost" onClick={onShowHistory}>历史记录</Button>
       {canManage && (
-        <Button variant="ghost" className="ml-auto text-accent" onClick={onTrash}>
+        <Button variant="danger" className="ml-auto" onClick={onTrash}>
           移入回收站
         </Button>
       )}

@@ -733,10 +733,10 @@ describe("TrashPage", () => {
     ]);
     render(<TrashPage csrfToken={csrf} onChanged={() => {}} />);
     expect(await screen.findByText("Family bank")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "永久删除" }));
+    await user.click(screen.getByRole("button", { name: "彻底删除" }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("无法通过产品恢复");
-    await user.click(within(dialog).getByRole("button", { name: "永久删除" }));
+    await user.click(within(dialog).getByRole("button", { name: "彻底删除" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/items/item-1/purge");
   });

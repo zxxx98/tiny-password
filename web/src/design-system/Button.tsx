@@ -1,12 +1,13 @@
 import type { ButtonHTMLAttributes } from "react";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "link";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "link" | "danger";
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary: "border border-transparent bg-ink text-paper hover:border-ink hover:bg-paper hover:text-ink",
   secondary: "border border-ink bg-transparent text-ink hover:bg-ink hover:text-paper",
   ghost: "text-ink hover:bg-divider",
   link: "text-ink decoration-accent decoration-2 underline-offset-4 hover:underline",
+  danger: "bg-paper text-accent hover:bg-paper hover:text-accent",
 };
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {

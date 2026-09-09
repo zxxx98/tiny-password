@@ -240,7 +240,7 @@ export function ConfirmDialog({
           <Button variant="secondary" onClick={onCancel}>
             {cancelLabel}
           </Button>
-          <Button disabled={confirmDisabled} onClick={onConfirm}>
+          <Button variant={danger ? "danger" : "primary"} disabled={confirmDisabled} onClick={onConfirm}>
             {confirmLabel}
           </Button>
         </div>
