@@ -61,9 +61,6 @@ func Argon2HashPolicy() (auth.HashPolicy, error) {
 	if err != nil {
 		return auth.HashPolicy{}, err
 	}
-	if concurrency > uint32(^uint(0)>>1) {
-		return auth.HashPolicy{}, fmt.Errorf("%s is too large", Argon2MaxConcurrencyEnv)
-	}
 	policy.MaxConcurrency = int(concurrency)
 
 	if err := policy.Validate(); err != nil {
