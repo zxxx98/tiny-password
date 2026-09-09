@@ -59,7 +59,7 @@ describe("GeneratorPage", () => {
 
     expect(writeText).toHaveBeenCalledWith("COPY-ME");
     expect(screen.getByLabelText("生成的密码")).not.toHaveTextContent("COPY-ME");
-    expect(screen.getByRole("status")).toHaveTextContent("已复制");
+    expect(screen.getByText(/已复制。30 秒后将尽力清除剪贴板/)).toBeInTheDocument();
   });
 
   it("saves SSH passphrase and comment from generation A after inputs are edited to B", async () => {
