@@ -70,7 +70,7 @@ export function TrashPage({ csrfToken, onChanged }: TrashPageProps) {
       <header>
         <h2 className="font-display text-3xl font-bold">回收站</h2>
         <p className="mt-1 font-body text-sm text-neutral-600">
-          条目在删除 30 天后由系统永久清除；在此可以提前恢复或永久删除。
+          条目在删除 30 天后由系统永久清除；在此可以提前恢复或彻底删除。
         </p>
       </header>
       <div className="mt-6">

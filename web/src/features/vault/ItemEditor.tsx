@@ -245,7 +245,7 @@ export function ItemEditor({
               </label>
               <label className="flex min-h-[44px] items-center gap-2 font-body text-sm">
                 <input type="radio" name="scope" checked={scope === "shared"} onChange={() => setScope("shared")} />
-                家庭共享
+                共享
               </label>
             </div>
           </fieldset>
