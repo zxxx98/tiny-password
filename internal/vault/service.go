@@ -454,12 +454,26 @@ func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id stri
 // into the new item's AAD, so the source row is never rewritten in place.
 func (s *Service) moveOnce(ctx context.Context, tx *sql.Tx, actor *auth.Principal, source itemRow, input UpdateInput) (Detail, error) {
 	targetScope := *input.VaultScope
+	owner, creator := "", ""
+	if targetScope == string(ScopePersonal) {
+		owner = actor.UserID
+	} else {
+		creator = actor.UserID
+	}
+	targetView := policyItem(targetScope, owner, creator)
+	if !CanCreate(Role(actor.Role), actor.UserID, targetView.Scope, owner, creator) {
+		return Detail{}, ErrForbidden
+	}
+
 	payload, err := decodePayload(source.ItemType, input.Payload)
 	if err != nil {
 		return Detail{}, err
 	}
+	// References must be valid for the item after the move. In particular,
+	// a personal item moved to shared cannot retain a personal-only target
+	// that other shared-vault readers would be unable to resolve.
 	if ref, ok := referenceTarget(payload); ok {
-		if err := s.checkReference(ctx, actor, source.policyView(), ref); err != nil {
+		if err := s.checkReference(ctx, actor, targetView, ref); err != nil {
 			return Detail{}, err
 		}
 	}
@@ -484,12 +498,6 @@ func (s *Service) moveOnce(ctx context.Context, tx *sql.Tx, actor *auth.Principa
 		return Detail{}, err
 	}
 	targetID := ident.NewUUIDv7()
-	owner, creator := "", ""
-	if targetScope == string(ScopePersonal) {
-		owner = actor.UserID
-	} else {
-		creator = actor.UserID
-	}
 	targetAt := s.now().UTC().Format(TimestampFormat)
 	enc, err := s.key.Encrypt(plaintext, AADFor(targetID, targetScope, owner, creator, crypto.PayloadVersion, 1))
 	if err != nil {
