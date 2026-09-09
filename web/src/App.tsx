@@ -22,6 +22,8 @@ function protectedRoute(element: React.ReactNode, requireAdmin?: boolean) {
   );
 }
 
+const vaultRoute = protectedRoute(<VaultPage />);
+
 // Route table. Protected routes pass through SessionBoundary: no session →
 // login; first login → forced password rotation; expiry → back to login.
 const routes = [
@@ -40,9 +42,9 @@ const routes = [
       </div>
     ),
   },
-  { path: "/vault", element: protectedRoute(<VaultPage />) },
+  { path: "/vault", element: vaultRoute },
   { path: "/vault/trash", element: protectedRoute(<VaultPage section="trash" />) },
-  { path: "/vault/:itemId", element: protectedRoute(<VaultPage />) },
+  { path: "/vault/:itemId", element: vaultRoute },
   { path: "/generator", element: protectedRoute(<GeneratorPage />) },
   { path: "/transfer", element: protectedRoute(<TransferPage />) },
   { path: "/account", element: protectedRoute(<AccountPage />) },

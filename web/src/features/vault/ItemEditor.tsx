@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { request } from "../../app/api";
 import { createIdempotencyKey } from "../../app/idempotency";
 import { Button } from "../../design-system/Button";
@@ -40,14 +40,28 @@ export type ItemEditorProps = {
   initialLoginDraft?: Partial<LoginPayload>;
   onSaved: (detail: ItemDetailData) => void;
   onCancel: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  onBusyChange?: (busy: boolean) => void;
 };
+
+function editorSnapshot(type: ItemType, scope: "personal" | "shared", payload: ItemPayload, tagText: string, favorite: boolean) {
+  return JSON.stringify({ type, scope, payload, tagText, favorite });
+}
 
 /**
  * ItemEditor creates or updates one entry. Type and ownership are fixed by
  * the stored row in edit mode. On a 409 conflict the current edits are kept
  * on screen — the user chooses to reload, nothing is overwritten silently.
  */
-export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onCancel }: ItemEditorProps) {
+export function ItemEditor({
+  csrfToken,
+  initial,
+  initialLoginDraft,
+  onSaved,
+  onCancel,
+  onDirtyChange,
+  onBusyChange,
+}: ItemEditorProps) {
   const [type, setType] = useState<ItemType>(initial?.item_type ?? "login");
   const [scope, setScope] = useState<"personal" | "shared">(initial?.vault_scope ?? "personal");
   const [payload, setPayload] = useState<ItemPayload>(
@@ -65,8 +79,32 @@ export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onC
   const [error, setError] = useState<string | null>(null);
   const [requestId, setRequestId] = useState<string | undefined>();
   const [conflict, setConflict] = useState<number | null>(null);
+  const mountedRef = useRef(true);
+  const conflictReloadRef = useRef<{ controller: AbortController; sequence: number } | null>(null);
+  const conflictReloadSequenceRef = useRef(0);
   // One idempotency key per creation draft: double submits replay safely.
   const idempotencyKey = useRef<string>(createIdempotencyKey());
+  const initialSnapshot = useRef<string | null>(null);
+  if (initialSnapshot.current === null) {
+    initialSnapshot.current = editorSnapshot(type, scope, payload, tagText, favorite);
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      conflictReloadRef.current?.controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    const dirty = editorSnapshot(type, scope, payload, tagText, favorite) !== initialSnapshot.current;
+    onDirtyChange?.(dirty);
+  }, [favorite, onDirtyChange, payload, scope, tagText, type]);
+
+  useEffect(() => {
+    onBusyChange?.(submitting);
+  }, [onBusyChange, submitting]);
 
   const changeType = (next: ItemType) => {
     setType(next);
@@ -106,6 +144,8 @@ export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onC
           { csrfToken, idempotencyKey: idempotencyKey.current },
         );
       }
+      initialSnapshot.current = editorSnapshot(type, scope, payload, tagText, favorite);
+      onDirtyChange?.(false);
       onSaved(saved);
     } catch (err) {
       const info = errorText(err);
@@ -139,23 +179,35 @@ export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onC
                 setConflict(null);
                 // Reload authoritative content into the editor.
                 if (initial) {
-                  void request<ItemDetailData>("GET", `/api/v1/items/${initial.id}`, undefined, { csrfToken })
+                  conflictReloadRef.current?.controller.abort();
+                  const controller = new AbortController();
+                  const sequence = ++conflictReloadSequenceRef.current;
+                  conflictReloadRef.current = { controller, sequence };
+                  void request<ItemDetailData>("GET", `/api/v1/items/${initial.id}`, undefined, { csrfToken, signal: controller.signal })
                     .then((fresh) => {
+                      if (!mountedRef.current || controller.signal.aborted || conflictReloadRef.current?.sequence !== sequence) return;
+                      const freshPayload = fresh.payload as ItemPayload;
+                      const freshTags = (fresh.tags ?? []).join(", ");
+                      const freshFavorite = typeof fresh.favorite === "boolean" ? fresh.favorite : favorite;
                       if (fresh.payload) {
-                        setPayload(fresh.payload as ItemPayload);
+                        setPayload(freshPayload);
                       }
-                      setTagText((fresh.tags ?? []).join(", "));
-                      if (typeof fresh.favorite === "boolean") {
-                        setFavorite(fresh.favorite);
-                      }
+                      setTagText(freshTags);
+                      setFavorite(freshFavorite);
                       if (typeof fresh.revision === "number") {
                         setRevision(fresh.revision);
                       }
+                      initialSnapshot.current = editorSnapshot(type, fresh.vault_scope, freshPayload, freshTags, freshFavorite);
+                      onDirtyChange?.(false);
                     })
                     .catch((err) => {
+                      if (!mountedRef.current || controller.signal.aborted || conflictReloadRef.current?.sequence !== sequence) return;
                       const info = errorText(err);
                       setError(info.message);
                       setRequestId(info.requestId);
+                    })
+                    .finally(() => {
+                      if (conflictReloadRef.current?.sequence === sequence) conflictReloadRef.current = null;
                     });
                 }
               }}
@@ -224,7 +276,7 @@ export function ItemEditor({ csrfToken, initial, initialLoginDraft, onSaved, onC
         <Button type="submit" disabled={submitting}>
           {submitting ? "保存中…" : initial ? "保存修改" : "创建条目"}
         </Button>
-        <Button variant="secondary" onClick={onCancel}>取消</Button>
+        <Button variant="secondary" disabled={submitting} onClick={onCancel}>取消</Button>
       </div>
     </form>
   );

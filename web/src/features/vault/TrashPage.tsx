@@ -110,18 +110,20 @@ export function TrashPage({ csrfToken, onChanged }: TrashPageProps) {
         open={restoreTarget !== null}
         title="恢复该条目？"
         description="条目会原样回到保险库，内容与版本号不变。"
-        confirmLabel="恢复"
-        onCancel={() => setRestoreTarget(null)}
-        onConfirm={() => { if (restoreTarget) void act(restoreTarget, "restore"); }}
+        confirmLabel={busy !== null ? "恢复中…" : "恢复"}
+        confirmDisabled={busy !== null}
+        onCancel={() => { if (busy === null) setRestoreTarget(null); }}
+        onConfirm={() => { if (restoreTarget && busy === null) void act(restoreTarget, "restore"); }}
       />
       <ConfirmDialog
         open={purgeTarget !== null}
         danger
         title="永久删除？"
         description="条目及其全部历史版本将被永久清除，无法通过产品恢复。"
-        confirmLabel="永久删除"
-        onCancel={() => setPurgeTarget(null)}
-        onConfirm={() => { if (purgeTarget) void act(purgeTarget, "purge"); }}
+        confirmLabel={busy !== null ? "删除中…" : "永久删除"}
+        confirmDisabled={busy !== null}
+        onCancel={() => { if (busy === null) setPurgeTarget(null); }}
+        onConfirm={() => { if (purgeTarget && busy === null) void act(purgeTarget, "purge"); }}
       />
     </div>
   );

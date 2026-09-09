@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HistoryPage } from "./HistoryPage";
 import { ItemDetail } from "./ItemDetail";
 import { ItemEditor } from "./ItemEditor";
+import { ItemDialog } from "./ItemDialog";
 import { SensitiveField } from "./SensitiveField";
 import { TrashPage } from "./TrashPage";
 import { VaultPage } from "./VaultPage";
@@ -75,6 +76,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  window.history.replaceState({}, "", "/");
   sessionStore.clear();
 });
 
@@ -147,6 +149,22 @@ describe("SensitiveField", () => {
     render(<SensitiveField label="密码" field="password" value="SYNSECRET-pw" itemId="item-1" csrfToken={csrf} />);
     await user.click(screen.getByRole("button", { name: "复制" }));
     expect(await screen.findByText(/浏览器不允许写入剪贴板/)).toBeInTheDocument();
+  });
+
+  it("keeps clipboard cleanup scheduled after the field unmounts", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const clipboard = stubClipboard();
+    stubFetch([{ status: 204 }]);
+    const { unmount } = render(
+      <SensitiveField label="密码" field="password" value="SYNSECRET-pw" itemId="item-1" csrfToken={csrf} />,
+    );
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith(""));
   });
 });
 
@@ -240,6 +258,24 @@ describe("ItemEditor", () => {
     expect(body.revision).toBe(7);
   });
 
+  it("reports editor dirty state after a draft field changes", async () => {
+    const user = userEvent.setup();
+    const onDirtyChange = vi.fn();
+    render(
+      <ItemEditor
+        csrfToken={csrf}
+        initial={loginDetail}
+        onSaved={() => {}}
+        onCancel={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+    );
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    await user.clear(screen.getByLabelText("名称"));
+    await user.type(screen.getByLabelText("名称"), "Renamed");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
   it("re-masks after reveal even when copy is used", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -331,6 +367,52 @@ describe("ItemDetail", () => {
   });
 });
 
+describe("ItemDialog", () => {
+  it("renders one accessible detail dialog with a scrollable body and action footer", () => {
+    render(
+      <ItemDialog
+        mode={{ kind: "detail", detail: loginDetail }}
+        csrfToken={csrf}
+        canManage={true}
+        onClose={() => {}}
+        onEdit={() => {}}
+        onShowHistory={() => {}}
+        onToggleFavorite={() => {}}
+        onTrash={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByRole("dialog", { name: "Family bank" })).toBeInTheDocument();
+    expect(screen.getByText(/登录凭据/)).toBeInTheDocument();
+    expect(screen.getByText(/版本 1/)).toBeInTheDocument();
+    expect(screen.getByTestId("dialog-body")).toHaveClass("overflow-y-auto");
+    expect(screen.getByRole("button", { name: "编辑条目" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "历史记录" })).toBeInTheDocument();
+  });
+
+  it("renders loading and retryable error modes without stale item content", () => {
+    const onRetry = vi.fn();
+    const { rerender } = render(
+      <ItemDialog mode={{ kind: "loading", itemId: "item-1" }} csrfToken={csrf} onClose={() => {}} />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("正在解密条目");
+
+    rerender(
+      <ItemDialog
+        mode={{ kind: "error", itemId: "item-1", message: "条目不存在。", requestId: "req-1" }}
+        csrfToken={csrf}
+        onClose={() => {}}
+        onRetry={onRetry}
+      />,
+    );
+    expect(screen.queryByText("Family bank")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("条目不存在");
+    expect(screen.getByRole("alert")).toHaveTextContent("request_id: req-1");
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+});
+
 describe("LoginFields URL probe", () => {
   it("probes on demand and lets the user apply a detected login URL", async () => {
     const user = userEvent.setup();
@@ -379,6 +461,116 @@ describe("LoginFields URL probe", () => {
 });
 
 describe("VaultPage", () => {
+  it("opens one responsive item dialog and restores the row focus when closed", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/vault");
+    const fetchMock = stubFetch([
+      { status: 200, body: { items: [{ ...meta }], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: loginDetail },
+    ]);
+    render(<VaultPage />);
+    const row = await screen.findByRole("button", { name: /Family bank/ });
+    await user.click(row);
+
+    const dialog = await screen.findByRole("dialog", { name: "Family bank" });
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(dialog).toContainElement(screen.getByTestId("secret-masked-password"));
+    expect(screen.queryByTestId("mobile-detail")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "关闭弹窗" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(window.location.pathname).toBe("/vault");
+    expect(row).toHaveFocus();
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/v1/items/item-1");
+  });
+
+  it("protects dirty edits from close and keeps the draft when discard is canceled", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/vault");
+    stubFetch([
+      { status: 200, body: { items: [{ ...meta }], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: loginDetail },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: /Family bank/ }));
+    await user.click(await screen.findByRole("button", { name: "编辑条目" }));
+    const title = screen.getByLabelText("名称");
+    await user.clear(title);
+    await user.type(title, "Draft title");
+    await user.click(screen.getByRole("button", { name: "关闭弹窗" }));
+
+    const discardDialog = await screen.findByRole("dialog", { name: "放弃未保存修改？" });
+    await user.click(within(discardDialog).getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("名称")).toHaveValue("Draft title");
+    expect(window.location.pathname).toBe("/vault/item-1");
+  });
+
+  it("returns to detail when the editor cancel discards a dirty draft", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/vault");
+    stubFetch([
+      { status: 200, body: { items: [{ ...meta }], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: loginDetail },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: /Family bank/ }));
+    await user.click(await screen.findByRole("button", { name: "编辑条目" }));
+    await user.type(screen.getByLabelText("名称"), " draft");
+    await user.click(within(screen.getByRole("form", { name: "编辑条目" })).getByRole("button", { name: "取消" }));
+    await user.click(within(screen.getByRole("dialog", { name: "放弃未保存修改？" })).getByRole("button", { name: "放弃修改" }));
+
+    expect(await screen.findByRole("dialog", { name: "Family bank" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "编辑条目" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/vault/item-1");
+  });
+
+  it("treats an initially loaded detail URL as direct navigation when closing", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({ source: "list", modal: "item" }, "", "/vault/item-1");
+    stubFetch([
+      { status: 200, body: { items: [{ ...meta }], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: loginDetail },
+    ]);
+    render(<VaultPage />);
+    await screen.findByRole("dialog", { name: "Family bank" });
+    const historyBack = vi.spyOn(window.history, "back");
+    await user.click(screen.getByRole("button", { name: "关闭弹窗" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/vault"));
+    expect(historyBack).not.toHaveBeenCalled();
+    historyBack.mockRestore();
+  });
+
+  it("restores a dirty detail route before asking about browser back", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, "", "/vault");
+    window.history.pushState({ source: "list", modal: "item" }, "", "/vault/item-1");
+    stubFetch([
+      { status: 200, body: { items: [{ ...meta }], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
+      { status: 200, body: loginDetail },
+    ]);
+    render(<VaultPage />);
+    await user.click(await screen.findByRole("button", { name: "编辑条目" }));
+    await user.type(screen.getByLabelText("名称"), " draft");
+
+    const historyGo = vi.spyOn(window.history, "go").mockImplementation(() => {});
+    window.history.replaceState({}, "", "/vault");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    await screen.findByRole("dialog", { name: "放弃未保存修改？" });
+    expect(historyGo).toHaveBeenCalledWith(1);
+
+    window.history.replaceState({}, "", "/vault/item-1");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await user.click(within(screen.getByRole("dialog", { name: "放弃未保存修改？" })).getByRole("button", { name: "取消" }));
+    historyGo.mockRestore();
+  });
+
   it("renders the workspace grid with list titles, types and owner signature", async () => {
     stubFetch([
       {
@@ -409,7 +601,7 @@ describe("VaultPage", () => {
     expect(screen.getByRole("button", { name: "新建条目" })).toBeInTheDocument();
   });
 
-  it("keeps the new-item editor reachable on narrow screens", async () => {
+  it("keeps one new-item editor reachable on narrow screens", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("matchMedia", () => ({ matches: false, addListener: () => {}, removeListener: () => {} }));
     stubFetch([
@@ -418,9 +610,7 @@ describe("VaultPage", () => {
     ]);
     render(<VaultPage />);
     await user.click(await screen.findByRole("button", { name: "新建条目" }));
-    // The desktop pane remains mounted but hidden; the second form is the
-    // narrow-screen editor that must be present for the same action.
-    expect(screen.getAllByRole("form", { name: "新建条目" })).toHaveLength(2);
+    expect(screen.getAllByRole("form", { name: "新建条目" })).toHaveLength(1);
   });
 
   it("opens the new-item editor when crypto.randomUUID is unavailable", async () => {
@@ -437,7 +627,7 @@ describe("VaultPage", () => {
     ]);
     render(<VaultPage />);
     await user.click(await screen.findByRole("button", { name: "新建条目" }));
-    expect(screen.getAllByRole("form", { name: "新建条目" })).toHaveLength(2);
+    expect(screen.getAllByRole("form", { name: "新建条目" })).toHaveLength(1);
   });
 
   it("shows the empty-vault and search-no-hit states", async () => {
@@ -491,7 +681,7 @@ describe("HistoryPage", () => {
       { status: 200, body: { ...loginDetail, revision: 3 } },
     ]);
     const onRestored = vi.fn();
-    render(<HistoryPage itemId="item-1" csrfToken={csrf} onRestored={onRestored} onClose={() => {}} />);
+    render(<HistoryPage itemId="item-1" csrfToken={csrf} canManage={true} onRestored={onRestored} onClose={() => {}} />);
     expect(await screen.findByText(/版本 2/)).toBeInTheDocument();
     expect(screen.getByText(/版本 1/)).toBeInTheDocument();
 
@@ -500,6 +690,17 @@ describe("HistoryPage", () => {
     await user.click(await screen.findByRole("button", { name: "恢复" }));
     await waitFor(() => expect(onRestored).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/items/item-1/history/1/restore");
+  });
+
+  it("hides restore controls for a read-only shared item", async () => {
+    stubFetch([{
+      status: 200,
+      body: { items: [{ revision: 1, updated_at: "2026-09-05T10:00:00.000000000Z" }], next_cursor: null },
+    }]);
+    render(<HistoryPage itemId="item-1" csrfToken={csrf} canManage={false} onRestored={() => {}} onClose={() => {}} />);
+    await screen.findByText(/版本 1/);
+    expect(screen.queryByRole("button", { name: "恢复此版本" })).not.toBeInTheDocument();
+    expect(screen.getByText("仅可查看")).toBeInTheDocument();
   });
 });
 

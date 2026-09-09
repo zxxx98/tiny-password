@@ -6,6 +6,8 @@ export type ItemDetailProps = {
   detail: ItemDetailData;
   csrfToken: string;
   canManage: boolean;
+  showHeader?: boolean;
+  showActions?: boolean;
   onEdit: () => void;
   onShowHistory: () => void;
   onToggleFavorite: () => void;
@@ -46,30 +48,43 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
  * ItemDetail renders the decrypted entry. Sensitive values go through
  * SensitiveField (masked + audited reveal/copy); everything else is plain.
  */
-export function ItemDetail({ detail, csrfToken, canManage, onEdit, onShowHistory, onToggleFavorite, onTrash }: ItemDetailProps) {
+export function ItemDetail({
+  detail,
+  csrfToken,
+  canManage,
+  showHeader = true,
+  showActions = true,
+  onEdit,
+  onShowHistory,
+  onToggleFavorite,
+  onTrash,
+}: ItemDetailProps) {
   return (
-    <article className="space-y-6 p-4 lg:p-6" aria-label={`条目 ${detail.title}`}>
-      <header className="space-y-2">
-        <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
-          {TYPE_LABELS[detail.item_type]} · {describeItem(detail)}
-        </p>
-        <h3 className="font-display text-3xl font-bold">{detail.title || "（无标题）"}</h3>
-        <p className="font-mono text-xs text-neutral-500">
-          版本 {detail.revision} · 更新于 {detail.updated_at.slice(0, 19).replace("T", " ")}Z
-        </p>
-        {detail.vault_scope === "shared" && !canManage && (
-          <p className="border border-ink px-3 py-2 font-body text-xs" role="note">
-            这是 {detail.creator_name ?? "其他成员"} 创建的共享条目：可以查看，但只有创建者能修改。
+    <article className="space-y-6" aria-label={`条目 ${detail.title}`}>
+      {showHeader && (
+        <header className="space-y-2">
+          <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
+            {TYPE_LABELS[detail.item_type]} · {describeItem(detail)}
           </p>
-        )}
-        {(detail.tags?.length ?? 0) > 0 && (
-          <ul className="flex flex-wrap gap-2" aria-label="标签">
-            {detail.tags.map((tag) => (
-              <li key={tag} className="border border-ink px-2 py-0.5 font-mono text-xs">{tag}</li>
-            ))}
-          </ul>
-        )}
-      </header>
+          <h3 className="font-display text-3xl font-bold">{detail.title || "（无标题）"}</h3>
+          <p className="font-mono text-xs text-neutral-500">
+            版本 {detail.revision} · 更新于 {detail.updated_at.slice(0, 19).replace("T", " ")}Z
+          </p>
+        </header>
+      )}
+
+      {detail.vault_scope === "shared" && !canManage && (
+        <p className="border border-ink px-3 py-2 font-body text-xs" role="note">
+          这是 {detail.creator_name ?? "其他成员"} 创建的共享条目：可以查看，但只有创建者能修改。
+        </p>
+      )}
+      {(detail.tags?.length ?? 0) > 0 && (
+        <ul className="flex flex-wrap gap-2" aria-label="标签">
+          {detail.tags.map((tag) => (
+            <li key={tag} className="border border-ink px-2 py-0.5 font-mono text-xs">{tag}</li>
+          ))}
+        </ul>
+      )}
 
       {(() => {
         switch (detail.item_type) {
@@ -160,7 +175,7 @@ export function ItemDetail({ detail, csrfToken, canManage, onEdit, onShowHistory
         }
       })()}
 
-      {canManage && (
+      {showActions && canManage && (
         <footer className="flex flex-wrap gap-2 border-t border-divider pt-4">
           <Button onClick={onEdit}>编辑</Button>
           <Button variant="secondary" onClick={onToggleFavorite}>
@@ -170,7 +185,7 @@ export function ItemDetail({ detail, csrfToken, canManage, onEdit, onShowHistory
           <Button variant="ghost" onClick={onTrash}>移入回收站</Button>
         </footer>
       )}
-      {!canManage && (
+      {showActions && !canManage && (
         <footer className="flex flex-wrap gap-2 border-t border-divider pt-4">
           <Button variant="ghost" onClick={onShowHistory}>历史</Button>
         </footer>

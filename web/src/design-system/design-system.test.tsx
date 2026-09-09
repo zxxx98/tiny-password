@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Button } from "./Button";
 import { Field } from "./Field";
-import { ConfirmDialog } from "./Dialog";
+import { ConfirmDialog, Dialog } from "./Dialog";
 import { ErrorSummary, Loading, StatusBanner } from "./Status";
 
 afterEach(() => {
@@ -140,6 +140,40 @@ describe("ConfirmDialog", () => {
     render(<ConfirmDialog open={true} title="确认" onConfirm={onConfirm} onCancel={() => {}} />);
     await user.click(screen.getByRole("button", { name: "确认" }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Dialog", () => {
+  it("uses dialog semantics and closes only from the backdrop", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <Dialog open title="条目详情" onClose={onClose}>
+        <button type="button">正文按钮</button>
+      </Dialog>,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "条目详情" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    await user.click(screen.getByRole("button", { name: "正文按钮" }));
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("dialog-backdrop"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the trigger focus and locks body scrolling while open", () => {
+    const trigger = document.createElement("button");
+    trigger.textContent = "触发";
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const { rerender, unmount } = render(<Dialog open title="详情" onClose={() => {}}><p>内容</p></Dialog>);
+
+    expect(document.body.style.overflow).toBe("hidden");
+    rerender(<Dialog open={false} title="详情" onClose={() => {}}><p>内容</p></Dialog>);
+    expect(document.body.style.overflow).toBe("");
+    expect(trigger).toHaveFocus();
+    unmount();
+    trigger.remove();
   });
 });
 

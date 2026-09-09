@@ -15,8 +15,51 @@ export function usePath(): string {
   return path;
 }
 
-export function navigate(path: string): void {
-  navigateWithState(path);
+export type NavigationMeta = {
+  source?: "list" | "direct" | "generator";
+  modal?: "item";
+};
+
+export type NavigationIntent = {
+  type: "push" | "replace";
+  path: string;
+  meta?: NavigationMeta;
+};
+
+let navigationGuard: ((intent: NavigationIntent) => boolean) | null = null;
+
+export function setNavigationGuard(guard: (intent: NavigationIntent) => boolean): () => void {
+  navigationGuard = guard;
+  return () => {
+    if (navigationGuard === guard) navigationGuard = null;
+  };
+}
+
+function canNavigate(intent: NavigationIntent): boolean {
+  return !navigationGuard || navigationGuard(intent);
+}
+
+function dispatchNavigation() {
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+export function navigate(path: string, meta?: NavigationMeta): void {
+  if (!canNavigate({ type: "push", path, meta })) return;
+  transientNavigationState = null;
+  if (window.location.pathname === path) {
+    window.history.replaceState(meta ?? {}, "", path);
+    dispatchNavigation();
+    return;
+  }
+  window.history.pushState(meta ?? {}, "", path);
+  dispatchNavigation();
+}
+
+export function replace(path: string, meta?: NavigationMeta): void {
+  if (!canNavigate({ type: "replace", path, meta })) return;
+  transientNavigationState = null;
+  window.history.replaceState(meta ?? {}, "", path);
+  dispatchNavigation();
 }
 
 let transientNavigationState: unknown = null;
@@ -26,14 +69,15 @@ let transientNavigationState: unknown = null;
  * enters history.state, localStorage, or sessionStorage: it is only for
  * moving sensitive generator output into an editor in the same tab.
  */
-export function navigateWithState(path: string, state?: unknown): void {
+export function navigateWithState(path: string, state?: unknown, meta?: NavigationMeta): void {
+  if (!canNavigate({ type: "push", path, meta })) return;
   transientNavigationState = state ?? null;
   if (window.location.pathname === path) {
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    dispatchNavigation();
     return;
   }
-  window.history.pushState({}, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  window.history.pushState(meta ?? {}, "", path);
+  dispatchNavigation();
 }
 
 export function consumeNavigationState<T>(): T | null {

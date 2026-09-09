@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "../../app/api";
 import { Button } from "../../design-system/Button";
+import { scheduleClipboardCleanup } from "./clipboardCleanup";
 
 /**
  * SensitiveField renders one secret (design §6.4): masked by default, shown
@@ -25,7 +26,7 @@ export function SensitiveField({
   const [revealed, setRevealed] = useState(false);
   const [copyState, setCopyState] = useState<string | null>(null);
   const hideTimer = useRef<number | undefined>(undefined);
-  const clipboardTimer = useRef<number | undefined>(undefined);
+  const mountedRef = useRef(true);
   const valueRef = useRef(value);
   valueRef.current = value;
 
@@ -33,16 +34,13 @@ export function SensitiveField({
     window.clearTimeout(hideTimer.current);
   }, []);
 
-  const clearClipboardTimer = useCallback(() => {
-    window.clearTimeout(clipboardTimer.current);
-  }, []);
-
-  const clearTimers = useCallback(() => {
-    clearHideTimer();
-    clearClipboardTimer();
-  }, [clearClipboardTimer, clearHideTimer]);
-
-  useEffect(() => clearTimers, [clearTimers]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      clearHideTimer();
+    };
+  }, [clearHideTimer]);
   // Any value change re-masks immediately: a stale reveal never lingers.
   useEffect(() => {
     setRevealed(false);
@@ -72,8 +70,9 @@ export function SensitiveField({
   }, [clearHideTimer]);
 
   const copy = useCallback(async () => {
+    const copiedValue = valueRef.current;
     try {
-      await navigator.clipboard.writeText(valueRef.current);
+      await navigator.clipboard.writeText(copiedValue);
     } catch {
       setCopyState("浏览器不允许写入剪贴板，请手动选择并复制。");
       void audit("copy");
@@ -81,19 +80,13 @@ export function SensitiveField({
     }
     void audit("copy");
     setCopyState("已复制。30 秒后将尽力清除剪贴板；若浏览器不允许则无法清除。");
-    clearClipboardTimer();
-    clipboardTimer.current = window.setTimeout(async () => {
-      try {
-        const current = await navigator.clipboard.readText();
-        if (current === valueRef.current) {
-          await navigator.clipboard.writeText("");
-        }
-        setCopyState("剪贴板已清除。");
-      } catch {
-        setCopyState("浏览器不允许读取剪贴板，无法自动清除，请手动处理。");
-      }
-    }, 30_000);
-  }, [audit, clearClipboardTimer]);
+    void scheduleClipboardCleanup(copiedValue).then((result) => {
+      if (!mountedRef.current) return;
+      if (result === "cleared") setCopyState("剪贴板已清除。");
+      if (result === "changed") setCopyState("剪贴板内容已被替换，未执行清理。");
+      if (result === "unavailable") setCopyState("浏览器不允许读取剪贴板，无法自动清除，请手动处理。");
+    });
+  }, [audit]);
 
   return (
     <div className="space-y-1">
