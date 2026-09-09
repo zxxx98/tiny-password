@@ -1041,24 +1041,51 @@ func TestItemMoveRoundTripPreservesCurrentState(t *testing.T) {
 	}
 }
 
-func TestItemMovePreservesExistingBillingReference(t *testing.T) {
+func TestItemMoveValidatesBillingReferenceAgainstTargetScope(t *testing.T) {
 	h := newItemsHarness(t)
 	h.bootstrapAdmin(t)
 	alice := h.itemClient(t, "alice")
-	identity := h.mustCreateItem(t, alice, "personal", "identity", payloadFixtureWithoutReference("identity"), nil)
-	cardPayload := payloadFixtureWithoutReference("credit_card")
-	cardPayload["billing_address_item_id"] = identity["id"]
-	card := h.mustCreateItem(t, alice, "personal", "credit_card", cardPayload, nil)
-	resp := h.request(t, "PUT", "/items/"+card["id"].(string), map[string]any{
-		"revision": 1, "vault_scope": "shared", "payload": cardPayload,
-	}, alice)
-	got := decodeBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("move card with existing reference: %d %v", resp.StatusCode, got)
-	}
-	if gotPayload := got["payload"].(map[string]any); gotPayload["billing_address_item_id"] != identity["id"] {
-		t.Fatalf("billing reference = %v, want %v", gotPayload["billing_address_item_id"], identity["id"])
-	}
+
+	t.Run("personal target is rejected when moving card to shared", func(t *testing.T) {
+		identity := h.mustCreateItem(t, alice, "personal", "identity", payloadFixtureWithoutReference("identity"), nil)
+		cardPayload := payloadFixtureWithoutReference("credit_card")
+		cardPayload["billing_address_item_id"] = identity["id"]
+		card := h.mustCreateItem(t, alice, "personal", "credit_card", cardPayload, nil)
+		cardID := card["id"].(string)
+
+		resp := h.request(t, "PUT", "/items/"+cardID, map[string]any{
+			"revision": 1, "vault_scope": "shared", "payload": cardPayload,
+		}, alice)
+		got := decodeBody(t, resp)
+		if resp.StatusCode != http.StatusConflict || got["code"] != "REFERENCE_FORBIDDEN" {
+			t.Fatalf("move with personal-only reference: %d %v", resp.StatusCode, got)
+		}
+
+		// A rejected move must leave the source item intact in the personal vault.
+		source := h.request(t, "GET", "/items/"+cardID, nil, alice)
+		sourceBody := decodeBody(t, source)
+		if source.StatusCode != http.StatusOK || sourceBody["vault_scope"] != "personal" {
+			t.Fatalf("source after rejected move: %d %v", source.StatusCode, sourceBody)
+		}
+	})
+
+	t.Run("shared target is preserved when moving card to shared", func(t *testing.T) {
+		identity := h.mustCreateItem(t, alice, "shared", "identity", payloadFixtureWithoutReference("identity"), nil)
+		cardPayload := payloadFixtureWithoutReference("credit_card")
+		cardPayload["billing_address_item_id"] = identity["id"]
+		card := h.mustCreateItem(t, alice, "personal", "credit_card", cardPayload, nil)
+
+		resp := h.request(t, "PUT", "/items/"+card["id"].(string), map[string]any{
+			"revision": 1, "vault_scope": "shared", "payload": cardPayload,
+		}, alice)
+		got := decodeBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("move card with shared reference: %d %v", resp.StatusCode, got)
+		}
+		if gotPayload := got["payload"].(map[string]any); gotPayload["billing_address_item_id"] != identity["id"] {
+			t.Fatalf("billing reference = %v, want %v", gotPayload["billing_address_item_id"], identity["id"])
+		}
+	})
 }
 
 func TestItemMoveRejectsInvalidPermissionAndRevision(t *testing.T) {
