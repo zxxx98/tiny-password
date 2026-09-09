@@ -37,6 +37,7 @@ func digest(value string) string {
 type Options struct {
 	Now    func() time.Time
 	Limits Limits
+	Hasher *PasswordHasher
 	// Audit writes the authentication audit trail; nil disables auditing
 	// (only acceptable in unit tests). Production wires a real service.
 	Audit *audit.Service
@@ -48,6 +49,7 @@ type Service struct {
 	db        *sql.DB
 	now       func() time.Time
 	limits    Limits
+	hasher    *PasswordHasher
 	dummyHash string
 	verify    func(string, string) (bool, error)
 	audit     *audit.Service
@@ -61,12 +63,19 @@ func NewService(db *sql.DB, options Options) (*Service, error) {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	// A real Argon2 hash makes unknown accounts perform the same password work.
-	dummy, err := HashPassword("unusable dummy password " + ident.NewUUIDv7())
+	if options.Hasher == nil {
+		options.Hasher = DefaultPasswordHasher()
+	}
+	// A real Argon2 hash makes unknown accounts perform the same password work
+	// under the same configured policy and resource budget.
+	dummy, err := options.Hasher.Hash("unusable dummy password " + ident.NewUUIDv7())
 	if err != nil {
 		return nil, err
 	}
-	return &Service{db: db, now: options.Now, limits: options.Limits.defaults(), dummyHash: dummy, verify: VerifyPassword, audit: options.Audit, logger: options.Logger}, nil
+	return &Service{
+		db: db, now: options.Now, limits: options.Limits.defaults(), hasher: options.Hasher,
+		dummyHash: dummy, verify: options.Hasher.Verify, audit: options.Audit, logger: options.Logger,
+	}, nil
 }
 
 // auditRecord writes one audit row. Inside a transaction the error must
@@ -147,6 +156,17 @@ func (s *Service) Login(ctx context.Context, username, password, source string) 
 		s.auditStandalone(ctx, audit.Event{Name: audit.EventLoginFailure, ActorID: id, Result: audit.ResultFailure})
 		return nil, ErrAccountDisabled
 	}
+
+	// Rehash only after successful authentication. Parameter mismatches are
+	// intentionally bidirectional: lowering the deployment target migrates old
+	// high-memory hashes just as raising it upgrades weaker hashes.
+	sessionHash := hash
+	if s.hasher.NeedsRehash(hash) {
+		sessionHash, err = s.hasher.Hash(password)
+		if err != nil {
+			return nil, err
+		}
+	}
 	token, publicID, err := newSession()
 	if err != nil {
 		return nil, err
@@ -159,10 +179,29 @@ func (s *Service) Login(ctx context.Context, username, password, source string) 
 		return nil, err
 	}
 	defer tx.Rollback()
+	// Rehash and session creation share one transaction. The compare-and-swap
+	// on the verified hash preserves the existing guarantee that a concurrent
+	// password change cannot mint a session from stale credentials.
+	if sessionHash != hash {
+		res, err := tx.ExecContext(ctx,
+			"UPDATE users SET password_hash=?,updated_at=? WHERE id=? AND password_hash=? AND status='active'",
+			sessionHash, timestamp(now), id, hash,
+		)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected != 1 {
+			return nil, ErrUnauthorized
+		}
+	}
 	// The insert takes the writer lock before reading current user settings.
 	// Its provisional expiry is corrected before any other connection sees it.
 	result, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,public_id,user_id,created_at,absolute_expires_at,idle_expires_at)
- SELECT ?,?,id,?,?,? FROM users WHERE id=? AND password_hash=? AND status='active'`, digest(token), publicID, timestamp(now), timestamp(absolute), timestamp(idleExpiry), id, hash)
+ SELECT ?,?,id,?,?,? FROM users WHERE id=? AND password_hash=? AND status='active'`, digest(token), publicID, timestamp(now), timestamp(absolute), timestamp(idleExpiry), id, sessionHash)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +258,7 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, next, sour
 	if current == next {
 		return nil, ErrPasswordPolicy
 	}
-	newHash, err := HashPassword(next)
+	newHash, err := s.hasher.Hash(next)
 	if err != nil {
 		return nil, err
 	}

@@ -93,6 +93,36 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 
+	argon2Policy, err := config.Argon2HashPolicy()
+	if err != nil {
+		return fmt.Errorf("argon2 configuration: %w", err)
+	}
+	passwordHasher, err := auth.NewPasswordHasher(argon2Policy)
+	if err != nil {
+		return fmt.Errorf("argon2 hasher: %w", err)
+	}
+	hashStats, err := auth.InspectStoredHashes(context.Background(), db.DB, passwordHasher)
+	if err != nil {
+		return fmt.Errorf("argon2 stored hashes incompatible with runtime policy: %w", err)
+	}
+	logger.Info("argon2 policy initialized",
+		"target_memory_mib", argon2Policy.TargetParams.MemoryKiB/1024,
+		"target_iterations", argon2Policy.TargetParams.Iterations,
+		"target_parallelism", argon2Policy.TargetParams.Parallelism,
+		"memory_budget_mib", argon2Policy.MemoryBudgetKiB/1024,
+		"verify_max_memory_mib", argon2Policy.VerifyMaxMemoryKiB/1024,
+		"max_concurrency", argon2Policy.MaxConcurrency,
+		"stored_hashes", hashStats.Count,
+		"rehash_pending", hashStats.NeedsRehash,
+		"max_stored_memory_mib", hashStats.MaxMemoryKiB/1024,
+	)
+	if argon2Policy.TargetParams.MemoryKiB < 19*1024 {
+		logger.Warn("argon2 target memory is below the recommended low-memory profile",
+			"target_memory_mib", argon2Policy.TargetParams.MemoryKiB/1024,
+			"target_iterations", argon2Policy.TargetParams.Iterations,
+		)
+	}
+
 	// Master key is read from the mounted secret file only (D03). A missing
 	// or invalid key keeps the process alive (healthz ok) but not ready.
 	keyFile := config.MasterKeyFile()
@@ -111,7 +141,7 @@ func run(logger *slog.Logger) error {
 
 	ready := &httpapi.ReadyChecker{DB: db, MasterKeyCheck: bootstrap.MasterKeyCheck(db.DB, masterKey, masterKeyErr)}
 
-	bootService, err := bootstrap.NewService(db, masterKey, logger)
+	bootService, err := bootstrap.NewService(db, masterKey, logger, passwordHasher)
 	if err != nil {
 		return fmt.Errorf("bootstrap service: %w", err)
 	}
@@ -154,11 +184,11 @@ func run(logger *slog.Logger) error {
 			authLimits = auth.Limits{Username: n, Source: n * 5, Global: n * 50}
 		}
 	}
-	authService, err := auth.NewService(db.DB, auth.Options{Audit: auditService, Logger: logger, Limits: authLimits})
+	authService, err := auth.NewService(db.DB, auth.Options{Audit: auditService, Logger: logger, Limits: authLimits, Hasher: passwordHasher})
 	if err != nil {
 		return fmt.Errorf("auth service: %w", err)
 	}
-	usersService := users.NewService(db.DB, users.Options{Audit: auditService})
+	usersService := users.NewService(db.DB, users.Options{Audit: auditService, Hasher: passwordHasher})
 
 	// Non-sensitive admin settings (T27). The R2 delivery resolver combines
 	// them with credentials from the environment or credential secret files on

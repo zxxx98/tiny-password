@@ -51,18 +51,23 @@ type Service struct {
 	logger    *slog.Logger
 	token     *SetupToken
 	masterKey *tpcrypto.MasterKey
+	hasher    *auth.PasswordHasher
 	audit     *audit.Service
 }
 
 // NewService inspects the database state: on an uninitialized instance it
 // generates the one-time setup token and logs it exactly once (D01); on an
 // initialized instance no token is ever created.
-func NewService(db *tpsqlite.DB, masterKey *tpcrypto.MasterKey, logger *slog.Logger) (*Service, error) {
+func NewService(db *tpsqlite.DB, masterKey *tpcrypto.MasterKey, logger *slog.Logger, hashers ...*auth.PasswordHasher) (*Service, error) {
 	initialized, err := isInitialized(db.DB)
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{db: db, logger: logger, masterKey: masterKey, audit: audit.NewService(audit.Options{})}
+	hasher := auth.DefaultPasswordHasher()
+	if len(hashers) > 0 && hashers[0] != nil {
+		hasher = hashers[0]
+	}
+	s := &Service{db: db, logger: logger, masterKey: masterKey, hasher: hasher, audit: audit.NewService(audit.Options{})}
 	if !initialized {
 		token, err := NewSetupToken(logger)
 		if err != nil {
@@ -141,7 +146,7 @@ func (s *Service) Initialize(input InitializeInput) (*InitializeResult, error) {
 		return nil, err
 	}
 
-	passwordHash, err := auth.HashPassword(input.Password)
+	passwordHash, err := s.hasher.Hash(input.Password)
 	if err != nil {
 		return nil, err
 	}

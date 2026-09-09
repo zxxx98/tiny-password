@@ -68,14 +68,16 @@ func NormalizeUsername(name string) string { return strings.ToLower(name) }
 const TimestampFormat = "2006-01-02T15:04:05.000000000Z"
 
 type Options struct {
-	Now   func() time.Time
-	Audit *audit.Service
+	Now    func() time.Time
+	Audit  *audit.Service
+	Hasher *auth.PasswordHasher
 }
 
 type Service struct {
-	db    *sql.DB
-	now   func() time.Time
-	audit *audit.Service
+	db     *sql.DB
+	now    func() time.Time
+	hasher *auth.PasswordHasher
+	audit  *audit.Service
 }
 
 func NewService(db *sql.DB, options Options) *Service {
@@ -85,7 +87,10 @@ func NewService(db *sql.DB, options Options) *Service {
 	if options.Audit == nil {
 		options.Audit = audit.NewService(audit.Options{})
 	}
-	return &Service{db: db, now: options.Now, audit: options.Audit}
+	if options.Hasher == nil {
+		options.Hasher = auth.DefaultPasswordHasher()
+	}
+	return &Service{db: db, now: options.Now, hasher: options.Hasher, audit: options.Audit}
 }
 
 // User is the externally visible member representation. Status is derived:
@@ -171,7 +176,7 @@ func (s *Service) Create(ctx context.Context, admin *auth.Principal, input Creat
 	if err := auth.ValidateNewPassword(input.InitialPassword); err != nil {
 		return User{}, err
 	}
-	hash, err := auth.HashPassword(input.InitialPassword)
+	hash, err := s.hasher.Hash(input.InitialPassword)
 	if err != nil {
 		return User{}, err
 	}
