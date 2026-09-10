@@ -122,6 +122,19 @@ func TestSecretPayloadEnvelopeRoundTripPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestSecretEntryRequiresValueField(t *testing.T) {
+	for _, raw := range []string{
+		`{"name":"prod","entries":[{"key":"MISSING"}]}`,
+		`{"name":"prod","entries":[{"key":"NULL","value":null}]}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := decodePayload(TypeSecret, json.RawMessage(raw)); !errors.Is(err, ErrPayloadInvalid) {
+				t.Fatalf("decodePayload error = %v, want ErrPayloadInvalid", err)
+			}
+		})
+	}
+}
+
 func repeatedSecretEntries(n int) []SecretEntry {
 	entries := make([]SecretEntry, n)
 	for i := range entries {

@@ -1,7 +1,10 @@
 package vault
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -111,6 +114,35 @@ type SecretPayload struct {
 type SecretEntry struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+}
+
+// UnmarshalJSON keeps an explicitly empty value distinct from a missing or
+// null value. The OpenAPI contract requires the value property, while the
+// value itself may legitimately be an empty string. Strict decoding is kept
+// here because a custom unmarshaller would otherwise bypass the outer
+// decoder's DisallowUnknownFields setting for this nested object.
+func (e *SecretEntry) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Key   *string `json:"key"`
+		Value *string `json:"value"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return fmt.Errorf("secret entry must be a single JSON object")
+	}
+	if wire.Value == nil {
+		return fmt.Errorf("payload field %q is required", "value")
+	}
+	e.Key = ""
+	if wire.Key != nil {
+		e.Key = *wire.Key
+	}
+	e.Value = *wire.Value
+	return nil
 }
 
 var sshAlgorithms = map[string]bool{"ed25519": true, "rsa4096": true}
