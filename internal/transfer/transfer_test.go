@@ -109,6 +109,21 @@ func TestManifestSelfCheckRejectsUnsafeOrInconsistentEntries(t *testing.T) {
 	}
 }
 
+func TestManifestSelfCheckAcceptsSecret(t *testing.T) {
+	id := "018f2f2e-2f69-7abc-8def-0123456789ab"
+	manifest := Manifest{
+		Version: FormatVersion,
+		Counts:  map[string]int{"secret": 1},
+		Files: []ManifestFile{{
+			ID: id, Type: "secret", Scope: "personal", Path: "items/" + id + ".json",
+			SHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}},
+	}
+	if err := ManifestSelfCheck(manifest); err != nil {
+		t.Fatalf("secret manifest rejected: %v", err)
+	}
+}
+
 func TestClaimPreviewHasOneAtomicWinner(t *testing.T) {
 	root := t.TempDir()
 	stage := filepath.Join(root, "preview-token")

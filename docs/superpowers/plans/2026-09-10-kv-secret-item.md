@@ -33,7 +33,7 @@
 - Modify: \`internal/vault/seed.go\`
 - Modify: \`internal/vault/search.go\`
 
-- [ ] **Step 1: Write failing unit tests for the payload contract.**
+- [x] **Step 1: Write failing unit tests for the payload contract.**
 
 Add table-driven tests in package \`vault\` that call \`decodePayload\` and assert the concrete \`*SecretPayload\`, preserving entry order and empty values. Cover these cases:
 
@@ -83,7 +83,7 @@ go test ./internal/vault -run 'TestSecretPayload' -count=1
 
 Expected: FAIL because \`TypeSecret\`, \`SecretPayload\`, and the dispatch branches do not exist.
 
-- [ ] **Step 2: Add the minimal Go model and dispatch branches.**
+- [x] **Step 2: Add the minimal Go model and dispatch branches.**
 
 Add \`TypeSecret = "secret"\` to \`internal/vault/types.go\`, include it in \`ItemTypes\`, add \`Secret\` to \`storedPayload\`, and add the \`*SecretPayload\` case to \`TitleOf\`. Define in \`payloads.go\`:
 
@@ -104,7 +104,7 @@ Use constants \`MaxSecretEntries = 128\`, \`MaxSecretKeyRunes = 256\`, and \`Max
 
 Add \`case TypeSecret\` to \`decodePayload\`, \`buildEnvelope\`, and \`typedPayloadOf\`; add \`case *SecretPayload\` to all payload type switches in \`service.go\`, including any \`typedPayload\`/import path checks, and to \`seed.go\`. Add no secret fields to \`searchableText\`, so search continues to exclude keys and values. Update comments saying “five types” to “six types”.
 
-- [ ] **Step 3: Run the focused unit tests and refactor only after green.**
+- [x] **Step 3: Run the focused unit tests and refactor only after green.**
 
 Run:
 
@@ -122,7 +122,7 @@ Expected: PASS. Keep the test green while simplifying helpers or comments; do no
 - Modify: \`api/openapi.yaml\`
 - Test: \`tests/integration/migrations_test.go\`
 
-- [ ] **Step 1: Write migration tests before the migration.**
+- [x] **Step 1: Write migration tests before the migration.**
 
 Add an integration test that opens a database built from \`tests/fixtures/schema-v1.sql\`, inserts a valid old \`login\` row, stamps schema version 1, runs the current migration set, and verifies the row is still present and \`secret\` is accepted by inserting a valid \`secret\` row. Verify inserting \`unknown\` into \`vault_items.item_type\` fails with a CHECK error. Also assert the existing owner/creator, favorite, payload, revision, and timestamp columns remain available.
 
@@ -134,11 +134,11 @@ go test ./tests/integration -run 'Test.*Secret|TestMigration' -count=1
 
 Expected: FAIL because the current schema has no migration 0004.
 
-- [ ] **Step 2: Implement the transactional schema rebuild.**
+- [x] **Step 2: Implement the transactional schema rebuild.**
 
-Create \`migrations/0004_secret_item.sql\` using the SQLite table-rebuild pattern: \`PRAGMA foreign_keys=OFF\`, create \`vault_items_new\` with the exact current columns and constraints except the \`item_type\` CHECK includes \`'secret'\`, copy every column from \`vault_items\`, drop the old table, rename the new table, recreate \`idx_vault_items_owner\`, \`idx_vault_items_creator\`, \`idx_vault_items_updated\`, and \`idx_vault_items_deleted\`, then restore \`PRAGMA foreign_keys=ON\`. Do not touch \`item_versions\`; its foreign key follows the renamed table. Keep the migration free of data rewriting or payload decryption.
+Create \`migrations/0004_secret_item.sql\` using a transactional SQLite table-rebuild sequence that first renames \`item_versions\` and \`vault_items\`, creates the new \`vault_items\` with the exact current columns and constraints except the \`item_type\` CHECK includes \`'secret'\`, copies every \`vault_items\` column, creates a new \`item_versions\` referencing the new parent, copies every history row, then drops the temporary tables and recreates \`idx_vault_items_owner\`, \`idx_vault_items_creator\`, \`idx_vault_items_updated\`, and \`idx_vault_items_deleted\`. This preserves current rows and history while avoiding a foreign-key reference to a dropped table; keep the migration free of payload decryption or data rewriting.
 
-- [ ] **Step 3: Add the OpenAPI schemas and verify the migration.**
+- [x] **Step 3: Add the OpenAPI schemas and verify the migration.**
 
 Change \`ItemType\` to include \`secret\`. Add:
 
@@ -179,7 +179,7 @@ Expected: PASS.
 - Modify: \`tests/integration/transfer_test.go\`
 - Modify: \`tests/integration/migrations_test.go\`
 
-- [ ] **Step 1: Add failing HTTP lifecycle tests.**
+- [x] **Step 1: Add failing HTTP lifecycle tests.**
 
 Add tests using the existing \`itemsHarness\` for create/get/update/history/move/trash/restore of a \`secret\` payload with at least three ordered entries, including an empty value. Assert GET returns the same array order and values, the update creates the next revision with changed order/value, history includes the prior revision, move preserves the payload, and trash/restore returns the same payload. Add permission assertions matching existing secure-note lifecycle tests: the owner can read/update, another member cannot read personal data, shared readers can read, and only the creator can update.
 
@@ -193,11 +193,11 @@ go test ./tests/integration -run 'Test.*Secret|Test.*Item.*Lifecycle|TestSearch'
 
 Expected: FAIL where the type is not accepted or branches are incomplete.
 
-- [ ] **Step 2: Extend transfer manifest validation and add archive tests.**
+- [x] **Step 2: Extend transfer manifest validation and add archive tests.**
 
 Add \`"secret"\` to the accepted manifest type switch in \`internal/transfer/format.go\`. Extend transfer tests to export a secret with multiple entries, preview it, import it, and compare the imported payload JSON structurally and in array order. Assert the manifest counts include \`secret\`. Keep Bitwarden tests unchanged and assert Bitwarden never emits \`secret\`.
 
-- [ ] **Step 3: Run all backend tests.**
+- [x] **Step 3: Run all backend tests.**
 
 Run:
 
@@ -216,7 +216,7 @@ Expected: PASS with no new warnings. Fix implementation or tests, never weaken t
 - Modify: \`web/src/features/vault/ItemEditor.tsx\`
 - Test: \`web/src/features/vault/vault.test.tsx\`
 
-- [ ] **Step 1: Write failing component tests.**
+- [x] **Step 1: Write failing component tests.**
 
 Add tests that select \`secret\`, observe one initial key/value row, add two rows, fill keys and values, delete the middle row, and assert the submitted payload has the remaining entries in original relative order. Assert the last remaining row has no usable delete action. Assert blank keys, exact duplicate keys, 129 rows, and length overflow render inline errors and do not call \`fetch\`. Assert a value input has \`type="password"\` by default and a row’s display toggle changes only that row.
 
@@ -228,7 +228,7 @@ cd web && npm test -- --run src/features/vault/vault.test.tsx
 
 Expected: FAIL because the type and form component do not exist.
 
-- [ ] **Step 2: Add client types, limits, template, validator, and form.**
+- [x] **Step 2: Add client types, limits, template, validator, and form.**
 
 In \`types.ts\`, add:
 
@@ -245,7 +245,7 @@ Render title and notes with existing \`Field\` conventions. Each KV row renders 
 
 Register \`validateSecret\` in \`ItemEditor\`’s validator map, import/render \`SecretFields\`, and pass its \`onChange\` patch through the existing payload state path.
 
-- [ ] **Step 3: Run focused web tests and typecheck.**
+- [x] **Step 3: Run focused web tests and typecheck.**
 
 Run:
 
@@ -266,7 +266,7 @@ Expected: PASS.
 - Modify: \`web/src/features/vault/types.ts\`
 - Test: \`web/src/features/vault/vault.test.tsx\`
 
-- [ ] **Step 1: Write failing detail and clipboard tests.**
+- [x] **Step 1: Write failing detail and clipboard tests.**
 
 Add an \`ItemDetail\` test with ordered entries \`A=one\`, \`B=""\`, and \`C="line1\\nline2"\`. Assert all values are masked initially, revealing one row does not reveal another, and no fetch request is made by reveal or copy. Assert single copy writes an empty string for \`B\`, sets a \`role="status"\` success/failure message, and schedules cleanup. Assert copy-all writes exactly \`A=one\\nB=\\nC=line1\\nline2\` with no final newline. Rejecting \`navigator.clipboard.writeText\` must show \`复制失败，请重试或手动复制\` without changing the UI values. Add a list/detail assertion for \`密钥 · N 个键值\` where the count is available from the detail payload; the list must not request/decrypt entries.
 
@@ -278,7 +278,7 @@ cd web && npm test -- --run src/features/vault/vault.test.tsx
 
 Expected: FAIL because \`SecretValueField\` and the detail branch do not exist.
 
-- [ ] **Step 2: Implement local-only masking and copying.**
+- [x] **Step 2: Implement local-only masking and copying.**
 
 \`SecretValueField\` should hold only \`revealed\` and \`copyState\` state, render a password-style masked span or a plaintext \`output\`, and use Clipboard API directly. It must not import the API request client or call \`/reveal\`/\`/copy\`. On successful copy call \`scheduleClipboardCleanup(value)\` and update status messages using the same cleanup result language as \`SensitiveField\`; on any Clipboard error show the specified failure message. Keep \`value\` in a ref so cleanup and copy use the latest value.
 
@@ -286,7 +286,7 @@ In \`ItemDetail\`, add \`case "secret"\`, render the title/notes and \`entries.m
 
 Update \`describeItem\`/list rendering to show \`密钥 · N 个键值\` wherever a decrypted detail is available. Since list responses intentionally contain no payload, do not add a plaintext key/value search or make the list endpoint decrypt entries; use the existing type label in the list until a count-bearing detail is opened.
 
-- [ ] **Step 3: Run focused tests, build the frontend, and verify no audit calls.**
+- [x] **Step 3: Run focused tests, build the frontend, and verify no audit calls.**
 
 Run:
 
@@ -305,25 +305,25 @@ Expected: PASS; test fetch call counts must remain unchanged during secret revea
 - Modify: \`tests/e2e/vault.spec.ts\`
 - Modify: \`CHANGELOG.md\` only if this repository’s release checklist requires an entry for new user-visible types.
 
-- [ ] **Step 1: Add the browser scenario.**
+- [x] **Step 1: Add the browser scenario.**
 
 Create an E2E test that opens \`新建条目\`, selects \`secret\`, fills three ordered KV rows (including an empty value), saves, reopens the item, confirms all values are initially hidden, copies all, checks the exact clipboard text, edits one value and row order without dragging, saves, and reopens to confirm the new order/value. Also assert no request URL ends with \`/reveal\` or \`/copy\` during the scenario.
 
-- [ ] **Step 2: Run the complete verification set.**
+- [x] **Step 2: Run the complete verification set.**
 
 Run from the worktree root:
 
 ~~~bash
 go test ./...
 cd web && npm test -- --run && npm run typecheck && npm run build
-cd .. && npm run test:e2e
+cd .. && make test-e2e E2E_SPEC=tests/e2e/vault.spec.ts
 git diff --check
 git status --short
 ~~~
 
 Expected: all Go and Vitest tests pass, TypeScript and Vite build exit 0, the relevant Playwright scenario passes in the configured environment, \`git diff --check\` prints nothing, and only the intended source, migration, API, test, and plan files are changed.
 
-- [ ] **Step 3: Commit the completed implementation.**
+- [x] **Step 3: Commit the completed implementation.**
 
 After the verification commands pass, commit the implementation on \`feature/kv-secret-item\`:
 

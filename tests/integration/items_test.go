@@ -308,6 +308,15 @@ func validPayloadFixtures() map[string]map[string]any {
 			"name": "2FA recovery",
 			"body": "SYNSECRET-note recovery codes: 1a2b 3c4d",
 		},
+		"secret": {
+			"name": "production environment",
+			"entries": []map[string]any{
+				{"key": "API_KEY", "value": "SYNSECRET-api-key"},
+				{"key": "API_SECRET", "value": ""},
+				{"key": "API_URL", "value": "https://api.example"},
+			},
+			"notes": "deployment credentials",
+		},
 	}
 }
 
@@ -325,7 +334,7 @@ func TestItemCreateValidFixtures(t *testing.T) {
 	h.bootstrapAdmin(t)
 	alice := h.itemClient(t, "alice")
 
-	for _, typ := range []string{"login", "ssh_key", "identity", "secure_note", "credit_card"} {
+	for _, typ := range []string{"login", "ssh_key", "identity", "secure_note", "secret", "credit_card"} {
 		t.Run(typ, func(t *testing.T) {
 			payload := payloadFixtureWithoutReference(typ)
 			if typ == "credit_card" {
@@ -386,7 +395,7 @@ func TestItemCreateValidFixtures(t *testing.T) {
 	}
 
 	// Neither the database nor the WAL ever hold the plaintext secrets.
-	for _, marker := range []string{"SYNSECRET-pw-7f3a", "SYNSECRET-key", "SYNSECRET-note"} {
+	for _, marker := range []string{"SYNSECRET-pw-7f3a", "SYNSECRET-key", "SYNSECRET-note", "SYNSECRET-api-key"} {
 		for _, suffix := range []string{"", "-wal"} {
 			raw, err := os.ReadFile(h.db.Path() + suffix)
 			if err != nil {
@@ -431,6 +440,20 @@ func TestItemCreateInvalidFixtures(t *testing.T) {
 		{"identity name missing", "identity", func(p map[string]any) { delete(p, "name") }, nil},
 		{"note body over limit", "secure_note", func(p map[string]any) { p["body"] = strings.Repeat("b", 65537) }, nil},
 		{"note body missing", "secure_note", func(p map[string]any) { delete(p, "body") }, nil},
+		{"secret empty entries", "secret", func(p map[string]any) { p["entries"] = []map[string]any{} }, nil},
+		{"secret duplicate key", "secret", func(p map[string]any) {
+			p["entries"] = []map[string]any{{"key": "A", "value": "1"}, {"key": "A", "value": "2"}}
+		}, nil},
+		{"secret blank key", "secret", func(p map[string]any) {
+			p["entries"] = []map[string]any{{"key": " \t", "value": "x"}}
+		}, nil},
+		{"secret key over limit", "secret", func(p map[string]any) {
+			p["entries"] = []map[string]any{{"key": strings.Repeat("k", 257), "value": "x"}}
+		}, nil},
+		{"secret value over limit", "secret", func(p map[string]any) {
+			p["entries"] = []map[string]any{{"key": "A", "value": strings.Repeat("v", 16385)}}
+		}, nil},
+		{"secret notes over limit", "secret", func(p map[string]any) { p["notes"] = strings.Repeat("n", 10001) }, nil},
 		{"33 tags", "secure_note", nil, func(b map[string]any) {
 			tags := []string{}
 			for i := 0; i < 33; i++ {
@@ -828,6 +851,9 @@ func TestItemUpdateRevisionHistoryAndImmutability(t *testing.T) {
 	if detail["revision"].(float64) != 2 {
 		t.Fatalf("revision after update: %v", detail["revision"])
 	}
+	if detail["title"] != "bank" {
+		t.Fatalf("title after update: %v", detail["title"])
+	}
 	tags := detail["tags"].([]any)
 	if len(tags) != 2 || tags[0] != "one" || tags[1] != "three" {
 		t.Fatalf("tags not replaced: %v", tags)
@@ -960,7 +986,7 @@ func TestItemMoveRoundTripPreservesCurrentState(t *testing.T) {
 	alice := h.itemClient(t, "alice")
 	aliceID := h.lookupUserID(t, "alice")
 
-	types := []string{"login", "ssh_key", "credit_card", "identity", "secure_note"}
+	types := []string{"login", "ssh_key", "credit_card", "identity", "secure_note", "secret"}
 	for _, typ := range types {
 		t.Run(typ, func(t *testing.T) {
 			initial := payloadFixtureWithoutReference(typ)

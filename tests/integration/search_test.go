@@ -147,6 +147,38 @@ func TestSearchMatchesAuthorizedFieldsOnly(t *testing.T) {
 	}
 }
 
+func TestSecretSearchMatchesTitleAndTagsButNotEntriesOrNotes(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	h.mustCreateItem(t, alice, "personal", "secret", map[string]any{
+		"name":    "deploy credentials",
+		"entries": []map[string]any{{"key": "UNIQUE-KEY", "value": "UNIQUE-VALUE"}},
+		"notes":   "UNIQUE-NOTE",
+	}, []string{"UNIQUE-TAG"})
+
+	searchCount := func(query string) int {
+		t.Helper()
+		resp := h.request(t, "POST", "/items/search", map[string]any{"query": query}, alice)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("search %q: status=%d", query, resp.StatusCode)
+		}
+		return len(decodeBody(t, resp)["items"].([]any))
+	}
+	if got := searchCount("deploy credentials"); got != 1 {
+		t.Fatalf("secret title hits=%d, want 1", got)
+	}
+	if got := searchCount("UNIQUE-TAG"); got != 1 {
+		t.Fatalf("secret tag hits=%d, want 1", got)
+	}
+	for _, query := range []string{"UNIQUE-KEY", "UNIQUE-VALUE", "UNIQUE-NOTE"} {
+		if got := searchCount(query); got != 0 {
+			t.Fatalf("secret %q hits=%d, want 0", query, got)
+		}
+	}
+}
+
 func make256Plus() string {
 	s := make([]rune, 257)
 	for i := range s {

@@ -1,7 +1,7 @@
 import type { ApiError } from "../../app/api";
 
-/** The five fixed item types of V1 (design §6.2). */
-export const ITEM_TYPES = ["login", "ssh_key", "credit_card", "identity", "secure_note"] as const;
+/** The six fixed item types of V1 (design §6.2). */
+export const ITEM_TYPES = ["login", "ssh_key", "credit_card", "identity", "secure_note", "secret"] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
 export const TYPE_LABELS: Record<ItemType, string> = {
@@ -10,6 +10,7 @@ export const TYPE_LABELS: Record<ItemType, string> = {
   credit_card: "银行卡",
   identity: "身份地址",
   secure_note: "安全笔记",
+  secret: "密钥",
 };
 
 export type LoginPayload = {
@@ -65,7 +66,18 @@ export type SecureNotePayload = {
   body: string;
 };
 
-export type ItemPayload = LoginPayload | SshKeyPayload | CreditCardPayload | IdentityPayload | SecureNotePayload;
+export type SecretEntry = {
+  key: string;
+  value: string;
+};
+
+export type SecretPayload = {
+  name: string;
+  entries: SecretEntry[];
+  notes?: string;
+};
+
+export type ItemPayload = LoginPayload | SshKeyPayload | CreditCardPayload | IdentityPayload | SecureNotePayload | SecretPayload;
 
 export type ItemMeta = {
   id: string;
@@ -121,6 +133,9 @@ export const LIMITS = {
   addressLine: 512,
   postalCode: 32,
   noteBody: 65536,
+  secretEntries: 128,
+  secretKey: 256,
+  secretValue: 16384,
   tagsCount: 32,
   tag: 64,
 } as const;
@@ -138,6 +153,8 @@ export function emptyPayload(type: ItemType): ItemPayload {
       return { name: "", full_name: "", company: "", phone: "", email: "", country: "", state: "", city: "", district: "", address_line: "", postal_code: "", notes: "" };
     case "secure_note":
       return { name: "", body: "" };
+    case "secret":
+      return { name: "", entries: [{ key: "", value: "" }], notes: "" };
   }
 }
 

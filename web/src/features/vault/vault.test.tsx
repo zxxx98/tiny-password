@@ -9,6 +9,7 @@ import { SensitiveField } from "./SensitiveField";
 import { TrashPage } from "./TrashPage";
 import { VaultPage } from "./VaultPage";
 import { LoginFields } from "./forms/LoginFields";
+import { validateSecret } from "./forms/SecretFields";
 import { sessionStore } from "../../app/session";
 import type { ItemDetail as ItemDetailData } from "./types";
 
@@ -57,6 +58,22 @@ const loginDetail: ItemDetailData = {
   ...meta,
   tags: ["bank"],
   payload: { name: "Family bank", username: "alice", password: "SYNSECRET-pw", notes: "n" },
+};
+
+const secretDetail: ItemDetailData = {
+	...meta,
+	title: "Production secrets",
+	item_type: "secret",
+	tags: ["deploy"],
+	payload: {
+		name: "Production secrets",
+		entries: [
+			{ key: "A", value: "one" },
+			{ key: "B", value: "" },
+			{ key: "C", value: "line1\nline2" },
+		],
+		notes: "deployment only",
+	},
 };
 
 function stubClipboard(impl?: Partial<Clipboard>) {
@@ -169,7 +186,7 @@ describe("SensitiveField", () => {
 });
 
 describe("ItemEditor", () => {
-  it("prefills a personal login editor from an in-memory generated password draft", () => {
+	it("prefills a personal login editor from an in-memory generated password draft", () => {
     render(
       <ItemEditor
         csrfToken={csrf}
@@ -180,7 +197,63 @@ describe("ItemEditor", () => {
     );
     expect(screen.getByLabelText("密码")).toHaveValue("HANDOFF-PASSWORD");
     expect(screen.getByLabelText("密码")).toHaveAttribute("type", "password");
-  });
+	});
+
+	it("creates an ordered secret with row insertion, deletion, and masked values", async () => {
+		const user = userEvent.setup();
+		const fetchMock = stubFetch([{ status: 201, body: secretDetail }]);
+		const onSaved = vi.fn();
+		render(<ItemEditor csrfToken={csrf} onSaved={onSaved} onCancel={() => {}} />);
+
+		await user.selectOptions(screen.getByLabelText("类型"), "secret");
+		await user.type(screen.getByLabelText("标题"), "Production secrets");
+		await user.type(screen.getByLabelText("键 1"), "A");
+		await user.type(screen.getByLabelText("值 1"), "one");
+		await user.click(screen.getByRole("button", { name: "添加一组" }));
+		await user.click(screen.getByRole("button", { name: "添加一组" }));
+		await user.type(screen.getByLabelText("键 2"), "REMOVE");
+		await user.type(screen.getByLabelText("值 2"), "remove");
+		await user.type(screen.getByLabelText("键 3"), "C");
+		await user.type(screen.getByLabelText("值 3"), "three");
+		await user.click(screen.getByRole("button", { name: "删除第 2 组" }));
+
+		expect(screen.getByLabelText("值 1")).toHaveAttribute("type", "password");
+		expect(screen.getByRole("button", { name: "删除第 1 组" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "删除第 2 组" })).toBeEnabled();
+		await user.click(screen.getByRole("button", { name: "显示第 1 组" }));
+		expect(screen.getByLabelText("值 1")).toHaveAttribute("type", "text");
+		expect(screen.getByLabelText("值 2")).toHaveAttribute("type", "password");
+
+		await user.click(screen.getByRole("button", { name: "创建条目" }));
+		await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+		const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+		expect(body.payload.entries).toEqual([
+			{ key: "A", value: "one" },
+			{ key: "C", value: "three" },
+		]);
+	});
+
+	it("validates secret keys, duplicates, and entry count before sending", async () => {
+		const user = userEvent.setup();
+		const fetchMock = stubFetch([]);
+		render(<ItemEditor csrfToken={csrf} onSaved={() => {}} onCancel={() => {}} />);
+		await user.selectOptions(screen.getByLabelText("类型"), "secret");
+		await user.type(screen.getByLabelText("标题"), "Secrets");
+		await user.click(screen.getByRole("button", { name: "创建条目" }));
+		expect(await screen.findByText("键必填。")).toBeInTheDocument();
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		await user.type(screen.getByLabelText("键 1"), "DUP");
+		await user.click(screen.getByRole("button", { name: "添加一组" }));
+		await user.type(screen.getByLabelText("键 2"), "DUP");
+		expect(validateSecret({
+			name: "x",
+			entries: Array.from({ length: 129 }, (_, i) => ({ key: `key-${i}`, value: "" })),
+		})).toHaveProperty("entries", "最多 128 组。");
+		await user.click(screen.getByRole("button", { name: "创建条目" }));
+		expect(await screen.findByText("键不能重复。")).toBeInTheDocument();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
 
   it("blocks submission client-side when required fields are missing", async () => {
     const user = userEvent.setup();
@@ -415,7 +488,7 @@ describe("ItemDetail", () => {
     expect(screen.getByRole("button", { name: "历史" })).toBeInTheDocument();
   });
 
-  it("renders sensitive login fields masked and audited", async () => {
+	it("renders sensitive login fields masked and audited", async () => {
     const user = userEvent.setup();
     const fetchMock = stubFetch([{ status: 204 }]);
     render(
@@ -433,7 +506,60 @@ describe("ItemDetail", () => {
     await user.click(screen.getByRole("button", { name: "显示" }));
     expect(screen.getByTestId("secret-value-password")).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-  });
+	});
+
+	it("renders secret values masked, copies exact text, and never audits reveal or copy", async () => {
+		const user = userEvent.setup();
+		const clipboard = stubClipboard();
+		const fetchMock = stubFetch([]);
+		render(
+			<ItemDetail
+				detail={secretDetail}
+				csrfToken={csrf}
+				canManage={true}
+				onEdit={() => {}}
+				onShowHistory={() => {}}
+				onToggleFavorite={() => {}}
+				onTrash={() => {}}
+			/>,
+		);
+
+		expect(screen.getByText("密钥 · 3 个键值")).toBeInTheDocument();
+		expect(screen.getByTestId("secret-masked-0")).toBeInTheDocument();
+		expect(screen.getByTestId("secret-masked-1")).toBeInTheDocument();
+		expect(screen.getByTestId("secret-masked-2")).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "显示第 1 组" }));
+		expect(screen.getByTestId("secret-value-0")).toHaveTextContent("one");
+		expect(screen.getByTestId("secret-masked-1")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "复制第 2 组" }));
+		expect(clipboard.writeText).toHaveBeenCalledWith("");
+		await user.click(screen.getByRole("button", { name: "复制全部" }));
+		expect(clipboard.writeText).toHaveBeenCalledWith("A=one\nB=\nC=line1\nline2");
+		expect(screen.getAllByRole("status").length).toBeGreaterThan(0);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("reports secret clipboard failures without changing masked values", async () => {
+		const user = userEvent.setup();
+		stubClipboard({ writeText: vi.fn(async () => { throw new Error("denied"); }) });
+		const fetchMock = stubFetch([]);
+		render(
+			<ItemDetail
+				detail={secretDetail}
+				csrfToken={csrf}
+				canManage={true}
+				onEdit={() => {}}
+				onShowHistory={() => {}}
+				onToggleFavorite={() => {}}
+				onTrash={() => {}}
+			/>,
+		);
+		await user.click(screen.getByRole("button", { name: "复制第 1 组" }));
+		expect(await screen.findByText("复制失败，请重试或手动复制")).toBeInTheDocument();
+		expect(screen.getByTestId("secret-masked-0")).toBeInTheDocument();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
 });
 
 describe("ItemDialog", () => {

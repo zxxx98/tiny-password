@@ -28,6 +28,9 @@ const (
 	MaxAddressLineRunes = 512
 	MaxPostalCodeRunes  = 32
 	MaxNoteBodyRunes    = 65536
+	MaxSecretEntries    = 128
+	MaxSecretKeyRunes   = 256
+	MaxSecretValueRunes = 16384
 	MinExpMonth         = 1
 	MaxExpMonth         = 12
 	MinExpYear          = 2000
@@ -95,6 +98,19 @@ type IdentityPayload struct {
 type SecureNotePayload struct {
 	Name string `json:"name"`
 	Body string `json:"body"`
+}
+
+// SecretPayload stores ordered key/value pairs. The order is part of the
+// user's data and must survive every lifecycle operation.
+type SecretPayload struct {
+	Name    string        `json:"name"`
+	Entries []SecretEntry `json:"entries"`
+	Notes   string        `json:"notes,omitempty"`
+}
+
+type SecretEntry struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 var sshAlgorithms = map[string]bool{"ed25519": true, "rsa4096": true}
@@ -226,6 +242,33 @@ func (p *SecureNotePayload) validate() error {
 		return err
 	}
 	return requiredText("body", p.Body, MaxNoteBodyRunes)
+}
+
+func (p *SecretPayload) validate() error {
+	if err := requiredText("name", p.Name, MaxNameRunes); err != nil {
+		return err
+	}
+	if len(p.Entries) < 1 || len(p.Entries) > MaxSecretEntries {
+		return fmt.Errorf("payload field %q must hold 1..%d entries", "entries", MaxSecretEntries)
+	}
+	seen := make(map[string]struct{}, len(p.Entries))
+	for i, entry := range p.Entries {
+		field := fmt.Sprintf("entries[%d].key", i)
+		if strings.TrimSpace(entry.Key) == "" {
+			return fmt.Errorf("payload field %q is required", field)
+		}
+		if err := optionalText(field, entry.Key, MaxSecretKeyRunes); err != nil {
+			return err
+		}
+		if _, ok := seen[entry.Key]; ok {
+			return fmt.Errorf("payload field %q must be unique", field)
+		}
+		seen[entry.Key] = struct{}{}
+		if err := optionalText(fmt.Sprintf("entries[%d].value", i), entry.Value, MaxSecretValueRunes); err != nil {
+			return err
+		}
+	}
+	return optionalText("notes", p.Notes, MaxNotesRunes)
 }
 
 // requiredText enforces presence (JSON required + minLength 1) and the

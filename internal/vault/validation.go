@@ -41,6 +41,10 @@ func decodePayload(itemType string, raw json.RawMessage) (any, error) {
 		p := &SecureNotePayload{}
 		err = dec.Decode(p)
 		payload = p
+	case TypeSecret:
+		p := &SecretPayload{}
+		err = dec.Decode(p)
+		payload = p
 	default:
 		return nil, ErrInvalidItemType
 	}
@@ -60,6 +64,8 @@ func decodePayload(itemType string, raw json.RawMessage) (any, error) {
 	case *IdentityPayload:
 		err = p.validate()
 	case *SecureNotePayload:
+		err = p.validate()
+	case *SecretPayload:
 		err = p.validate()
 	}
 	if err != nil {
@@ -106,6 +112,8 @@ func buildEnvelope(itemType string, tags []string, payload any) (*storedPayload,
 		env.Identity = p
 	case *SecureNotePayload:
 		env.SecureNote = p
+	case *SecretPayload:
+		env.Secret = p
 	default:
 		return nil, nil, ErrInvalidItemType
 	}

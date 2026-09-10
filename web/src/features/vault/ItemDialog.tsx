@@ -4,7 +4,7 @@ import { ErrorSummary, Loading } from "../../design-system/Status";
 import { HistoryPage } from "./HistoryPage";
 import { ItemDetail } from "./ItemDetail";
 import { ItemEditor } from "./ItemEditor";
-import { describeItem, TYPE_LABELS, type ItemDetail as ItemDetailData } from "./types";
+import { describeItem, TYPE_LABELS, type ItemDetail as ItemDetailData, type SecretPayload } from "./types";
 
 export type ItemDialogMode =
   | { kind: "loading"; itemId: string }
@@ -69,7 +69,9 @@ function descriptionFor(mode: ItemDialogMode) {
       return (
         <>
           <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
-            <span className="text-accent">■</span> 条目详情　/　{TYPE_LABELS[mode.detail.item_type]}
+            <span className="text-accent">■</span> 条目详情　/　{mode.detail.item_type === "secret"
+              ? `${TYPE_LABELS.secret} · ${(mode.detail.payload as SecretPayload).entries.length} 个键值`
+              : TYPE_LABELS[mode.detail.item_type]}
           </p>
           {metadata(mode.detail)}
         </>

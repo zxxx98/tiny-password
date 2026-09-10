@@ -200,11 +200,15 @@ func (s *Service) Get(ctx context.Context, actor *auth.Principal, id string) (De
 	if err != nil {
 		return Detail{}, err
 	}
-	if err := s.audit.Record(ctx, s.db, audit.Event{
-		Name: audit.EventVaultItemViewed, ActorID: actor.UserID,
-		TargetType: audit.TargetItem, TargetID: id, Result: audit.ResultSuccess,
-	}); err != nil {
-		return Detail{}, err
+	// Secret values are intentionally outside the audited sensitive-field
+	// model: opening a secret detail must not create a view audit event.
+	if row.ItemType != TypeSecret {
+		if err := s.audit.Record(ctx, s.db, audit.Event{
+			Name: audit.EventVaultItemViewed, ActorID: actor.UserID,
+			TargetType: audit.TargetItem, TargetID: id, Result: audit.ResultSuccess,
+		}); err != nil {
+			return Detail{}, err
+		}
 	}
 	detail := Detail{Meta: row.toMeta(), Tags: envelope.Tags, Payload: typed}
 	detail.Title = TitleOf(typed)
@@ -219,7 +223,7 @@ func (s *Service) Get(ctx context.Context, actor *auth.Principal, id string) (De
 // scanner, exactly like search.
 type ListFilter struct {
 	Scope    string // "", "personal" or "shared"
-	ItemType string // "" or one of the five types
+	ItemType string // "" or one of the six types
 	Favorite *bool  // nil = any
 	Tag      string // "" = any
 }
@@ -414,7 +418,7 @@ func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id stri
 	}
 	if bytes.Equal(plaintext, oldRaw) && favorite == row.Favorite {
 		// No effective change: not an update, no history, no revision bump.
-		return Detail{Meta: row.toMeta(), Tags: oldEnvelope.Tags, Payload: typedPayloadOf(row.ItemType, oldEnvelope)}, nil
+		return s.decorateDetail(ctx, s.db, Detail{Meta: row.toMeta(), Tags: oldEnvelope.Tags, Payload: typedPayloadOf(row.ItemType, oldEnvelope)}), nil
 	}
 
 	enc, err := s.key.Encrypt(plaintext, AADFor(id, row.Scope, row.OwnerID.String, row.CreatorID.String, crypto.PayloadVersion, row.Revision+1))
@@ -446,7 +450,7 @@ func (s *Service) updateOnce(ctx context.Context, actor *auth.Principal, id stri
 	meta.Revision = row.Revision + 1
 	meta.Favorite = favorite
 	meta.UpdatedAt = updatedAt
-	return Detail{Meta: meta, Tags: envelope.Tags, Payload: payload}, nil
+	return s.decorateDetail(ctx, s.db, Detail{Meta: meta, Tags: envelope.Tags, Payload: payload}), nil
 }
 
 // moveOnce creates a new target item from the submitted current payload and
@@ -617,6 +621,11 @@ func typedPayloadOf(itemType string, envelope *storedPayload) any {
 			return nil
 		}
 		return envelope.SecureNote
+	case TypeSecret:
+		if envelope.Secret == nil {
+			return nil
+		}
+		return envelope.Secret
 	default:
 		return nil
 	}

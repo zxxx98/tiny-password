@@ -192,6 +192,100 @@ func TestHistoryRestoreCreatesNewRevision(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestSecretItemLifecyclePreservesOrderedEntries(t *testing.T) {
+	h := newItemsHarness(t)
+	h.bootstrapAdmin(t)
+	alice := h.itemClient(t, "alice")
+	bob := h.itemClient(t, "bob")
+	first := map[string]any{
+		"name":    "deployment secrets",
+		"entries": []map[string]any{{"key": "FIRST", "value": "one"}, {"key": "EMPTY", "value": ""}, {"key": "MULTILINE", "value": "line1\nline2"}},
+		"notes":   "deploy only",
+	}
+	item := h.mustCreateItem(t, alice, "personal", "secret", first, []string{"deploy"})
+	id := item["id"].(string)
+	assertSecretEntries(t, h.getDetail(t, alice, id), []string{"FIRST", "EMPTY", "MULTILINE"}, []string{"one", "", "line1\nline2"})
+	var secretViewAudits int
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE event=? AND target_id=?`, audit.EventVaultItemViewed, id).Scan(&secretViewAudits); err != nil {
+		t.Fatal(err)
+	}
+	if secretViewAudits != 0 {
+		t.Fatalf("secret detail view created %d audit events", secretViewAudits)
+	}
+
+	second := map[string]any{
+		"name":    "deployment secrets",
+		"entries": []map[string]any{{"key": "MULTILINE", "value": "changed"}, {"key": "FIRST", "value": "updated"}},
+		"notes":   "updated",
+	}
+	updated := h.request(t, "PUT", "/items/"+id, map[string]any{"revision": 1, "payload": second}, alice)
+	if updated.StatusCode != http.StatusOK {
+		t.Fatalf("secret update: %d", updated.StatusCode)
+	}
+	assertSecretEntries(t, decodeBody(t, updated), []string{"MULTILINE", "FIRST"}, []string{"changed", "updated"})
+	updated.Body.Close()
+
+	history := h.request(t, "GET", "/items/"+id+"/history", nil, alice)
+	if history.StatusCode != http.StatusOK {
+		t.Fatalf("secret history: %d", history.StatusCode)
+	}
+	if entries := decodeBody(t, history)["items"].([]any); len(entries) != 1 || entries[0].(map[string]any)["revision"].(float64) != 1 {
+		t.Fatalf("secret history entries: %v", entries)
+	}
+	history.Body.Close()
+
+	restored := h.request(t, "POST", "/items/"+id+"/history/1/restore", map[string]any{}, alice)
+	if restored.StatusCode != http.StatusOK {
+		t.Fatalf("secret history restore: %d", restored.StatusCode)
+	}
+	assertSecretEntries(t, decodeBody(t, restored), []string{"FIRST", "EMPTY", "MULTILINE"}, []string{"one", "", "line1\nline2"})
+	restored.Body.Close()
+
+	if resp := h.request(t, "GET", "/items/"+id, nil, bob); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("personal secret visible to another member: %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := h.request(t, "DELETE", "/items/"+id, nil, alice); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("secret trash: %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := h.request(t, "POST", "/items/"+id+"/restore", map[string]any{}, alice); resp.StatusCode != http.StatusOK {
+		t.Fatalf("secret restore: %d", resp.StatusCode)
+	} else {
+		assertSecretEntries(t, decodeBody(t, resp), []string{"FIRST", "EMPTY", "MULTILINE"}, []string{"one", "", "line1\nline2"})
+		resp.Body.Close()
+	}
+
+	shared := h.mustCreateItem(t, alice, "shared", "secret", first, nil)
+	sharedID := shared["id"].(string)
+	if resp := h.request(t, "GET", "/items/"+sharedID, nil, bob); resp.StatusCode != http.StatusOK {
+		t.Fatalf("shared secret unreadable: %d", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	write := h.request(t, "PUT", "/items/"+sharedID, map[string]any{"revision": 1, "payload": first}, bob)
+	if write.StatusCode != http.StatusForbidden {
+		t.Fatalf("shared secret writable by reader: %d", write.StatusCode)
+	}
+	write.Body.Close()
+}
+
+func assertSecretEntries(t *testing.T, item map[string]any, keys, values []string) {
+	t.Helper()
+	entries := item["payload"].(map[string]any)["entries"].([]any)
+	if len(entries) != len(keys) {
+		t.Fatalf("secret entry count=%d, want %d: %v", len(entries), len(keys), entries)
+	}
+	for i, raw := range entries {
+		entry := raw.(map[string]any)
+		if entry["key"] != keys[i] || entry["value"] != values[i] {
+			t.Fatalf("secret entry %d=%v, want key=%q value=%q", i, entry, keys[i], values[i])
+		}
+	}
+}
+
 func TestHistoryTamperFailsClosed(t *testing.T) {
 	h := newItemsHarness(t)
 	h.bootstrapAdmin(t)
@@ -443,4 +537,3 @@ func TestHistoryCursorPagination(t *testing.T) {
 	}
 	resp.Body.Close()
 }
-

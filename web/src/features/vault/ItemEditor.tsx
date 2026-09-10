@@ -7,6 +7,7 @@ import { CreditCardFields, validateCreditCard } from "./forms/CreditCardFields";
 import { IdentityFields, validateIdentity } from "./forms/IdentityFields";
 import { LoginFields, validateLogin } from "./forms/LoginFields";
 import { SecureNoteFields, validateSecureNote } from "./forms/SecureNoteFields";
+import { SecretFields, validateSecret } from "./forms/SecretFields";
 import { SshKeyFields, validateSshKey } from "./forms/SshKeyFields";
 import {
   ITEM_TYPES,
@@ -20,6 +21,7 @@ import {
   type ItemType,
   type LoginPayload,
   type SecureNotePayload,
+  type SecretPayload,
   type SshKeyPayload,
 } from "./types";
 
@@ -30,6 +32,7 @@ const validators = {
   credit_card: validateCreditCard,
   identity: validateIdentity,
   secure_note: validateSecureNote,
+  secret: validateSecret,
 } as const;
 
 export type ItemEditorProps = {
@@ -275,6 +278,7 @@ export function ItemEditor({
       {type === "credit_card" && <CreditCardFields payload={payload as CreditCardPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "identity" && <IdentityFields payload={payload as IdentityPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "secure_note" && <SecureNoteFields payload={payload as SecureNotePayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
+      {type === "secret" && <SecretFields payload={payload as SecretPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
 
       <div className="space-y-4 border-t border-divider pt-4">
         <label htmlFor="e-tags" className="block font-mono text-xs uppercase tracking-widest">标签（逗号分隔，自动去重）</label>

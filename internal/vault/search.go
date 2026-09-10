@@ -72,7 +72,8 @@ func containsTag(tags []string, tag string) bool {
 
 // searchableText concatenates the fields design §7.1 searches: title,
 // username, URLs, tags and notes. The secure note body and SSH key
-// comment/fingerprint participate as their type's note-like fields.
+// comment/fingerprint participate as their type's note-like fields. Secret
+// keys, values, and notes are deliberately excluded from search.
 func searchableText(payload any, tags []string) string {
 	var sb strings.Builder
 	sb.WriteString(strings.Join(tags, "\n"))
@@ -118,6 +119,9 @@ func searchableText(payload any, tags []string) string {
 		sb.WriteString(p.Name)
 		sb.WriteString("\n")
 		sb.WriteString(p.Body)
+	case *SecretPayload:
+		sb.WriteString("\n")
+		sb.WriteString(p.Name)
 	}
 	return sb.String()
 }

@@ -64,6 +64,51 @@ test.describe("vault workspace", () => {
     await expect(page.getByText(/内容与版本号不变/)).toBeVisible();
   });
 
+  test("creates, copies, edits and reopens an ordered secret", async ({ page }) => {
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
+    const auditedUrls: string[] = [];
+    page.on("request", (request) => {
+      if (/\/(reveal|copy)$/.test(new URL(request.url()).pathname)) auditedUrls.push(request.url());
+    });
+
+    await page.getByRole("button", { name: "新建条目" }).click();
+    await page.getByLabel("类型", { exact: true }).selectOption("secret");
+    await page.getByLabel("标题").fill("e2e secret");
+    await page.getByLabel("键 1").fill("FIRST");
+    await page.getByLabel("值 1").fill("one");
+    await page.getByRole("button", { name: "添加一组" }).click();
+    await page.getByLabel("键 2").fill("EMPTY");
+    await page.getByRole("button", { name: "添加一组" }).click();
+    await page.getByLabel("键 3").fill("MULTILINE");
+    await page.getByLabel("值 3").fill("line1\nline2");
+    await page.getByRole("button", { name: "创建条目" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "e2e secret" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByText("密钥 · 3 个键值")).toBeVisible();
+    await expect(dialog.getByTestId("secret-masked-0")).toBeVisible();
+    await expect(dialog.getByTestId("secret-masked-1")).toBeVisible();
+    await expect(dialog.getByTestId("secret-masked-2")).toBeVisible();
+    await dialog.getByRole("button", { name: "复制全部" }).click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("FIRST=one\nEMPTY=\nMULTILINE=line1\nline2");
+
+    await dialog.getByRole("button", { name: "编辑条目" }).click();
+    await page.getByLabel("值 3").fill("changed");
+    await page.getByRole("button", { name: "删除第 1 组" }).click();
+    await page.getByRole("button", { name: "保存修改" }).click();
+    await expect(page.getByRole("heading", { name: "e2e secret" })).toBeVisible();
+    await expect(page.getByText("密钥 · 2 个键值")).toBeVisible();
+    await page.getByRole("button", { name: "关闭弹窗" }).click();
+    await page.getByRole("button", { name: /e2e secret/ }).click();
+    const reopened = page.getByRole("dialog", { name: "e2e secret" });
+    await expect(reopened.getByTestId("secret-masked-0")).toBeVisible();
+    await expect(reopened.getByTestId("secret-masked-1")).toBeVisible();
+    await expect(reopened.getByText("EMPTY")).toBeVisible();
+    await expect(reopened.getByText("MULTILINE")).toBeVisible();
+    await expect(reopened.getByText("changed")).toHaveCount(0);
+    expect(auditedUrls).toEqual([]);
+  });
+
   test("mobile: single column with bottom navigation and modal detail", async ({ page }) => {
     // beforeEach 已登录；整页刷新后会话应从 cookie 静默恢复。
     await page.setViewportSize({ width: 390, height: 844 });

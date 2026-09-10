@@ -2,9 +2,11 @@ package integration
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,6 +64,82 @@ func TestMigrationCreatesCoreTables(t *testing.T) {
 	}
 	if initialized != "0" {
 		t.Fatalf("initialized = %q, want 0", initialized)
+	}
+}
+
+func TestSecretMigrationPreservesVaultItemsAndExtendsTypeCheck(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "app.db")
+	raw, err := sql.Open(sqlite.DriverName, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(filepath.Join("..", "fixtures", "schema-v1.sql"))
+	if err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(string(fixture)); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'old.sql', '2026-01-01T00:00:00Z')`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO users(id, username_norm, username_display, role, status, must_change_password, password_hash, created_at, updated_at)
+		VALUES ('u1', 'u1', 'u1', 'member', 'active', 0, 'hash', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO vault_items(id, vault_scope, owner_user_id, item_type, favorite, payload_version, nonce, ciphertext, revision, created_at, updated_at)
+		VALUES ('old-item', 'personal', 'u1', 'login', 1, 1, X'00', X'01', 2, '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO item_versions(item_id, revision, payload_version, nonce, ciphertext, created_at)
+		VALUES ('old-item', 1, 1, X'02', X'03', '2026-01-01T00:00:00Z')`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := sqlite.Migrate(db.DB, migrations.FS); err != nil {
+		t.Fatalf("migrate old schema: %v", err)
+	}
+	var oldType string
+	var oldFavorite, oldRevision int
+	if err := db.QueryRow(`SELECT item_type, favorite, revision FROM vault_items WHERE id='old-item'`).Scan(&oldType, &oldFavorite, &oldRevision); err != nil {
+		t.Fatal(err)
+	}
+	if oldType != "login" || oldFavorite != 1 || oldRevision != 2 {
+		t.Fatalf("old row changed during migration: type=%q favorite=%d revision=%d", oldType, oldFavorite, oldRevision)
+	}
+	var historyCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM item_versions WHERE item_id='old-item' AND revision=1`).Scan(&historyCount); err != nil {
+		t.Fatal(err)
+	}
+	if historyCount != 1 {
+		t.Fatalf("old history row lost during migration: count=%d", historyCount)
+	}
+	if _, err := db.Exec(`INSERT INTO vault_items(id, vault_scope, owner_user_id, item_type, payload_version, nonce, ciphertext, revision, created_at, updated_at)
+		VALUES ('secret-item', 'personal', 'u1', 'secret', 1, X'00', X'01', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("secret item rejected after migration: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO vault_items(id, vault_scope, owner_user_id, item_type, payload_version, nonce, ciphertext, revision, created_at, updated_at)
+		VALUES ('unknown-item', 'personal', 'u1', 'unknown', 1, X'00', X'01', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err == nil {
+		t.Fatal("unknown item type accepted after migration")
 	}
 }
 

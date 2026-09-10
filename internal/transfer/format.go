@@ -116,7 +116,7 @@ func ManifestSelfCheck(m Manifest) error {
 			return fmt.Errorf("invalid item digest in manifest")
 		}
 		switch f.Type {
-		case "login", "ssh_key", "credit_card", "identity", "secure_note":
+		case "login", "ssh_key", "credit_card", "identity", "secure_note", "secret":
 		default:
 			return fmt.Errorf("unknown item type %q in manifest", f.Type)
 		}

@@ -196,6 +196,10 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 		return p
 	}(), nil)
 	h.mustCreateItem(t, alice, "shared", "secure_note", map[string]any{"name": "shared", "body": "shared body"}, nil)
+	h.mustCreateItem(t, alice, "personal", "secret", map[string]any{
+		"name":    "export secrets",
+		"entries": []map[string]any{{"key": "FIRST", "value": "one"}, {"key": "SECOND", "value": ""}, {"key": "THIRD", "value": "line1\nline2"}},
+	}, []string{"keep-secret"})
 	// bob's personal item must NOT appear in alice's export.
 	bobSource := h.itemClient(t, "bob")
 	h.mustCreateItem(t, bobSource, "personal", "secure_note", map[string]any{"name": "bobs", "body": "b"}, nil)
@@ -263,13 +267,13 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 	if err := json.NewDecoder(previewResp.Body).Decode(&preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.Counts["login"] != 1 || preview.Counts["identity"] != 1 || preview.Counts["credit_card"] != 1 || preview.Counts["secure_note"] != 1 {
+	if preview.Counts["login"] != 1 || preview.Counts["identity"] != 1 || preview.Counts["credit_card"] != 1 || preview.Counts["secure_note"] != 1 || preview.Counts["secret"] != 1 {
 		t.Fatalf("preview counts: %v", preview.Counts)
 	}
 	// The import runs in the SAME instance: alice's live items occupy the
 	// exported IDs, so every ID conflicts and will be re-issued (D10).
-	if preview.Conflicts != 4 {
-		t.Fatalf("conflicts=%d, want 4", preview.Conflicts)
+	if preview.Conflicts != 5 {
+		t.Fatalf("conflicts=%d, want 5", preview.Conflicts)
 	}
 
 	// Confirm: everything imports in one transaction.
@@ -279,7 +283,7 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 		t.Fatalf("confirm: %d", confirmResp.StatusCode)
 	}
 	summary := decodeBody(t, confirmResp)
-	if summary["imported_count"].(float64) != 4 {
+	if summary["imported_count"].(float64) != 5 {
 		t.Fatalf("imported=%v", summary["imported_count"])
 	}
 
@@ -288,7 +292,7 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var loginItem, cardItem string
+	var loginItem, cardItem, secretItem string
 	for _, m := range items {
 		if strings.Contains(m.Title, "export login") {
 			loginItem = m.ID
@@ -296,8 +300,11 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 		if m.ItemType == "credit_card" {
 			cardItem = m.ID
 		}
+		if m.ItemType == vault.TypeSecret {
+			secretItem = m.ID
+		}
 	}
-	if loginItem == "" || cardItem == "" {
+	if loginItem == "" || cardItem == "" || secretItem == "" {
 		t.Fatalf("imported items missing: %d items", len(items))
 	}
 	detail := h.getDetail(t, bob, cardItem)
@@ -306,6 +313,12 @@ func TestTransferExportImportRoundTrip(t *testing.T) {
 	// its NEW id — the original had no conflict, so it stays stable).
 	if card["billing_address_item_id"] == nil || card["billing_address_item_id"] == "" {
 		t.Fatal("billing reference lost on import")
+	}
+	secretDetail := h.getDetail(t, bob, secretItem)
+	secretPayload := secretDetail["payload"].(map[string]any)
+	entries := secretPayload["entries"].([]any)
+	if len(entries) != 3 || entries[0].(map[string]any)["key"] != "FIRST" || entries[1].(map[string]any)["value"] != "" || entries[2].(map[string]any)["value"] != "line1\nline2" {
+		t.Fatalf("secret entries were not preserved: %#v", entries)
 	}
 }
 

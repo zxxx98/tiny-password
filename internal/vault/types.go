@@ -16,6 +16,7 @@ const (
 	TypeCreditCard = "credit_card"
 	TypeIdentity   = "identity"
 	TypeSecureNote = "secure_note"
+	TypeSecret     = "secret"
 )
 
 // ItemTypes is the closed set of valid item types.
@@ -25,6 +26,7 @@ var ItemTypes = map[string]bool{
 	TypeCreditCard: true,
 	TypeIdentity:   true,
 	TypeSecureNote: true,
+	TypeSecret:     true,
 }
 
 // PayloadSchemaVersion is the version of the JSON envelope inside the
@@ -125,6 +127,7 @@ type storedPayload struct {
 	CreditCard *CreditCardPayload `json:"credit_card,omitempty"`
 	Identity   *IdentityPayload   `json:"identity,omitempty"`
 	SecureNote *SecureNotePayload `json:"secure_note,omitempty"`
+	Secret     *SecretPayload     `json:"secret,omitempty"`
 }
 
 // TitleOf extracts the display title from a decrypted payload. Every type
@@ -140,6 +143,8 @@ func TitleOf(payload any) string {
 	case *IdentityPayload:
 		return p.Name
 	case *SecureNotePayload:
+		return p.Name
+	case *SecretPayload:
 		return p.Name
 	default:
 		return ""

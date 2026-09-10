@@ -1271,7 +1271,7 @@ components:
       enum: [personal, shared]
     ItemType:
       type: string
-      enum: [login, ssh_key, credit_card, identity, secure_note]
+      enum: [login, ssh_key, credit_card, identity, secure_note, secret]
     Error:
       type: object
       required: [code, message, request_id]
@@ -1476,6 +1476,7 @@ components:
         - $ref: "#/components/schemas/CreditCardPayload"
         - $ref: "#/components/schemas/IdentityPayload"
         - $ref: "#/components/schemas/SecureNotePayload"
+        - $ref: "#/components/schemas/SecretPayload"
     LoginPayload:
       type: object
       required: [name, username, password]
@@ -1542,6 +1543,23 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 256 }
         body: { type: string, maxLength: 65536 }
+    SecretEntry:
+      type: object
+      required: [key, value]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 256 }
+        value: { type: string, maxLength: 16384 }
+    SecretPayload:
+      type: object
+      required: [name, entries]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 256 }
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items: { $ref: "#/components/schemas/SecretEntry" }
+        notes: { type: string, maxLength: 10000 }
     ItemHistoryEntry:
       type: object
       required: [revision, updated_at]

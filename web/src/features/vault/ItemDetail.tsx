@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Button } from "../../design-system/Button";
-import { describeItem, TYPE_LABELS, type CreditCardPayload, type IdentityPayload, type ItemDetail as ItemDetailData, type LoginPayload, type SecureNotePayload, type SshKeyPayload } from "./types";
+import { describeItem, TYPE_LABELS, type CreditCardPayload, type IdentityPayload, type ItemDetail as ItemDetailData, type LoginPayload, type SecretPayload, type SecureNotePayload, type SshKeyPayload } from "./types";
 import { SensitiveField } from "./SensitiveField";
+import { SecretValueField } from "./SecretValueField";
 import { scheduleClipboardCleanup } from "./clipboardCleanup";
 import { formatIdentityClipboard } from "./identityClipboard";
 
@@ -63,13 +64,18 @@ export function ItemDetail({
   onTrash,
 }: ItemDetailProps) {
   const [identityCopyState, setIdentityCopyState] = useState<string | null>(null);
+  const [secretCopyState, setSecretCopyState] = useState<string | null>(null);
+
+  const summary = detail.item_type === "secret"
+    ? `${TYPE_LABELS[detail.item_type]} · ${(detail.payload as SecretPayload).entries.length} 个键值`
+    : `${TYPE_LABELS[detail.item_type]} · ${describeItem(detail)}`;
 
   return (
     <article className="space-y-6" aria-label={`条目 ${detail.title}`}>
       {showHeader && (
         <header className="space-y-2">
           <p className="font-mono text-xs uppercase tracking-widest text-neutral-500">
-            {TYPE_LABELS[detail.item_type]} · {describeItem(detail)}
+            {summary}
           </p>
           <h3 className="font-display text-3xl font-bold">{detail.title || "（无标题）"}</h3>
           <p className="font-mono text-xs text-neutral-500">
@@ -197,6 +203,41 @@ export function ItemDetail({
               <Row label="正文">
                 <span className="whitespace-pre-wrap">{p.body}</span>
               </Row>
+            );
+          }
+          case "secret": {
+            const p = detail.payload as SecretPayload;
+            const copyAll = async () => {
+              const copied = p.entries.map((entry) => entry.key + "=" + entry.value).join("\n");
+              try {
+                await navigator.clipboard.writeText(copied);
+              } catch {
+                setSecretCopyState("复制失败，请重试或手动复制");
+                return;
+              }
+              setSecretCopyState("已复制。30 秒后将尽力清除剪贴板；若浏览器不允许则无法清除。");
+              void scheduleClipboardCleanup(copied).then((result) => {
+                if (result === "cleared") setSecretCopyState("剪贴板已清除。");
+                if (result === "changed") setSecretCopyState("剪贴板内容已被替换，未执行清理。");
+                if (result === "unavailable") setSecretCopyState("浏览器不允许读取剪贴板，无法自动清除，请手动处理。");
+              });
+            };
+            return (
+              <div className="space-y-5">
+                <div className="space-y-4" aria-label="密钥键值">
+                  {p.entries.map((entry, index) => (
+                    <div key={`${entry.key}-${index}`} className="space-y-1 border-l-2 border-divider pl-3">
+                      <span className="block break-all font-mono text-xs uppercase tracking-widest">{entry.key}</span>
+                      <SecretValueField value={entry.value} index={index} />
+                    </div>
+                  ))}
+                </div>
+                {p.notes && <Row label="备注">{p.notes}</Row>}
+                <div className="flex flex-wrap items-center gap-2 border-t border-divider pt-4">
+                  <Button variant="secondary" onClick={() => void copyAll()}>复制全部</Button>
+                  {secretCopyState && <p role="status" className="font-body text-xs text-neutral-600">{secretCopyState}</p>}
+                </div>
+              </div>
             );
           }
         }

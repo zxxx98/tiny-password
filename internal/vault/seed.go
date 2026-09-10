@@ -17,7 +17,7 @@ type SyntheticItem struct {
 	CreatorID string // shared: the creating member
 	Tags      []string
 	Favorite  bool
-	Payload   any // one of the five typed payload structs
+	Payload   any // one of the six typed payload structs
 }
 
 // InsertSynthetic bypasses policy and audit: it exists exclusively for
@@ -37,6 +37,8 @@ func InsertSynthetic(ctx context.Context, q Queryer, key *crypto.MasterKey, in S
 		payloadType = TypeIdentity
 	case *SecureNotePayload:
 		payloadType = TypeSecureNote
+	case *SecretPayload:
+		payloadType = TypeSecret
 	default:
 		return "", ErrInvalidItemType
 	}
