@@ -6,6 +6,7 @@ import { SESSION_EXPIRED_EVENT, useSession } from "../../app/session";
 import { Button } from "../../design-system/Button";
 import { Field } from "../../design-system/Field";
 import { ErrorSummary } from "../../design-system/Status";
+import { scheduleClipboardCleanup } from "../vault/clipboardCleanup";
 
 type SshGenerated = {
   algorithm: string;
@@ -63,6 +64,7 @@ export function GeneratorPage() {
   const [pwClasses, setPwClasses] = useState({ lower: true, upper: true, digits: true, symbols: true, noAmbiguous: false });
   const [password, setPassword] = useState<string | null>(null);
   const [passwordRevealed, setPasswordRevealed] = useState(false);
+  const [passwordCopyState, setPasswordCopyState] = useState<string | null>(null);
 
   const [words, setWords] = useState(5);
   const [separator, setSeparator] = useState("-");
@@ -84,6 +86,7 @@ export function GeneratorPage() {
   const clearGenerated = useCallback(() => {
     setPassword(null);
     setPasswordRevealed(false);
+    setPasswordCopyState(null);
     setPassphrase(null);
     setPassphraseRevealed(false);
     setSshKey(null);
@@ -199,6 +202,24 @@ export function GeneratorPage() {
     }
   }, [sshKey, csrfToken, clearSsh]);
 
+  const copyGeneratedPassword = useCallback(async () => {
+    if (!password) return;
+    const copiedValue = password;
+    try {
+      await navigator.clipboard.writeText(copiedValue);
+    } catch {
+      setPasswordCopyState("浏览器不允许写入剪贴板，请先显示密码后手动复制。");
+      return;
+    }
+    setPasswordCopyState("已复制。30 秒后将尽力清除剪贴板；若浏览器不允许则无法清除。");
+    void scheduleClipboardCleanup(copiedValue).then((result) => {
+      if (!mountedRef.current) return;
+      if (result === "cleared") setPasswordCopyState("剪贴板已清除。");
+      if (result === "changed") setPasswordCopyState("剪贴板内容已被替换，未执行清理。");
+      if (result === "unavailable") setPasswordCopyState("浏览器不允许读取剪贴板，无法自动清除，请手动处理。");
+    });
+  }, [password]);
+
   const useGeneratedLoginPassword = useCallback(
     (value: string, clear: () => void) => {
       clear();
@@ -267,6 +288,7 @@ export function GeneratorPage() {
               (data) => {
                 setPassword(data.value);
                 setPasswordRevealed(false);
+                setPasswordCopyState(null);
               },
             )
           }
@@ -283,19 +305,28 @@ export function GeneratorPage() {
               onToggle={() => setPasswordRevealed((revealed) => !revealed)}
             />
             <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={() => void copyGeneratedPassword()}>
+                复制密码
+              </Button>
               <Button
                 variant="secondary"
                 onClick={() => useGeneratedLoginPassword(password, () => {
                   setPassword(null);
                   setPasswordRevealed(false);
+                  setPasswordCopyState(null);
                 })}
               >
                 用于新建登录密码
               </Button>
-              <Button variant="ghost" onClick={() => { setPassword(null); setPasswordRevealed(false); }}>
+              <Button variant="ghost" onClick={() => { setPassword(null); setPasswordRevealed(false); setPasswordCopyState(null); }}>
                 清除密码
               </Button>
             </div>
+            {passwordCopyState && (
+              <p role="status" className="font-body text-xs text-neutral-600">
+                {passwordCopyState}
+              </p>
+            )}
           </>
         )}
       </section>
