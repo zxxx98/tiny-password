@@ -4,6 +4,7 @@ import {
   BackHandler,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,18 +21,35 @@ import {UrlListField} from '../components/UrlListField';
 import {PasswordGeneratorSheet} from '../components/PasswordGeneratorSheet';
 import {colors} from '../theme/colors';
 import {fonts, typeScale} from '../theme/typography';
-import {borderHeavy, pageMargin, spacing} from '../theme/spacing';
-import type {ItemDetail} from '../api/types';
+import {borderHeavy, borderWidth, minTouchTarget, pageMargin, spacing} from '../theme/spacing';
+import type {AuditField} from '../api/client';
+import type {
+  CreditCardPayload,
+  IdentityPayload,
+  ItemDetail,
+  ItemType,
+  LoginPayload,
+  SecureNotePayload,
+  SecretPayload,
+  SshKeyPayload,
+} from '../api/types';
 import type {TinyPasswordApi} from '../api/client';
 import {LatestTracker} from '../api/async';
 import {
   editsFromDetail,
   emptyEdits,
-  mergeLoginPayload,
-  normalizedUrls,
-  validateLoginEdits,
+  mergePayload,
+  payloadFromEdits,
+  validateEdits,
+  type CreditCardEdits,
+  type EntryEdits,
   type FieldErrors,
+  type IdentityEdits,
   type LoginEdits,
+  type SecureNoteEdits,
+  type SecretEdits,
+  type SecretEntryEdits,
+  type SshKeyEdits,
 } from '../vault/payloadMerge';
 import {createIdempotencyKeyManager, canonicalCreateContent} from '../vault/idempotency';
 import type {SessionController} from '../auth/session';
@@ -50,11 +68,28 @@ interface EntryEditorScreenProps {
 
 type LoadState = 'loading' | 'ready' | 'error';
 
+const ITEM_TYPES: {value: ItemType; label: string}[] = [
+  {value: 'login', label: 'LOGIN'},
+  {value: 'ssh_key', label: 'SSH KEY'},
+  {value: 'credit_card', label: 'CREDIT CARD'},
+  {value: 'identity', label: 'IDENTITY'},
+  {value: 'secure_note', label: 'NOTE'},
+  {value: 'secret', label: 'SECRET'},
+];
+
+const SSH_ALGORITHMS: {value: 'ed25519' | 'rsa4096'; label: string}[] = [
+  {value: 'ed25519', label: 'ED25519'},
+  {value: 'rsa4096', label: 'RSA4096'},
+];
+
 /**
- * Entry detail / edit / create — one screen for all three (design §6).
- * View mode shows every URL with copy; edit mode merges changes onto the
- * ORIGINAL payload so unshown date fields survive; saves carry the read
- * revision and a REVISION_CONFLICT keeps the draft on screen.
+ * Entry detail / edit / create — one screen for all item types (design §6).
+ * Every supported type (login, ssh_key, credit_card, identity, secure_note,
+ * secret) can be created, viewed and edited here; sensitive fields are masked
+ * with audited reveal/copy. Saves merge changes onto the ORIGINAL payload so
+ * unshown fields (login password dates, card billing address reference)
+ * survive; saves carry the read revision and a REVISION_CONFLICT keeps the
+ * draft on screen.
  */
 export function EntryEditorScreen({
   session,
@@ -71,10 +106,12 @@ export function EntryEditorScreen({
   const [loadState, setLoadState] = useState<LoadState>(isCreate ? 'ready' : 'loading');
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const [itemType, setItemType] = useState<ItemType>('login');
   const [mode, setMode] = useState<'view' | 'edit'>(isCreate ? 'edit' : 'view');
-  const [edits, setEdits] = useState<LoginEdits>(emptyEdits());
+  const [edits, setEdits] = useState<EntryEdits>(emptyEdits('login'));
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [initialSnapshot, setInitialSnapshot] = useState<string>(() => JSON.stringify(emptyEdits()));
+  const [initialSnapshot, setInitialSnapshot] = useState<string>(() => JSON.stringify(emptyEdits('login')));
+  const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<{currentRevision: number} | null>(null);
@@ -83,7 +120,6 @@ export function EntryEditorScreen({
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [showPassword, setShowPassword] = useState(false);
   const [generatorVisible, setGeneratorVisible] = useState(false);
   const keyManager = useRef(createIdempotencyKeyManager());
   const [loadTracker] = useState(() => new LatestTracker());
@@ -106,10 +142,10 @@ export function EntryEditorScreen({
     }
     if (result.kind === 'success') {
       const d = result.data;
-      // Personal login items only: anything else must not open in this editor.
-      if (d.item_type !== 'login' || d.vault_scope !== 'personal') {
+      // Personal items of every supported type open in this editor.
+      if (d.vault_scope !== 'personal') {
         setLoadState('error');
-        setLoadError('该条目不是个人登录类型，请通过 Web 使用。');
+        setLoadError('该条目不在个人保险库中，请通过 Web 使用。');
         return;
       }
       const principal = session.currentPrincipal;
@@ -119,11 +155,13 @@ export function EntryEditorScreen({
         return;
       }
       setDetail(d);
+      setItemType(d.item_type);
       const e = editsFromDetail(d);
       setEdits(e);
       setInitialSnapshot(JSON.stringify(e));
       setLoadState('ready');
       setMode('view');
+      setShowSecrets({});
     } else if (result.kind === 'http-error') {
       setLoadState('error');
       setLoadError(
@@ -178,12 +216,40 @@ export function EntryEditorScreen({
     return () => subscription.remove();
   }, [generatorVisible, reloadConfirmVisible, discardConfirmVisible, deleteConfirmVisible]);
 
-  // --- save (create / update) -------------------------------------------------
+  // --- edit state helpers ------------------------------------------------------
 
-  const buildPayloadEdits = (): LoginEdits => ({
-    ...edits,
-    urls: normalizedUrls(edits),
-  });
+  const patch = (partial: Record<string, string | string[]>) => {
+    setEdits(prev => ({...prev, ...partial}) as EntryEdits);
+  };
+
+  const patchEntry = (index: number, partial: Partial<SecretEntryEdits>) => {
+    setEdits(prev => {
+      const s = prev as SecretEdits;
+      const entries = s.entries.map((e, i) => (i === index ? {...e, ...partial} : e));
+      return {...s, entries} as EntryEdits;
+    });
+  };
+
+  const switchType = (type: ItemType) => {
+    if (type === itemType) {
+      return;
+    }
+    onActivity();
+    setItemType(type);
+    setEdits(emptyEdits(type));
+    setFieldErrors({});
+    setSaveError(null);
+  };
+
+  const toggleReveal = (key: string, auditField?: AuditField) => {
+    const nextVisible = !showSecrets[key];
+    setShowSecrets(prev => ({...prev, [key]: nextVisible}));
+    if (nextVisible && auditField) {
+      audit(auditField, 'reveal');
+    }
+  };
+
+  // --- save (create / update) -------------------------------------------------
 
   const save = async () => {
     if (saving) {
@@ -192,8 +258,7 @@ export function EntryEditorScreen({
     onActivity();
     setSaveError(null);
     setConflict(null);
-    const withUrls = buildPayloadEdits();
-    const errors = validateLoginEdits(withUrls);
+    const errors = validateEdits(itemType, edits);
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
       return;
@@ -204,16 +269,13 @@ export function EntryEditorScreen({
     }
     setSaving(true);
     if (isCreate) {
-      const payload = mergeLoginPayload(
-        {name: '', username: '', password: ''}, // no original payload exists
-        withUrls,
-      );
+      const payload = payloadFromEdits(itemType, edits);
       const content = canonicalCreateContent(payload as unknown as Record<string, unknown>, {
-        item_type: 'login',
+        item_type: itemType,
         vault_scope: 'personal',
       });
       const key = keyManager.current.keyFor(content);
-      const result = await api.createItem(payload, key, csrf);
+      const result = await api.createItem(payload, itemType, key, csrf);
       setSaving(false);
       if (result.kind === 'success') {
         keyManager.current.reset();
@@ -237,7 +299,7 @@ export function EntryEditorScreen({
       setSaving(false);
       return;
     }
-    const payload = mergeLoginPayload(d.payload, withUrls);
+    const payload = mergePayload(itemType, d.payload, edits);
     const result = await api.updateItem(d.id, d.revision, payload, csrf);
     setSaving(false);
     if (result.kind === 'success') {
@@ -246,7 +308,7 @@ export function EntryEditorScreen({
       const e = editsFromDetail(fresh);
       setEdits(e);
       setInitialSnapshot(JSON.stringify(e));
-      setShowPassword(false); // §6.5: back to masked after leaving edit mode
+      setShowSecrets({}); // §6.5: back to masked after leaving edit mode
       setMode('view');
       return;
     }
@@ -320,11 +382,11 @@ export function EntryEditorScreen({
 
   // --- audit helpers (best effort; server records field category only) --------
 
-  const audit = (kind: 'copy' | 'reveal') => {
+  const audit = (field: AuditField, kind: 'copy' | 'reveal') => {
     if (!detail || !csrf) {
       return;
     }
-    void (kind === 'copy' ? api.auditCopy(detail.id, csrf) : api.auditReveal(detail.id, csrf));
+    void (kind === 'copy' ? api.auditCopy(detail.id, field, csrf) : api.auditReveal(detail.id, field, csrf));
   };
 
   // --- render -----------------------------------------------------------------
@@ -352,7 +414,12 @@ export function EntryEditorScreen({
     );
   }
 
-  const title = isCreate ? 'NEW ENTRY' : mode === 'edit' ? 'EDIT ENTRY' : detail!.payload.name || detail!.title || 'ENTRY';
+  const typeLabel = ITEM_TYPES.find(t => t.value === itemType)?.label ?? itemType.toUpperCase();
+  const title = isCreate
+    ? 'NEW ENTRY'
+    : mode === 'edit'
+      ? 'EDIT ENTRY'
+      : detail!.payload.name || detail!.title || 'ENTRY';
 
   const headerActions = () => {
     if (isCreate || mode === 'edit') {
@@ -390,6 +457,7 @@ export function EntryEditorScreen({
               const e = editsFromDetail(detailRef.current!);
               setEdits(e);
               setInitialSnapshot(JSON.stringify(e));
+              setFieldErrors({});
               setMode('edit');
             }}
             testID="editor-edit"
@@ -399,11 +467,670 @@ export function EntryEditorScreen({
     );
   };
 
+  const renderEditFields = () => {
+    switch (itemType) {
+      case 'login': {
+        const e = edits as LoginEdits;
+        return (
+          <View>
+            <NewsprintInput
+              label="TITLE"
+              value={e.name}
+              onChangeText={name => patch({name})}
+              error={fieldErrors.name}
+              autoCapitalize="none"
+              mono={false}
+              maxLength={300}
+              accessibilityLabel="标题"
+              testID="field-title"
+            />
+            <NewsprintInput
+              label="USERNAME"
+              value={e.username}
+              onChangeText={username => patch({username})}
+              error={fieldErrors.username}
+              autoCapitalize="none"
+              autoCorrect={false}
+              accessibilityLabel="用户名"
+              testID="field-username"
+            />
+            <View style={styles.passwordEditRow}>
+              <View style={styles.passwordEditField}>
+                <NewsprintInput
+                  label="PASSWORD"
+                  value={e.password}
+                  onChangeText={password => patch({password})}
+                  error={fieldErrors.password}
+                  secure={!showSecrets['edit-password']}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  textContentType="newPassword"
+                  accessibilityLabel="密码"
+                  testID="field-password"
+                />
+              </View>
+              <View style={styles.passwordEditActions}>
+                <NewsprintButton
+                  label="GENERATE"
+                  variant="secondary"
+                  onPress={() => {
+                    onActivity();
+                    setGeneratorVisible(true);
+                  }}
+                  testID="open-generator"
+                />
+                <NewsprintButton
+                  label={showSecrets['edit-password'] ? 'HIDE' : 'SHOW'}
+                  variant="ghost"
+                  onPress={() => toggleReveal('edit-password')}
+                  accessibilityLabel={showSecrets['edit-password'] ? '隐藏密码' : '显示密码'}
+                  style={styles.smallButton}
+                />
+              </View>
+            </View>
+            <UrlListField
+              urls={e.urls}
+              onChange={urls => patch({urls})}
+              error={fieldErrors.urls}
+            />
+            <NewsprintInput
+              label="NOTES"
+              value={e.notes}
+              onChangeText={notes => patch({notes})}
+              error={fieldErrors.notes}
+              multiline
+              mono={false}
+              style={styles.notesInput}
+              accessibilityLabel="备注"
+              testID="field-notes"
+            />
+          </View>
+        );
+      }
+      case 'ssh_key': {
+        const e = edits as SshKeyEdits;
+        return (
+          <View>
+            <NewsprintInput
+              label="TITLE"
+              value={e.name}
+              onChangeText={name => patch({name})}
+              error={fieldErrors.name}
+              mono={false}
+              maxLength={300}
+              accessibilityLabel="标题"
+              testID="field-title"
+            />
+            <View style={styles.choiceRow}>
+              <Text style={styles.choiceLabel}>ALGORITHM</Text>
+              <View style={styles.choiceOptions}>
+                {SSH_ALGORITHMS.map(a => {
+                  const selected = e.algorithm === a.value;
+                  return (
+                    <Pressable
+                      key={a.value}
+                      accessibilityRole="button"
+                      accessibilityState={{selected}}
+                      onPress={() => patch({algorithm: a.value})}
+                      style={[styles.choiceChip, selected && styles.choiceChipSelected]}
+                      testID={`field-algorithm-${a.value}`}>
+                      <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
+                        {a.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {fieldErrors.algorithm ? <Text style={styles.fieldErrorText}>{fieldErrors.algorithm}</Text> : null}
+            </View>
+            <NewsprintInput
+              label="PUBLIC KEY"
+              value={e.public_key}
+              onChangeText={public_key => patch({public_key})}
+              error={fieldErrors.public_key}
+              multiline
+              autoCapitalize="none"
+              autoCorrect={false}
+              accessibilityLabel="公钥"
+              testID="field-public-key"
+            />
+            <SecureEditField
+              label="PRIVATE KEY"
+              value={e.private_key}
+              onChangeText={private_key => patch({private_key})}
+              error={fieldErrors.private_key}
+              secretKey="edit-private_key"
+              showSecrets={showSecrets}
+              onToggle={toggleReveal}
+              accessibilityLabel="私钥"
+              testID="field-private-key"
+            />
+            <SecureEditField
+              label="PASSPHRASE"
+              value={e.key_passphrase}
+              onChangeText={key_passphrase => patch({key_passphrase})}
+              error={fieldErrors.key_passphrase}
+              secretKey="edit-key_passphrase"
+              showSecrets={showSecrets}
+              onToggle={toggleReveal}
+              accessibilityLabel="私钥口令"
+              testID="field-passphrase"
+            />
+            <NewsprintInput
+              label="COMMENT"
+              value={e.comment}
+              onChangeText={comment => patch({comment})}
+              error={fieldErrors.comment}
+              autoCapitalize="none"
+              accessibilityLabel="注释"
+              testID="field-comment"
+            />
+            <NewsprintInput
+              label="FINGERPRINT"
+              value={e.fingerprint}
+              onChangeText={fingerprint => patch({fingerprint})}
+              error={fieldErrors.fingerprint}
+              autoCapitalize="none"
+              accessibilityLabel="指纹"
+              testID="field-fingerprint"
+            />
+            <NewsprintInput
+              label="NOTES"
+              value={e.notes}
+              onChangeText={notes => patch({notes})}
+              error={fieldErrors.notes}
+              multiline
+              mono={false}
+              style={styles.notesInput}
+              accessibilityLabel="备注"
+              testID="field-notes"
+            />
+          </View>
+        );
+      }
+      case 'credit_card': {
+        const e = edits as CreditCardEdits;
+        return (
+          <View>
+            <NewsprintInput
+              label="TITLE"
+              value={e.name}
+              onChangeText={name => patch({name})}
+              error={fieldErrors.name}
+              mono={false}
+              maxLength={300}
+              accessibilityLabel="标题"
+              testID="field-title"
+            />
+            <NewsprintInput
+              label="CARDHOLDER"
+              value={e.cardholder}
+              onChangeText={cardholder => patch({cardholder})}
+              error={fieldErrors.cardholder}
+              mono={false}
+              accessibilityLabel="持卡人"
+              testID="field-cardholder"
+            />
+            <SecureEditField
+              label="CARD NUMBER"
+              value={e.number}
+              onChangeText={number => patch({number})}
+              error={fieldErrors.number}
+              secretKey="edit-number"
+              showSecrets={showSecrets}
+              onToggle={toggleReveal}
+              keyboardType="number-pad"
+              accessibilityLabel="卡号"
+              testID="field-card-number"
+            />
+            <View style={styles.splitRow}>
+              <View style={styles.splitField}>
+                <NewsprintInput
+                  label="EXP MONTH"
+                  value={e.exp_month}
+                  onChangeText={exp_month => patch({exp_month})}
+                  error={fieldErrors.exp_month}
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  accessibilityLabel="有效月份"
+                  testID="field-exp-month"
+                />
+              </View>
+              <View style={styles.splitField}>
+                <NewsprintInput
+                  label="EXP YEAR"
+                  value={e.exp_year}
+                  onChangeText={exp_year => patch({exp_year})}
+                  error={fieldErrors.exp_year}
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  accessibilityLabel="有效年份"
+                  testID="field-exp-year"
+                />
+              </View>
+            </View>
+            <View style={styles.splitRow}>
+              <View style={styles.splitField}>
+                <SecureEditField
+                  label="CVV"
+                  value={e.cvv}
+                  onChangeText={cvv => patch({cvv})}
+                  error={fieldErrors.cvv}
+                  secretKey="edit-cvv"
+                  showSecrets={showSecrets}
+                  onToggle={toggleReveal}
+                  keyboardType="number-pad"
+                  accessibilityLabel="CVV"
+                  testID="field-cvv"
+                />
+              </View>
+              <View style={styles.splitField}>
+                <SecureEditField
+                  label="PIN"
+                  value={e.pin}
+                  onChangeText={pin => patch({pin})}
+                  error={fieldErrors.pin}
+                  secretKey="edit-pin"
+                  showSecrets={showSecrets}
+                  onToggle={toggleReveal}
+                  keyboardType="number-pad"
+                  accessibilityLabel="PIN"
+                  testID="field-pin"
+                />
+              </View>
+            </View>
+            <NewsprintInput
+              label="NOTES"
+              value={e.notes}
+              onChangeText={notes => patch({notes})}
+              error={fieldErrors.notes}
+              multiline
+              mono={false}
+              style={styles.notesInput}
+              accessibilityLabel="备注"
+              testID="field-notes"
+            />
+          </View>
+        );
+      }
+      case 'identity': {
+        const e = edits as IdentityEdits;
+        return (
+          <View>
+            <NewsprintInput
+              label="TITLE"
+              value={e.name}
+              onChangeText={name => patch({name})}
+              error={fieldErrors.name}
+              mono={false}
+              maxLength={300}
+              accessibilityLabel="标题"
+              testID="field-title"
+            />
+            <NewsprintInput
+              label="FULL NAME"
+              value={e.full_name}
+              onChangeText={full_name => patch({full_name})}
+              error={fieldErrors.full_name}
+              mono={false}
+              accessibilityLabel="姓名"
+              testID="field-full-name"
+            />
+            <NewsprintInput
+              label="COMPANY"
+              value={e.company}
+              onChangeText={company => patch({company})}
+              error={fieldErrors.company}
+              mono={false}
+              accessibilityLabel="公司"
+              testID="field-company"
+            />
+            <NewsprintInput
+              label="PHONE"
+              value={e.phone}
+              onChangeText={phone => patch({phone})}
+              error={fieldErrors.phone}
+              keyboardType="phone-pad"
+              accessibilityLabel="电话"
+              testID="field-phone"
+            />
+            <NewsprintInput
+              label="EMAIL"
+              value={e.email}
+              onChangeText={email => patch({email})}
+              error={fieldErrors.email}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              accessibilityLabel="邮箱"
+              testID="field-email"
+            />
+            <View style={styles.splitRow}>
+              <View style={styles.splitField}>
+                <NewsprintInput
+                  label="COUNTRY"
+                  value={e.country}
+                  onChangeText={country => patch({country})}
+                  error={fieldErrors.country}
+                  mono={false}
+                  accessibilityLabel="国家"
+                  testID="field-country"
+                />
+              </View>
+              <View style={styles.splitField}>
+                <NewsprintInput
+                  label="STATE"
+                  value={e.state}
+                  onChangeText={state => patch({state})}
+                  error={fieldErrors.state}
+                  mono={false}
+                  accessibilityLabel="省份"
+                  testID="field-state"
+                />
+              </View>
+            </View>
+            <View style={styles.splitRow}>
+              <View style={styles.splitField}>
+                <NewsprintInput
+                  label="CITY"
+                  value={e.city}
+                  onChangeText={city => patch({city})}
+                  error={fieldErrors.city}
+                  mono={false}
+                  accessibilityLabel="城市"
+                  testID="field-city"
+                />
+              </View>
+              <View style={styles.splitField}>
+                <NewsprintInput
+                  label="DISTRICT"
+                  value={e.district}
+                  onChangeText={district => patch({district})}
+                  error={fieldErrors.district}
+                  mono={false}
+                  accessibilityLabel="区县"
+                  testID="field-district"
+                />
+              </View>
+            </View>
+            <NewsprintInput
+              label="ADDRESS"
+              value={e.address_line}
+              onChangeText={address_line => patch({address_line})}
+              error={fieldErrors.address_line}
+              mono={false}
+              accessibilityLabel="地址"
+              testID="field-address"
+            />
+            <NewsprintInput
+              label="POSTAL CODE"
+              value={e.postal_code}
+              onChangeText={postal_code => patch({postal_code})}
+              error={fieldErrors.postal_code}
+              accessibilityLabel="邮编"
+              testID="field-postal-code"
+            />
+            <NewsprintInput
+              label="NOTES"
+              value={e.notes}
+              onChangeText={notes => patch({notes})}
+              error={fieldErrors.notes}
+              multiline
+              mono={false}
+              style={styles.notesInput}
+              accessibilityLabel="备注"
+              testID="field-notes"
+            />
+          </View>
+        );
+      }
+      case 'secure_note': {
+        const e = edits as SecureNoteEdits;
+        return (
+          <View>
+            <NewsprintInput
+              label="TITLE"
+              value={e.name}
+              onChangeText={name => patch({name})}
+              error={fieldErrors.name}
+              mono={false}
+              maxLength={300}
+              accessibilityLabel="标题"
+              testID="field-title"
+            />
+            <NewsprintInput
+              label="BODY"
+              value={e.body}
+              onChangeText={body => patch({body})}
+              error={fieldErrors.body}
+              multiline
+              mono={false}
+              style={styles.bodyInput}
+              accessibilityLabel="正文"
+              testID="field-body"
+            />
+          </View>
+        );
+      }
+      case 'secret': {
+        const e = edits as SecretEdits;
+        return (
+          <View>
+            <NewsprintInput
+              label="TITLE"
+              value={e.name}
+              onChangeText={name => patch({name})}
+              error={fieldErrors.name}
+              mono={false}
+              maxLength={300}
+              accessibilityLabel="标题"
+              testID="field-title"
+            />
+            <Text style={styles.sectionLabel}>KEY-VALUE ENTRIES</Text>
+            {e.entries.map((entry, index) => (
+              <View key={index} style={styles.entryBlock}>
+                <View style={styles.entryHeader}>
+                  <Text style={styles.entryIndex}>{`#${index + 1}`}</Text>
+                  {e.entries.length > 1 ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`删除第 ${index + 1} 组键值对`}
+                      onPress={() =>
+                        setEdits(prev => {
+                          const s = prev as SecretEdits;
+                          return {...s, entries: s.entries.filter((_, i) => i !== index)} as EntryEdits;
+                        })
+                      }
+                      hitSlop={8}
+                      style={styles.entryRemove}
+                      testID={`remove-entry-${index}`}>
+                      <Text style={styles.entryRemoveText}>REMOVE</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+                <NewsprintInput
+                  label="KEY"
+                  value={entry.key}
+                  onChangeText={key => patchEntry(index, {key})}
+                  error={fieldErrors[`entries.${index}.key`]}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  accessibilityLabel={`第 ${index + 1} 组键名`}
+                  testID={`field-entry-key-${index}`}
+                />
+                <SecureEditField
+                  label="VALUE"
+                  value={entry.value}
+                  onChangeText={value => patchEntry(index, {value})}
+                  error={fieldErrors[`entries.${index}.value`]}
+                  secretKey={`edit-entry-${index}`}
+                  showSecrets={showSecrets}
+                  onToggle={toggleReveal}
+                  accessibilityLabel={`第 ${index + 1} 组值`}
+                  testID={`field-entry-value-${index}`}
+                />
+              </View>
+            ))}
+            {fieldErrors.entries ? <Text style={styles.fieldErrorText}>{fieldErrors.entries}</Text> : null}
+            <NewsprintButton
+              label="+ ADD KEY-VALUE"
+              variant="secondary"
+              onPress={() =>
+                setEdits(prev => {
+                  const s = prev as SecretEdits;
+                  return {...s, entries: [...s.entries, {key: '', value: ''}]} as EntryEdits;
+                })
+              }
+              testID="add-entry-row"
+            />
+            <NewsprintInput
+              label="NOTES"
+              value={e.notes}
+              onChangeText={notes => patch({notes})}
+              error={fieldErrors.notes}
+              multiline
+              mono={false}
+              style={styles.notesInput}
+              accessibilityLabel="备注"
+              testID="field-notes"
+            />
+          </View>
+        );
+      }
+    }
+  };
+
+  const renderViewFields = () => {
+    const p = detail!.payload;
+    const revealRow = (
+      label: string,
+      value: string,
+      secretKey: string,
+      auditField?: AuditField,
+      testID?: string,
+    ) => (
+      <CopyValueRow
+        label={label}
+        value={value}
+        masked
+        visible={!!showSecrets[secretKey]}
+        onToggleVisibility={() => toggleReveal(secretKey, auditField)}
+        onCopy={auditField ? () => audit(auditField, 'copy') : undefined}
+        testID={testID}
+      />
+    );
+    switch (itemType) {
+      case 'login': {
+        const l = p as LoginPayload;
+        return (
+          <View>
+            <CopyValueRow
+              label="TITLE"
+              value={l.name || detail!.title || ''}
+              copyable={false}
+              testID="view-title"
+            />
+            <CopyValueRow label="USERNAME" value={l.username || ''} testID="view-username" />
+            {revealRow('PASSWORD', l.password || '', 'password', 'password', 'view-password')}
+            {(l.urls ?? []).length === 0 ? (
+              <CopyValueRow label="URLS" value={null} copyable={false} />
+            ) : (
+              (l.urls ?? []).map((url, index) => (
+                <CopyValueRow key={`${index}-${url}`} label={`URL ${index + 1}`} value={url} />
+              ))
+            )}
+            <CopyValueRow label="NOTES" value={l.notes || ''} copyable={false} />
+          </View>
+        );
+      }
+      case 'ssh_key': {
+        const k = p as SshKeyPayload;
+        return (
+          <View>
+            <CopyValueRow label="TITLE" value={k.name || detail!.title || ''} copyable={false} testID="view-title" />
+            <CopyValueRow label="ALGORITHM" value={k.algorithm} copyable={false} testID="view-algorithm" />
+            <CopyValueRow label="PUBLIC KEY" value={k.public_key} testID="view-public-key" />
+            {revealRow('PRIVATE KEY', k.private_key, 'private_key', 'private_key', 'view-private-key')}
+            {revealRow('PASSPHRASE', k.key_passphrase || '', 'key_passphrase', 'key_passphrase', 'view-passphrase')}
+            <CopyValueRow label="COMMENT" value={k.comment || ''} />
+            <CopyValueRow label="FINGERPRINT" value={k.fingerprint || ''} />
+            <CopyValueRow label="NOTES" value={k.notes || ''} copyable={false} />
+          </View>
+        );
+      }
+      case 'credit_card': {
+        const c = p as CreditCardPayload;
+        const expiry = `${String(c.exp_month).padStart(2, '0')}/${String(c.exp_year)}`;
+        return (
+          <View>
+            <CopyValueRow label="TITLE" value={c.name || detail!.title || ''} copyable={false} testID="view-title" />
+            <CopyValueRow label="CARDHOLDER" value={c.cardholder} testID="view-cardholder" />
+            {revealRow('CARD NUMBER', c.number, 'number', 'number', 'view-card-number')}
+            <CopyValueRow label="EXPIRES" value={expiry} testID="view-expiry" />
+            {revealRow('CVV', c.cvv || '', 'cvv', 'cvv', 'view-cvv')}
+            {revealRow('PIN', c.pin || '', 'pin', 'pin', 'view-pin')}
+            <CopyValueRow label="NOTES" value={c.notes || ''} copyable={false} />
+          </View>
+        );
+      }
+      case 'identity': {
+        const i = p as IdentityPayload;
+        return (
+          <View>
+            <CopyValueRow label="TITLE" value={i.name || detail!.title || ''} copyable={false} testID="view-title" />
+            <CopyValueRow label="FULL NAME" value={i.full_name || ''} testID="view-full-name" />
+            <CopyValueRow label="COMPANY" value={i.company || ''} />
+            <CopyValueRow label="PHONE" value={i.phone || ''} testID="view-phone" />
+            <CopyValueRow label="EMAIL" value={i.email || ''} testID="view-email" />
+            <CopyValueRow
+              label="REGION"
+              value={[i.country, i.state, i.city, i.district].filter(Boolean).join(' ')}
+              copyable={false}
+            />
+            <CopyValueRow label="ADDRESS" value={i.address_line || ''} />
+            <CopyValueRow label="POSTAL CODE" value={i.postal_code || ''} />
+            <CopyValueRow label="NOTES" value={i.notes || ''} copyable={false} />
+          </View>
+        );
+      }
+      case 'secure_note': {
+        const n = p as SecureNotePayload;
+        return (
+          <View>
+            <CopyValueRow label="TITLE" value={n.name || detail!.title || ''} copyable={false} testID="view-title" />
+            <CopyValueRow label="BODY" value={n.body} copyable={false} testID="view-body" />
+          </View>
+        );
+      }
+      case 'secret': {
+        const s = p as SecretPayload;
+        return (
+          <View>
+            <CopyValueRow label="TITLE" value={s.name || detail!.title || ''} copyable={false} testID="view-title" />
+            {s.entries.map((entry, index) =>
+              revealRow(
+                `KEY: ${entry.key}`,
+                entry.value,
+                `entry-${index}`,
+                undefined,
+                `view-entry-${index}`,
+              ),
+            )}
+            <CopyValueRow label="NOTES" value={s.notes || ''} copyable={false} />
+          </View>
+        );
+      }
+    }
+  };
+
   return (
     <View style={[styles.root, {paddingBottom: insets.bottom}]}>
       <NewsprintHeader
         title={title}
-        kicker={isCreate ? 'PERSONAL VAULT / CREATE' : `LOGIN / PERSONAL · REV ${detail!.revision}`}
+        kicker={
+          isCreate
+            ? 'PERSONAL VAULT / CREATE'
+            : `${typeLabel} / PERSONAL · REV ${detail!.revision}`
+        }
         backLabel="Back"
         onBack={tryClose}
         testID="editor-header"
@@ -450,116 +1177,31 @@ export function EntryEditorScreen({
             text={mode === 'edit' && dirty && !conflict ? '有未保存的修改。' : ''}
           />
 
+          {isCreate ? (
+            <View style={styles.typePicker}>
+              {ITEM_TYPES.map(t => {
+                const selected = itemType === t.value;
+                return (
+                  <Pressable
+                    key={t.value}
+                    accessibilityRole="button"
+                    accessibilityState={{selected}}
+                    onPress={() => switchType(t.value)}
+                    style={[styles.typeChip, selected && styles.typeChipSelected]}
+                    testID={`type-${t.value}`}>
+                    <Text style={[styles.typeChipText, selected && styles.typeChipTextSelected]}>
+                      {t.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+
           {isCreate || mode === 'edit' ? (
-            <View>
-              <NewsprintInput
-                label="TITLE"
-                value={edits.name}
-                onChangeText={name => setEdits(prev => ({...prev, name}))}
-                error={fieldErrors.name}
-                autoCapitalize="none"
-                mono={false}
-                maxLength={300}
-                accessibilityLabel="标题"
-                testID="field-title"
-              />
-              <NewsprintInput
-                label="USERNAME"
-                value={edits.username}
-                onChangeText={username => setEdits(prev => ({...prev, username}))}
-                error={fieldErrors.username}
-                autoCapitalize="none"
-                autoCorrect={false}
-                accessibilityLabel="用户名"
-                testID="field-username"
-              />
-              <View style={styles.passwordEditRow}>
-                <View style={styles.passwordEditField}>
-                  <NewsprintInput
-                    label="PASSWORD"
-                    value={edits.password}
-                    onChangeText={password => setEdits(prev => ({...prev, password}))}
-                    error={fieldErrors.password}
-                    secure={!showPassword}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    textContentType="newPassword"
-                    accessibilityLabel="密码"
-                    testID="field-password"
-                  />
-                </View>
-                <View style={styles.passwordEditActions}>
-                  <NewsprintButton
-                    label="GENERATE"
-                    variant="secondary"
-                    onPress={() => {
-                      onActivity();
-                      setGeneratorVisible(true);
-                    }}
-                    testID="open-generator"
-                  />
-                  <NewsprintButton
-                    label={showPassword ? 'HIDE' : 'SHOW'}
-                    variant="ghost"
-                    onPress={() => setShowPassword(v => !v)}
-                    accessibilityLabel={showPassword ? '隐藏密码' : '显示密码'}
-                    style={styles.smallButton}
-                  />
-                </View>
-              </View>
-              <UrlListField
-                urls={edits.urls}
-                onChange={urls => setEdits(prev => ({...prev, urls}))}
-                error={fieldErrors.urls}
-              />
-              <NewsprintInput
-                label="NOTES"
-                value={edits.notes}
-                onChangeText={notes => setEdits(prev => ({...prev, notes}))}
-                error={fieldErrors.notes}
-                multiline
-                mono={false}
-                style={styles.notesInput}
-                accessibilityLabel="备注"
-                testID="field-notes"
-              />
-            </View>
+            renderEditFields()
           ) : (
-            <View>
-              <CopyValueRow
-                label="TITLE"
-                value={detail!.payload.name || detail!.title || ''}
-                copyable={false}
-                testID="view-title"
-              />
-              <CopyValueRow label="USERNAME" value={detail!.payload.username || ''} testID="view-username" />
-              <View style={styles.viewPasswordRow}>
-                <View style={styles.flex1}>
-                  <CopyValueRow
-                    label="PASSWORD"
-                    value={detail!.payload.password || ''}
-                    masked
-                    visible={showPassword}
-                    onToggleVisibility={() => {
-                      const nextVisible = !showPassword;
-                      setShowPassword(nextVisible);
-                      if (nextVisible) {
-                        audit('reveal');
-                      }
-                    }}
-                    testID="view-password"
-                  />
-                </View>
-              </View>
-              {(detail!.payload.urls ?? []).length === 0 ? (
-                <CopyValueRow label="URLS" value={null} copyable={false} />
-              ) : (
-                (detail!.payload.urls ?? []).map((url, index) => (
-                  <CopyValueRow key={`${index}-${url}`} label={`URL ${index + 1}`} value={url} />
-                ))
-              )}
-              <CopyValueRow label="NOTES" value={detail!.payload.notes || ''} copyable={false} />
-            </View>
+            renderViewFields()
           )}
 
           {!isCreate ? (
@@ -583,16 +1225,18 @@ export function EntryEditorScreen({
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <PasswordGeneratorSheet
-        visible={generatorVisible}
-        api={api}
-        csrfToken={csrf}
-        onClose={() => setGeneratorVisible(false)}
-        onUse={value => {
-          setEdits(prev => ({...prev, password: value}));
-          setGeneratorVisible(false);
-        }}
-      />
+      {itemType === 'login' ? (
+        <PasswordGeneratorSheet
+          visible={generatorVisible}
+          api={api}
+          csrfToken={csrf}
+          onClose={() => setGeneratorVisible(false)}
+          onUse={value => {
+            patch({password: value});
+            setGeneratorVisible(false);
+          }}
+        />
+      ) : null}
 
       <ConfirmDialog
         visible={reloadConfirmVisible}
@@ -625,24 +1269,80 @@ export function EntryEditorScreen({
         }}
         onCancel={() => setDiscardConfirmVisible(false)}
       />
-      <ConfirmDialog
-        visible={deleteConfirmVisible}
-        title={`将 ${detail!.payload.name || detail!.title || '该条目'} 移入回收站？`}
-        message={
-          mode === 'edit' && dirty
-            ? '未保存的修改将被丢弃。条目将移入回收站，可通过 Web 回收站在保留期内恢复。'
-            : '条目将移入回收站，可通过 Web 回收站在保留期内恢复。'
-        }
-        confirmLabel="MOVE TO TRASH"
-        cancelLabel="CANCEL"
-        destructive
-        onConfirm={() => void doDelete()}
-        onCancel={() => setDeleteConfirmVisible(false)}
-      />
+      {detail ? (
+        <ConfirmDialog
+          visible={deleteConfirmVisible}
+          title={`将 ${detail.payload.name || detail.title || '该条目'} 移入回收站？`}
+          message={
+            mode === 'edit' && dirty
+              ? '未保存的修改将被丢弃。条目将移入回收站，可通过 Web 回收站在保留期内恢复。'
+              : '条目将移入回收站，可通过 Web 回收站在保留期内恢复。'
+          }
+          confirmLabel="MOVE TO TRASH"
+          cancelLabel="CANCEL"
+          destructive
+          onConfirm={() => void doDelete()}
+          onCancel={() => setDeleteConfirmVisible(false)}
+        />
+      ) : null}
     </View>
   );
 }
 
+/** Multiline/masked-capable edit field with a SHOW/HIDE toggle for secrets. */
+function SecureEditField({
+  label,
+  value,
+  onChangeText,
+  error,
+  secretKey,
+  showSecrets,
+  onToggle,
+  multiline,
+  keyboardType,
+  accessibilityLabel,
+  testID,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (text: string) => void;
+  error?: string | undefined;
+  secretKey: string;
+  showSecrets: Record<string, boolean>;
+  onToggle: (key: string) => void;
+  multiline?: boolean;
+  keyboardType?: 'default' | 'number-pad' | 'phone-pad' | 'email-address';
+  accessibilityLabel?: string;
+  testID?: string;
+}): React.JSX.Element {
+  const visible = !!showSecrets[secretKey];
+  return (
+    <View>
+      <NewsprintInput
+        label={label}
+        value={value}
+        onChangeText={onChangeText}
+        error={error}
+        secure={!visible}
+        multiline={multiline}
+        keyboardType={keyboardType}
+        autoCapitalize="none"
+        autoCorrect={false}
+        accessibilityLabel={accessibilityLabel}
+        testID={testID}
+      />
+      <View style={styles.secureToggleRow}>
+        <NewsprintButton
+          label={visible ? 'HIDE' : 'SHOW'}
+          variant="ghost"
+          onPress={() => onToggle(secretKey)}
+          accessibilityLabel={visible ? `隐藏${label}` : `显示${label}`}
+          style={styles.smallButton}
+        />
+      </View>
+    </View>
+  );
+}
 
 const styles = StyleSheet.create({
   root: {
@@ -688,6 +1388,115 @@ const styles = StyleSheet.create({
   conflictAction: {
     flex: 1,
   },
+  typePicker: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  typeChip: {
+    borderWidth,
+    borderColor: colors.foreground,
+    borderRadius: 0,
+    paddingHorizontal: spacing.sm,
+    minHeight: minTouchTarget,
+    justifyContent: 'center',
+    backgroundColor: colors.background,
+  },
+  typeChipSelected: {
+    backgroundColor: colors.foreground,
+  },
+  typeChipText: {
+    ...typeScale.label,
+    fontFamily: fonts.uiSemi,
+    letterSpacing: 1,
+    color: colors.foreground,
+  },
+  typeChipTextSelected: {
+    color: colors.background,
+  },
+  choiceRow: {
+    marginBottom: spacing.md,
+  },
+  choiceLabel: {
+    ...typeScale.label,
+    fontFamily: fonts.uiSemi,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    color: colors.foreground,
+    marginBottom: spacing.xs,
+  },
+  choiceOptions: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+  },
+  choiceChip: {
+    borderWidth,
+    borderColor: colors.foreground,
+    borderRadius: 0,
+    paddingHorizontal: spacing.sm,
+    minHeight: minTouchTarget,
+    justifyContent: 'center',
+  },
+  choiceChipSelected: {
+    backgroundColor: colors.foreground,
+  },
+  choiceChipText: {
+    ...typeScale.label,
+    fontFamily: fonts.uiSemi,
+    letterSpacing: 1,
+    color: colors.foreground,
+  },
+  choiceChipTextSelected: {
+    color: colors.background,
+  },
+  fieldErrorText: {
+    ...typeScale.ui,
+    fontFamily: fonts.ui,
+    color: colors.accent,
+    marginTop: spacing.xs,
+  },
+  sectionLabel: {
+    ...typeScale.label,
+    fontFamily: fonts.uiSemi,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    color: colors.neutral600,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  entryBlock: {
+    borderBottomWidth: borderWidth,
+    borderBottomColor: colors.muted,
+    marginBottom: spacing.sm,
+  },
+  entryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  entryIndex: {
+    ...typeScale.meta,
+    fontFamily: fonts.mono,
+    color: colors.neutral600,
+  },
+  entryRemove: {
+    minHeight: minTouchTarget,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.xs,
+  },
+  entryRemoveText: {
+    ...typeScale.label,
+    fontFamily: fonts.uiSemi,
+    color: colors.accent,
+    textDecorationLine: 'underline',
+  },
+  secureToggleRow: {
+    alignItems: 'flex-end',
+    marginTop: -spacing.xs,
+    marginBottom: spacing.sm,
+  },
   passwordEditRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -700,11 +1509,21 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingBottom: spacing.md,
   },
+  splitRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+  },
+  splitField: {
+    flex: 1,
+  },
   smallButton: {
     minHeight: 44,
   },
   notesInput: {
     minHeight: 120,
+  },
+  bodyInput: {
+    minHeight: 240,
   },
   viewPasswordRow: {
     flexDirection: 'row',

@@ -31,9 +31,33 @@ describe('splitSetCookie', () => {
     expect(splitSetCookie(joined)[1]).toContain('b=2');
   });
 
+  it('does not leak the joining comma into later cookie names', () => {
+    // Regression: RN joins Set-Cookie headers with ", ". The split must not
+    // leave a leading ", " on the second cookie, or the Cookie header the
+    // server receives is unparseable and every authenticated call 401s.
+    const joined = [
+      'tiny_password_preauth=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax',
+      'tiny_password_session=s3cr3t; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax',
+    ].join(', ');
+    const parts = splitSetCookie(joined);
+    expect(parts).toHaveLength(2);
+    expect(parts[1]).toBe(
+      'tiny_password_session=s3cr3t; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax',
+    );
+  });
+
   it('keeps Expires dates with commas in one cookie', () => {
     const joined = 'sid=xyz; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/';
     expect(splitSetCookie(joined)).toHaveLength(1);
+  });
+
+  it('splits cookies after an Expires date and keeps both intact', () => {
+    const joined =
+      'a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/, b=2; Path=/';
+    const parts = splitSetCookie(joined);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toBe('a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/');
+    expect(parts[1]).toBe('b=2; Path=/');
   });
 });
 

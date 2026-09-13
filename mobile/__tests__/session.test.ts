@@ -12,6 +12,7 @@ interface RecordedCall {
   method: string;
   url: string;
   headers: Record<string, string>;
+  cookieHeader?: string;
   body?: unknown;
 }
 
@@ -41,7 +42,13 @@ function createMockServer() {
   }
 
   function handle(method: string, path: string, body: any, cookies: Record<string, string>, csrfHeader: string | undefined): MockResponse {
-    calls.push({method, url: path, headers: csrfHeader ? {'x-csrf-token': csrfHeader} : {}, body});
+    calls.push({
+      method,
+      url: path,
+      headers: csrfHeader ? {'x-csrf-token': csrfHeader} : {},
+      cookieHeader: Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; '),
+      body,
+    });
     switch (`${method} ${path}`) {
       case 'POST /api/v1/csrf':
         preauthCookie = 'preauth-ctx-1';
@@ -94,6 +101,9 @@ function createMockServer() {
         return {status: 500, body: {code: 'INTERNAL', message: 'no password handler'}};
       }
       case 'POST /api/v1/auth/logout':
+        if (cookies.tiny_password_session !== sessionCookie || sessionCookie === null) {
+          return {status: 401, body: {code: 'UNAUTHORIZED', message: 'no session'}};
+        }
         if (csrfHeader !== sessionCsrf) {
           return {status: 403, body: {code: 'FORBIDDEN', message: 'missing csrf'}};
         }
@@ -265,6 +275,36 @@ describe('SessionController — authentication state transitions', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe('用户名或密码错误');
     expect(controller.getSnapshot().phase).toBe('signed-out');
+  });
+
+  it('login FORBIDDEN drops the pre-auth context so the retry can re-preflight', async () => {
+    const {controller, server} = setup();
+    server.loginHandler(() => ({
+      status: 200,
+      body: {must_change_password: false, csrf_token: 'sess-token-1', user: USER_OK},
+      setCookie: ['tiny_password_session=sess-1; Path=/; HttpOnly'],
+    }));
+    await controller.preflight();
+    expect(controller.preauthToken).not.toBeNull();
+    // Simulate the server forgetting the pre-auth context (15-minute TTL).
+    controller
+      .getApi()!
+      .client.jar.setFromResponse(
+        'https://vault.example.com/api/v1/csrf',
+        ['tiny_password_preauth=expired; Path=/; HttpOnly'],
+      );
+    const result = await controller.login('alice', 'pw123456789');
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('安全校验失败（CSRF/Origin）');
+    expect(controller.preauthToken).toBeNull();
+  });
+
+  it('reports the pre-auth context stale after the refresh window', async () => {
+    const {controller, advance} = setup();
+    await controller.preflight();
+    expect(controller.preauthIsStale(10 * 60_000)).toBe(false);
+    advance(10 * 60_000 + 1);
+    expect(controller.preauthIsStale(10 * 60_000)).toBe(true);
   });
 
   it('disabled accounts report the reason', async () => {
@@ -442,6 +482,26 @@ describe('SessionController — cancellation and stale-response isolation', () =
     expect(result.notice).toBeTruthy();
     expect(controller.getSnapshot().phase).toBe('signed-out');
     expect(controller.getApi()!.client.jar.size).toBe(0);
+  });
+
+  it('signOut revokes the server session before the local wipe', async () => {
+    const {controller, server} = setup();
+    server.loginHandler(() => ({
+      status: 200,
+      body: {must_change_password: false, csrf_token: 'sess-token-1', user: USER_OK},
+      setCookie: ['tiny_password_session=sess-1; Path=/; HttpOnly'],
+    }));
+    await controller.preflight();
+    await controller.login('alice', 'pw123456789');
+    const result = await controller.signOut();
+    expect(result.serverConfirmed).toBe(true);
+    const logout = server.calls.find(c => c.url === '/api/v1/auth/logout');
+    expect(logout).toBeDefined();
+    // The revocation call must still carry the session cookie — wiping the
+    // jar first makes every logout 401 and the session survives server-side.
+    expect(logout!.cookieHeader).toContain('tiny_password_session=sess-1');
+    expect(logout!.headers['x-csrf-token']).toBe('sess-token-1');
+    expect(server.sessionValue).toBeNull();
   });
 });
 

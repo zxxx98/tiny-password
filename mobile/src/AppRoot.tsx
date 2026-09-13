@@ -3,6 +3,7 @@ import {AppState, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {SignInScreen} from './screens/SignInScreen';
 import {VaultScreen} from './screens/VaultScreen';
+import {GeneratorScreen} from './screens/GeneratorScreen';
 import {EntryEditorScreen, type EditorRoute} from './screens/EntryEditorScreen';
 import {NewsprintButton} from './components/NewsprintButton';
 import {SessionController} from './auth/session';
@@ -13,6 +14,7 @@ import {DEFAULT_SERVER_URL} from './config';
 type Route =
   | {name: 'signin'}
   | {name: 'vault'}
+  | {name: 'generator'}
   | {name: 'editor'; editor: EditorRoute};
 
 /**
@@ -131,6 +133,15 @@ export function AppRoot(): React.JSX.Element {
             onAuthenticated={() => setRoute({name: 'vault'})}
             onActivity={onActivity}
           />
+        ) : route.name === 'generator' ? (
+          api ? (
+            <GeneratorScreen
+              api={api}
+              csrfToken={session.csrfToken}
+              onClose={() => setRoute({name: 'vault'})}
+              onActivity={onActivity}
+            />
+          ) : null
         ) : route.name === 'editor' ? (
           api ? (
             <EntryEditorScreen
@@ -150,6 +161,7 @@ export function AppRoot(): React.JSX.Element {
               notice={editorNotice}
               onOpenEntry={itemId => setRoute({name: 'editor', editor: {mode: 'detail', itemId}})}
               onAddEntry={() => setRoute({name: 'editor', editor: {mode: 'create'}})}
+              onOpenGenerator={() => setRoute({name: 'generator'})}
               onSignOut={handleSignOutFromVault}
               onActivity={onActivity}
             />

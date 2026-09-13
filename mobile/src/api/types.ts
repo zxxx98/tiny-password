@@ -37,6 +37,70 @@ export interface LoginPayload {
   password_expires_at?: string | null;
 }
 
+export type SshAlgorithm = 'ed25519' | 'rsa4096';
+
+export interface SshKeyPayload {
+  name: string;
+  algorithm: SshAlgorithm;
+  public_key: string;
+  private_key: string;
+  key_passphrase?: string;
+  comment?: string;
+  fingerprint?: string;
+  notes?: string;
+}
+
+export interface CreditCardPayload {
+  name: string;
+  cardholder: string;
+  number: string;
+  exp_month: number;
+  exp_year: number;
+  cvv?: string;
+  pin?: string;
+  billing_address_item_id?: string | null;
+  notes?: string;
+}
+
+export interface IdentityPayload {
+  name: string;
+  full_name?: string;
+  company?: string;
+  phone?: string;
+  email?: string;
+  country?: string;
+  state?: string;
+  city?: string;
+  district?: string;
+  address_line?: string;
+  postal_code?: string;
+  notes?: string;
+}
+
+export interface SecureNotePayload {
+  name: string;
+  body: string;
+}
+
+export interface SecretEntry {
+  key: string;
+  value: string;
+}
+
+export interface SecretPayload {
+  name: string;
+  entries: SecretEntry[];
+  notes?: string;
+}
+
+export type ItemPayload =
+  | LoginPayload
+  | SshKeyPayload
+  | CreditCardPayload
+  | IdentityPayload
+  | SecureNotePayload
+  | SecretPayload;
+
 export interface ItemMeta {
   id: string;
   title?: string;
@@ -53,7 +117,7 @@ export interface ItemMeta {
 
 export interface ItemDetail extends ItemMeta {
   tags?: string[];
-  payload: LoginPayload;
+  payload: ItemPayload;
 }
 
 export interface CursorPage<T> {

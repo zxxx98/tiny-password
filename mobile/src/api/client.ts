@@ -5,7 +5,8 @@ import type {
   CurrentPrincipal,
   ItemDetail,
   ItemMeta,
-  LoginPayload,
+  ItemPayload,
+  ItemType,
   PasswordGeneratorOptions,
 } from './types';
 
@@ -214,6 +215,9 @@ function defaultFetch(url: string, init: FetchInit): Promise<FetchResponseLike> 
 
 // --- Typed API surface -------------------------------------------------------
 
+/** Sensitive field categories the server's reveal/copy audit accepts. */
+export type AuditField = 'password' | 'private_key' | 'key_passphrase' | 'number' | 'cvv' | 'pin';
+
 export type LoginResult = {
   must_change_password: boolean;
   csrf_token: string;
@@ -288,7 +292,9 @@ export class TinyPasswordApi {
     limit = 50,
     signal?: AbortSignal,
   ): Promise<ApiResult<CursorPage<ItemMeta>>> {
-    let path = `/items?scope=personal&type=login&limit=${limit}`;
+    // No type filter: the personal vault lists every supported item type
+    // (login, ssh_key, credit_card, identity, secure_note, secret).
+    let path = `/items?scope=personal&limit=${limit}`;
     if (cursor) {
       path += `&cursor=${encodeURIComponent(cursor)}`;
     }
@@ -305,7 +311,6 @@ export class TinyPasswordApi {
     const body: Record<string, unknown> = {
       query,
       scope: 'personal',
-      type: 'login',
       limit,
     };
     if (cursor) {
@@ -319,7 +324,8 @@ export class TinyPasswordApi {
   }
 
   createItem(
-    payload: LoginPayload,
+    payload: ItemPayload,
+    itemType: ItemType,
     idempotencyKey: string,
     csrfToken: string,
     signal?: AbortSignal,
@@ -327,7 +333,7 @@ export class TinyPasswordApi {
     return this.request({
       method: 'POST',
       path: '/items',
-      body: {item_type: 'login', vault_scope: 'personal', payload},
+      body: {item_type: itemType, vault_scope: 'personal', payload},
       csrfToken,
       extraHeaders: {'Idempotency-Key': idempotencyKey},
       signal,
@@ -337,7 +343,7 @@ export class TinyPasswordApi {
   updateItem(
     itemId: string,
     revision: number,
-    payload: LoginPayload,
+    payload: ItemPayload,
     csrfToken: string,
     signal?: AbortSignal,
   ): Promise<ApiResult<ItemDetail>> {
@@ -373,20 +379,21 @@ export class TinyPasswordApi {
     });
   }
 
-  auditCopy(itemId: string, csrfToken: string): Promise<ApiResult<void>> {
+  /** Sensitive field categories the server's audit trail accepts. */
+  auditCopy(itemId: string, field: AuditField, csrfToken: string): Promise<ApiResult<void>> {
     return this.request({
       method: 'POST',
       path: `/items/${encodeURIComponent(itemId)}/copy`,
-      body: {field: 'password'},
+      body: {field},
       csrfToken,
     });
   }
 
-  auditReveal(itemId: string, csrfToken: string): Promise<ApiResult<void>> {
+  auditReveal(itemId: string, field: AuditField, csrfToken: string): Promise<ApiResult<void>> {
     return this.request({
       method: 'POST',
       path: `/items/${encodeURIComponent(itemId)}/reveal`,
-      body: {field: 'password'},
+      body: {field},
       csrfToken,
     });
   }

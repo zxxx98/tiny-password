@@ -1,4 +1,5 @@
 import {ApiClient, TinyPasswordApi, type FetchLike} from '../api/client';
+import type {ApiResult} from '../api/errors';
 import type {CurrentPrincipal} from '../api/types';
 
 export type SessionPhase =
@@ -34,6 +35,7 @@ export class SessionController {
   private phase: SessionPhase = 'unconfigured';
   private principal: CurrentPrincipal | null = null;
   private preauthCsrf: string | null = null;
+  private preauthIssuedAtMs: number | null = null;
   private sessionCsrf: string | null = null;
   private confirmError: string | null = null;
   private api: TinyPasswordApi | null = null;
@@ -115,6 +117,7 @@ export class SessionController {
   setServerUrl(url: string): boolean {
     this.bumpGeneration();
     this.preauthCsrf = null;
+    this.preauthIssuedAtMs = null;
     this.sessionCsrf = null;
     this.principal = null;
     this.confirmError = null;
@@ -153,6 +156,7 @@ export class SessionController {
       }
       if (result.kind === 'success') {
         this.preauthCsrf = result.data.csrf_token;
+        this.preauthIssuedAtMs = this.clock();
         return true;
       }
       return false;
@@ -191,6 +195,7 @@ export class SessionController {
         this.principal = result.data.user;
         this.sessionCsrf = result.data.csrf_token;
         this.preauthCsrf = null;
+        this.preauthIssuedAtMs = null;
         this.confirmError = null;
         this.lastActivityMs = this.clock();
         if (result.data.must_change_password || result.data.user.must_change_password) {
@@ -199,6 +204,13 @@ export class SessionController {
           this.setPhase('authenticated');
         }
         return {ok: true, error: null};
+      }
+      if (result.kind === 'http-error' && result.status === 403) {
+        // The server discarded the pre-auth context (15-minute TTL elapsed,
+        // or a server restart); drop it so the next attempt re-preflights
+        // instead of resubmitting the same dead token forever.
+        this.preauthCsrf = null;
+        this.preauthIssuedAtMs = null;
       }
       this.setPhase('signed-out');
       return {ok: false, error: SessionController.loginError(result)};
@@ -405,11 +417,19 @@ export class SessionController {
   async signOut(): Promise<{serverConfirmed: boolean; notice: string | null}> {
     const api = this.api;
     const csrf = this.sessionCsrf;
+    // Abort in-flight work immediately so late responses can never mutate
+    // post-signout state — but keep the jar intact until revocation ran: the
+    // logout call must carry the session cookie it is meant to revoke, and
+    // the local wipe below clears it.
+    this.bumpGeneration();
+    let result: ApiResult<void> | null = null;
+    if (api && csrf) {
+      result = await api.logout(csrf);
+    }
     this.invalidateLocally();
-    if (!api || !csrf) {
+    if (!result) {
       return {serverConfirmed: false, notice: null};
     }
-    const result = await api.logout(csrf);
     if (result.kind === 'success') {
       return {serverConfirmed: true, notice: null};
     }
@@ -436,6 +456,7 @@ export class SessionController {
       this.api.client.jar.clear();
     }
     this.preauthCsrf = null;
+    this.preauthIssuedAtMs = null;
     this.sessionCsrf = null;
     this.principal = null;
     this.confirmError = null;
@@ -450,6 +471,19 @@ export class SessionController {
   /** Pre-auth CSRF token (setup page equivalent, D07). */
   get preauthToken(): string | null {
     return this.preauthCsrf;
+  }
+
+  /**
+   * Whether a pre-auth context exists but is older than ttlMs. The server
+   * expires pre-auth contexts after 15 minutes; sign-in refreshes at a
+   * shorter window so it never submits a dead token.
+   */
+  preauthIsStale(ttlMs: number): boolean {
+    return (
+      this.preauthCsrf !== null &&
+      this.preauthIssuedAtMs !== null &&
+      this.clock() - this.preauthIssuedAtMs > ttlMs
+    );
   }
 
   /** API bound to the current server; null before a server is configured. */

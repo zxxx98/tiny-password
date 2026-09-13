@@ -59,17 +59,21 @@ export function splitSetCookie(joined: string): string[] {
   let current = '';
   const parts = joined.split(',');
   for (let i = 0; i < parts.length; i++) {
-    const part = i === 0 ? parts[i] : ',' + parts[i];
+    // Lossless accumulation: keep the comma so mid-cookie commas (Expires
+    // dates) survive rejoining.
+    const raw = i === 0 ? parts[i] : ',' + parts[i];
+    const trimmed = raw.replace(/^,/, '').trim();
     if (i === 0) {
-      current = part;
+      current = raw;
       continue;
     }
-    const trimmed = part.replace(/^,/, '').trim();
     if (/^[^\s=;]+=\S*/.test(trimmed) && !/^expires=/i.test(trimmed)) {
+      // A new cookie starts here — it must NOT carry the joining comma,
+      // or the name sent in the Cookie header is corrupted server-side.
       out.push(current.trim());
-      current = part;
+      current = trimmed;
     } else {
-      current += part;
+      current += raw;
     }
   }
   if (current.trim()) {

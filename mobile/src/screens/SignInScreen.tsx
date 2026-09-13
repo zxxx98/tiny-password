@@ -32,6 +32,16 @@ interface SignInScreenProps {
 
 type Phase = 'sign-in' | 'change-password';
 
+/** How long the change-success banner holds the vault entry (ms). */
+const SUCCESS_HOLD_MS = 1500;
+
+/**
+ * Refresh the pre-auth CSRF context before it expires: the server discards
+ * pre-auth contexts after 15 minutes, so sign-in re-preflights at 10 to
+ * never submit a dead token.
+ */
+const PREAUTH_REFRESH_MS = 10 * 60 * 1000;
+
 /**
  * Sign in — and, on the same screen, the forced password change phase.
  * The screen owns the server-address control (collapsible; expanded when no
@@ -64,6 +74,11 @@ export function SignInScreen({
   const [phase, setPhase] = useState<Phase>('sign-in');
   const [submitting, setSubmitting] = useState(false);
   const [changeError, setChangeError] = useState<string | null>(null);
+  const [changeSuccess, setChangeSuccess] = useState<string | null>(null);
+  // Holds the subscription-driven vault entry for a beat after a successful
+  // rotation so the success banner is actually visible before navigating.
+  const holdNavigationRef = useRef(false);
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [signOutConfirmVisible, setSignOutConfirmVisible] = useState(false);
   const usernameRef = useRef(username);
   usernameRef.current = username;
@@ -101,6 +116,9 @@ export function SignInScreen({
         setSubmitting(false);
       } else if (snap.phase === 'authenticated') {
         setSubmitting(false);
+        if (holdNavigationRef.current) {
+          return;
+        }
         onAuthenticated();
       } else if (snap.phase === 'signed-out' || snap.phase === 'unconfigured') {
         setSubmitting(false);
@@ -160,6 +178,11 @@ export function SignInScreen({
         setServerExpanded(true);
         return;
       }
+    }
+    // A 401 (e.g. a failed forced password change) wipes the pre-auth context,
+    // and an old context expires server-side after 15 minutes; re-fetch it so
+    // a retry cannot dead-end on "缺少预认证上下文" or "安全校验失败".
+    if (!session.preauthToken || session.preauthIsStale(PREAUTH_REFRESH_MS)) {
       const preflightOk = await session.preflight();
       if (!preflightOk) {
         setFormError('无法获取预认证上下文，请检查服务器地址');
@@ -183,14 +206,24 @@ export function SignInScreen({
 
   const doChangePassword = async (current: string, next: string) => {
     setChangeError(null);
+    setChangeSuccess(null);
     setSubmitting(true);
     const result = await session.changePassword(current, next);
     if (result.ok) {
       // Confirm the session requirement is lifted; never resubmits the change.
+      // Hold the subscription-driven navigation so the success banner shows.
+      holdNavigationRef.current = true;
       const outcome = await session.confirmSession();
       if (outcome === 'confirmed') {
-        return; // subscription navigates to Vault
+        setSubmitting(true); // stay disabled while the success banner holds
+        setChangeSuccess('密码已修改成功，正在进入保险库…');
+        successTimerRef.current = setTimeout(() => {
+          holdNavigationRef.current = false;
+          onAuthenticated();
+        }, SUCCESS_HOLD_MS);
+        return;
       }
+      holdNavigationRef.current = false;
       if (outcome === 'still-required') {
         setSubmitting(false);
         setChangeError('服务端仍要求改密，请检查新密码是否满足策略');
@@ -204,7 +237,7 @@ export function SignInScreen({
       // 'invalid': session controller already returned to sign-in.
       setSubmitting(false);
       setPhase('sign-in');
-      setChangeError('会话已失效，请重新登录');
+      setFormError('会话已失效，请重新登录');
       return;
     }
     setSubmitting(false);
@@ -212,24 +245,35 @@ export function SignInScreen({
     if (result.error === '认证失败，请重新登录') {
       setPhase('sign-in');
       setPassword('');
+      // The bounce lands on the sign-in view, which renders formError —
+      // changeError would never be visible here.
+      setFormError('密码修改失败：' + result.error);
     }
   };
 
   const retryConfirm = async () => {
     setSubmitting(true);
     setChangeError(null);
+    holdNavigationRef.current = true;
     const outcome = await session.confirmSession();
-    setSubmitting(false);
     if (outcome === 'confirmed') {
+      setSubmitting(true); // stay disabled while the success banner holds
+      setChangeSuccess('密码已修改成功，正在进入保险库…');
+      successTimerRef.current = setTimeout(() => {
+        holdNavigationRef.current = false;
+        onAuthenticated();
+      }, SUCCESS_HOLD_MS);
       return;
     }
+    holdNavigationRef.current = false;
+    setSubmitting(false);
     if (outcome === 'still-required') {
       setChangeError('服务端仍要求改密，请重新设置新密码');
       return;
     }
     if (outcome === 'invalid') {
       setPhase('sign-in');
-      setChangeError('会话已失效，请重新登录');
+      setFormError('会话已失效，请重新登录');
       return;
     }
     setChangeError('仍无法确认会话状态，请稍后重试。不会重复提交改密。');
@@ -237,6 +281,12 @@ export function SignInScreen({
 
   const doSignOut = async () => {
     setSignOutConfirmVisible(false);
+    if (successTimerRef.current !== null) {
+      clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+    holdNavigationRef.current = false;
+    setChangeSuccess(null);
     const result = await session.signOut();
     setPhase('sign-in');
     setChangeError(null);
@@ -259,6 +309,9 @@ export function SignInScreen({
           onSubmit={doChangePassword}
           onSignOut={() => setSignOutConfirmVisible(true)}
         />
+        {changeSuccess ? (
+          <Banner kind="info" text={changeSuccess} testID="change-success" />
+        ) : null}
         <Banner
           kind="warning"
           text={
