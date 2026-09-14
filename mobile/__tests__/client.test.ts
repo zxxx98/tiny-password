@@ -160,7 +160,7 @@ describe('ApiClient request plumbing', () => {
 });
 
 describe('TinyPasswordApi endpoint shapes', () => {
-  it('list/search are pinned to personal login scope', async () => {
+  it('list/search cover the personal vault across every item type', async () => {
     const client = new ApiClient('https://vault.example.com');
     const urls: string[] = [];
     const bodies: unknown[] = [];
@@ -171,12 +171,14 @@ describe('TinyPasswordApi endpoint shapes', () => {
     });
     const api = new TinyPasswordApi(client);
     await api.listItems('cursor-1');
-    expect(urls[0]).toContain('/items?scope=personal&type=login');
+    expect(urls[0]).toContain('/items?scope=personal');
+    expect(urls[0]).not.toContain('type=');
     expect(urls[0]).toContain('cursor=cursor-1');
 
     await api.searchItems('git hub', 'cursor-2', 'csrf-1');
     expect(urls[1]).toContain('/items/search');
-    expect(bodies[1]).toMatchObject({query: 'git hub', scope: 'personal', type: 'login', cursor: 'cursor-2'});
+    expect(bodies[1]).toMatchObject({query: 'git hub', scope: 'personal', cursor: 'cursor-2'});
+    expect(bodies[1]).not.toHaveProperty('type');
   });
 
   it('update omits tags/favorite/vault_scope and sends the revision', async () => {
@@ -192,16 +194,46 @@ describe('TinyPasswordApi endpoint shapes', () => {
     expect(Object.keys(body).sort()).toEqual(['payload', 'revision']);
   });
 
-  it('create carries the Idempotency-Key header', async () => {
+  it('create carries the item type and Idempotency-Key header', async () => {
     const client = new ApiClient('https://vault.example.com');
     const headers: Record<string, string>[] = [];
+    const bodies: any[] = [];
     setFetch(client, async (_url: string, init: FetchInit) => {
       headers.push(init.headers);
+      bodies.push(JSON.parse(init.body!));
       return jsonResponse(201, {id: 'x', revision: 1, payload: {}});
     });
     const api = new TinyPasswordApi(client);
-    await api.createItem({name: 'n', username: '', password: ''}, 'idem-key-123456', 'csrf-1');
+    await api.createItem({name: 'n', username: '', password: ''}, 'login', 'idem-key-123456', 'csrf-1');
     expect(headers[0]['Idempotency-Key']).toBe('idem-key-123456');
     expect(headers[0]['X-CSRF-Token']).toBe('csrf-1');
+    expect(bodies[0]).toEqual({
+      item_type: 'login',
+      vault_scope: 'personal',
+      payload: {name: 'n', username: '', password: ''},
+    });
+
+    await api.createItem(
+      {name: 'server', algorithm: 'ed25519', public_key: 'pub', private_key: 'priv'},
+      'ssh_key',
+      'idem-key-ssh-0001',
+      'csrf-1',
+    );
+    expect(bodies[1].item_type).toBe('ssh_key');
+    expect(bodies[1].vault_scope).toBe('personal');
+  });
+
+  it('audit copy/reveal send the sensitive field category', async () => {
+    const client = new ApiClient('https://vault.example.com');
+    const bodies: any[] = [];
+    setFetch(client, async (_url: string, init: FetchInit) => {
+      bodies.push(init.body ? JSON.parse(init.body) : undefined);
+      return jsonResponse(204, undefined);
+    });
+    const api = new TinyPasswordApi(client);
+    await api.auditReveal('item-1', 'private_key', 'csrf-1');
+    await api.auditCopy('item-1', 'cvv', 'csrf-1');
+    expect(bodies[0]).toEqual({field: 'private_key'});
+    expect(bodies[1]).toEqual({field: 'cvv'});
   });
 });

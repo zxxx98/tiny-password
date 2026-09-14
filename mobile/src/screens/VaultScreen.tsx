@@ -38,6 +38,7 @@ interface VaultScreenProps {
   notice: string | null;
   onOpenEntry: (itemId: string) => void;
   onAddEntry: () => void;
+  onOpenGenerator: () => void;
   onSignOut: () => void;
   onActivity: () => void;
 }
@@ -48,9 +49,10 @@ const PAGE_SIZE = 50;
 type ListStatus = 'loading' | 'ready' | 'error';
 
 /**
- * Personal vault: login-entry list built purely from server Meta, server-side
+ * Personal vault: entry list built purely from server Meta, server-side
  * search with debounce + stale-response isolation, cursor pagination, and
- * sign out. Only `scope=personal&type=login` is ever requested.
+ * sign out. Only `scope=personal` is ever requested, across every supported
+ * item type (login, ssh_key, credit_card, identity, secure_note, secret).
  */
 export function VaultScreen({
   session,
@@ -59,6 +61,7 @@ export function VaultScreen({
   notice,
   onOpenEntry,
   onAddEntry,
+  onOpenGenerator,
   onSignOut,
   onActivity,
 }: VaultScreenProps): React.JSX.Element {
@@ -235,15 +238,26 @@ export function VaultScreen({
             <Text style={styles.brand}>tiny-password</Text>
             <Text style={styles.kicker}>PERSONAL VAULT</Text>
           </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="退出登录"
-            onPress={() => setSignOutConfirm(true)}
-            hitSlop={8}
-            style={styles.signOutButton}
-            testID="sign-out">
-            <Text style={styles.signOutText}>SIGN OUT</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="打开独立密码生成器"
+              onPress={onOpenGenerator}
+              hitSlop={8}
+              style={styles.signOutButton}
+              testID="open-generator">
+              <Text style={styles.signOutText}>GENERATOR</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="退出登录"
+              onPress={() => setSignOutConfirm(true)}
+              hitSlop={8}
+              style={styles.signOutButton}
+              testID="sign-out">
+              <Text style={styles.signOutText}>SIGN OUT</Text>
+            </Pressable>
+          </View>
         </View>
         <View style={styles.rule} />
         <View style={styles.searchRow}>
@@ -251,7 +265,7 @@ export function VaultScreen({
             style={styles.searchInput}
             value={query}
             onChangeText={changeQuery}
-            placeholder="Search passwords..."
+            placeholder="Search entries..."
             placeholderTextColor={colors.neutral400}
             autoCapitalize="none"
             autoCorrect={false}
@@ -306,7 +320,7 @@ export function VaultScreen({
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>{mode === 'search' ? 'NO MATCHES' : 'NO ENTRIES'}</Text>
               <Text style={styles.emptyText}>
-                {mode === 'search' ? '没有匹配的个人登录条目。' : '个人保险库中还没有登录条目，点击下方新增。'}
+                {mode === 'search' ? '没有匹配的个人条目。' : '个人保险库中还没有条目，点击下方新增。'}
               </Text>
             </View>
           }
@@ -409,6 +423,11 @@ const styles = StyleSheet.create({
     minHeight: minTouchTarget,
     justifyContent: 'center',
     paddingHorizontal: spacing.sm,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
   },
   signOutText: {
     ...typeScale.label,

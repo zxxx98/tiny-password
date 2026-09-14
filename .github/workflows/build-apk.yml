@@ -1,0 +1,97 @@
+name: Build Android APK
+
+# 版本号变更自动编译 APK：
+# 从 mobile/android/app/build.gradle 读取 versionName/versionCode，与已有
+# git tag 比对 —— 没有对应 tag 即视为新版本，编译 release APK 并发布到
+# GitHub Release；版本未变时本任务直接跳过。
+#
+# 说明：release 变体当前仍以仓库内的 debug.keystore 签名（仓库现状，见
+# mobile/README.md），仅用于安装体验；上架前必须更换正式签名。
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要完整 tag 列表做版本比对
+
+      - name: Read app version and decide whether to build
+        id: version
+        run: |
+          VERSION_NAME=$(sed -n 's/.*versionName[[:space:]]*=\{0,1\}[[:space:]]*"\([^"]*\)".*/\1/p' mobile/android/app/build.gradle)
+          VERSION_CODE=$(sed -n 's/.*versionCode[[:space:]]*=\{0,1\}[[:space:]]*\([0-9][0-9]*\).*/\1/p' mobile/android/app/build.gradle)
+          TAG="app-v${VERSION_NAME}-${VERSION_CODE}"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Version ${TAG} already built; skipping."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::New version ${TAG} detected; building APK."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.version.outputs.changed == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: actions/setup-java@v4
+        if: steps.version.outputs.changed == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install JS dependencies
+        if: steps.version.outputs.changed == 'true'
+        working-directory: mobile
+        run: npm ci
+
+      - name: Typecheck and unit tests
+        if: steps.version.outputs.changed == 'true'
+        working-directory: mobile
+        run: |
+          npx tsc --noEmit
+          npx jest --silent
+
+      - name: Build release APK
+        if: steps.version.outputs.changed == 'true'
+        working-directory: mobile/android
+        # 缺失的 SDK Platform / Build-Tools / NDK 由 Gradle 自动下载
+        # （runner 的 SDK license 已预先接受）。
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Upload APK artifact
+        if: steps.version.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TinyPassword-v${{ steps.version.outputs.version_name }}-${{ steps.version.outputs.version_code }}
+          path: mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: TinyPassword v${{ steps.version.outputs.version_name }} (code ${{ steps.version.outputs.version_code }})
+          files: mobile/android/app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true

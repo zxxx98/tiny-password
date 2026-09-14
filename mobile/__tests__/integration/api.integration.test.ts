@@ -7,7 +7,7 @@ import net from 'net';
 import {normalizeServerUrl} from '../../src/api/client';
 import {SessionController} from '../../src/auth/session';
 import {createIdempotencyKeyManager, canonicalCreateContent} from '../../src/vault/idempotency';
-import {mergeLoginPayload} from '../../src/vault/payloadMerge';
+import {mergePayload} from '../../src/vault/payloadMerge';
 
 /**
  * API-level integration test against a REAL tiny-password Go server.
@@ -18,6 +18,10 @@ import {mergeLoginPayload} from '../../src/vault/payloadMerge';
  * Requires: go toolchain. Skipped by default (no server, no device needed).
  */
 const RUN = process.env.MOBILE_INTEGRATION === '1';
+// When MOBILE_INTEGRATION_SERVER_URL is set, the suite drives that already-
+// running server instead of building and spawning one locally (useful on
+// hosts where the server's Linux-only tmpfs staging cannot start).
+const EXTERNAL_URL = process.env.MOBILE_INTEGRATION_SERVER_URL || '';
 const d = RUN ? describe : describe.skip;
 
 function freePort(): Promise<number> {
@@ -59,8 +63,16 @@ d('mobile API client against the real Go server', () => {
   const memberNewPassword = 'member-new-password-1';
 
   beforeAll(async () => {
+    if (EXTERNAL_URL) {
+      baseUrl = EXTERNAL_URL;
+      setupToken = process.env.MOBILE_INTEGRATION_SETUP_TOKEN || '';
+      return;
+    }
     const buildDir = mkdtempSync(path.join(tmpdir(), 'tp-build-'));
-    const binary = path.join(buildDir, 'tiny-password');
+    const binary = path.join(
+      buildDir,
+      process.platform === 'win32' ? 'tiny-password.exe' : 'tiny-password',
+    );
     const build = spawnSync('go', ['build', '-o', binary, './cmd/tiny-password'], {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -198,32 +210,78 @@ d('mobile API client against the real Go server', () => {
       }),
     );
 
-    const created = await api.createItem(payload, key, member.csrfToken!);
+    const created = await api.createItem(payload, 'login', key, member.csrfToken!);
     expect(created.kind).toBe('success');
     const first = created.kind === 'success' ? created.data : null;
     expect(first!.payload.name).toBe('GitHub');
     expect(first!.revision).toBe(1);
 
     // Network-style retry with the SAME key and content replays the original.
-    const retry = await api.createItem(payload, key, member.csrfToken!);
+    const retry = await api.createItem(payload, 'login', key, member.csrfToken!);
     expect(retry.kind).toBe('success');
     expect((retry as unknown as {data: {id: string}}).data.id).toBe(first!.id);
 
     // A different key creates a genuinely new item (server dedup is key-bound).
-    const other = await api.createItem({name: 'Amazon', username: '', password: 'p2'}, 'idem-key-second-00001', member.csrfToken!);
+    const other = await api.createItem(
+      {name: 'Amazon', username: '', password: 'p2'},
+      'login',
+      'idem-key-second-00001',
+      member.csrfToken!,
+    );
     expect(other.kind).toBe('success');
     expect((other as unknown as {data: {id: string}}).data.id).not.toBe(first!.id);
 
-    // List uses Meta only: no payload fields leak into the page.
+    // Every supported non-login type creates and reads back typed payloads.
+    const ssh = await api.createItem(
+      {
+        name: 'deploy',
+        algorithm: 'ed25519',
+        public_key: 'ssh-ed25519 AAAA',
+        private_key: '-----BEGIN OPENSSH PRIVATE KEY-----',
+      },
+      'ssh_key',
+      'idem-key-ssh-000001',
+      member.csrfToken!,
+    );
+    expect(ssh.kind).toBe('success');
+    const sshDetail = ssh.kind === 'success' ? ssh.data : null;
+    expect(sshDetail!.item_type).toBe('ssh_key');
+    expect((sshDetail!.payload as {algorithm: string}).algorithm).toBe('ed25519');
+
+    const note = await api.createItem({name: 'note', body: 'secret body'}, 'secure_note', 'idem-key-note-00001', member.csrfToken!);
+    expect(note.kind).toBe('success');
+
+    const card = await api.createItem(
+      {name: 'card', cardholder: 'ADA', number: '4242424242424242', exp_month: 4, exp_year: 2029},
+      'credit_card',
+      'idem-key-card-00001',
+      member.csrfToken!,
+    );
+    expect(card.kind).toBe('success');
+
+    const identity = await api.createItem({name: 'me', full_name: 'Ada'}, 'identity', 'idem-key-ident-0001', member.csrfToken!);
+    expect(identity.kind).toBe('success');
+
+    const secretEntry = await api.createItem(
+      {name: 'tokens', entries: [{key: 'A', value: '1'}]},
+      'secret',
+      'idem-key-secr-00001',
+      member.csrfToken!,
+    );
+    expect(secretEntry.kind).toBe('success');
+
+    // List uses Meta only: no payload fields leak into the page, and all six
+    // types appear without any type filter.
     const list = await api.listItems();
     expect(list.kind).toBe('success');
     const listData = (list as unknown as {data: {items: Array<Record<string, unknown>>; next_cursor: null}}).data;
-    expect(listData.items).toHaveLength(2);
+    expect(listData.items).toHaveLength(7);
     expect(listData.next_cursor).toBeNull();
     expect(listData.items[0].title).toBeDefined();
     expect(listData.items[0].payload).toBeUndefined();
-    expect(listData.items[0].item_type).toBe('login');
     expect(listData.items[0].vault_scope).toBe('personal');
+    const listedTypes = new Set(listData.items.map(i => i.item_type));
+    expect([...listedTypes].sort()).toEqual(['credit_card', 'identity', 'login', 'secret', 'secure_note', 'ssh_key']);
 
     // Server-side search matches names/usernames/urls/notes.
     const hit = await api.searchItems('octocat', null, member.csrfToken!);
@@ -248,7 +306,7 @@ d('mobile API client against the real Go server', () => {
       urls: ['https://github.com'],
       notes: 'work account',
     };
-    const merged = mergeLoginPayload(full.payload as never, edits);
+    const merged = mergePayload('login', full.payload as never, edits);
     const update = await api.updateItem(first!.id, full.revision, merged, member.csrfToken!);
     expect(update.kind).toBe('success');
     const updated = (update as unknown as {data: {payload: Record<string, unknown>; revision: number}}).data;
@@ -288,6 +346,7 @@ d('mobile API client against the real Go server', () => {
 
     const created = await api.createItem(
       {name: 'TrashMe', username: '', password: 'pw'},
+      'login',
       'idem-key-trash-000001',
       member.csrfToken!,
     );

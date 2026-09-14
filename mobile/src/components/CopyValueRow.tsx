@@ -14,6 +14,8 @@ interface CopyValueRowProps {
   masked?: boolean;
   /** Set false for read-only rows the design shows without a copy action. */
   copyable?: boolean;
+  /** Fired after the value was written to the clipboard (audit hook). */
+  onCopy?: () => void;
   testID?: string;
 }
 
@@ -29,6 +31,7 @@ export function CopyValueRow({
   visible = false,
   masked = false,
   copyable = true,
+  onCopy,
   testID,
 }: CopyValueRowProps): React.JSX.Element {
   const [copied, setCopied] = useState(false);
@@ -52,6 +55,7 @@ export function CopyValueRow({
     }
     Clipboard.setString(value!);
     setCopied(true);
+    onCopy?.();
     if (timer.current !== null) {
       clearTimeout(timer.current);
     }
