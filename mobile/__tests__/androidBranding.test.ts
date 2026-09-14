@@ -9,6 +9,13 @@ test('uses 77Password as the Android app label', () => {
   expect(strings).toContain('<string name="app_name">77Password</string>');
 });
 
+test('increments the Android release version so CI packages this branding update', () => {
+  const buildGradle = fs.readFileSync(path.join(androidMain, '..', '..', '..', 'app', 'build.gradle'), 'utf8');
+
+  expect(buildGradle).toMatch(/versionCode\s+4/);
+  expect(buildGradle).toMatch(/versionName\s+"1\.2\.1"/);
+});
+
 test.each([
   ['mdpi', 48],
   ['hdpi', 72],
