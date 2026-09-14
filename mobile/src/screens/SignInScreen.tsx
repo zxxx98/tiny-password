@@ -341,6 +341,8 @@ export function SignInScreen({
     pendingNewPasswordRef.current = null;
     skipNextAuthenticatedSaveRef.current = false;
     clearRememberedCredentials();
+    rememberPasswordRef.current = false;
+    setRememberPassword(false);
     const result = await session.signOut();
     setPhase('sign-in');
     setChangeError(null);

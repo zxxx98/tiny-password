@@ -197,3 +197,34 @@ test('saves the new password after confirmed forced password change', async () =
   expect(onSave).toHaveBeenCalledTimes(1);
   expect(onSave).toHaveBeenCalledWith({username: 'alice', password: 'new-secret-123'});
 });
+
+test('signing out from forced password change clears the remembered-password choice', async () => {
+  const onClear = jest.fn();
+  const fake = makeFakeSession('signed-out', true);
+  const tree = renderSignIn({
+    session: fake.session,
+    initialServerUrl: 'https://vault.example.com',
+    rememberedCredentials: {username: 'alice', password: 'old-secret'},
+    onRememberedCredentialsCleared: onClear,
+  });
+
+  await act(async () => {
+    tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
+  });
+  expect(tree.root.findByProps({testID: 'change-password-signout'})).toBeTruthy();
+
+  await act(async () => {
+    tree.root.findByProps({testID: 'change-password-signout'}).props.onPress();
+  });
+  const signOutButtons = tree.root.findAllByProps({accessibilityLabel: 'SIGN OUT'});
+  const confirmButton = signOutButtons.find(
+    button => button.props.testID !== 'change-password-signout' && typeof button.props.onPress === 'function',
+  );
+  expect(confirmButton).toBeDefined();
+  await act(async () => {
+    confirmButton!.props.onPress();
+  });
+
+  expect(onClear).toHaveBeenCalledTimes(1);
+  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toEqual({checked: false});
+});
