@@ -20,12 +20,18 @@ import {fonts, letterSpacing, typeScale} from '../theme/typography';
 import {borderSection, pageMargin, spacing} from '../theme/spacing';
 import {normalizeServerUrl} from '../api/client';
 import type {SessionController} from '../auth/session';
+import type {RememberedCredentials} from '../auth/rememberedLogin';
 
 interface SignInScreenProps {
   session: SessionController;
-  defaultServerUrl: string;
+  initialServerUrl: string;
+  rememberedCredentials?: RememberedCredentials | null;
   /** One-shot banner, e.g. the sign-out notice from the Vault. */
   initialNotice?: string | null;
+  persistenceNotice?: string | null;
+  onRememberedServerUrlSaved?: (serverUrl: string) => void | Promise<void>;
+  onRememberedCredentialsSaved?: (credentials: RememberedCredentials) => void | Promise<void>;
+  onRememberedCredentialsCleared?: () => void | Promise<void>;
   onAuthenticated: () => void;
   onActivity: () => void;
 }
@@ -37,36 +43,72 @@ type Phase = 'sign-in' | 'change-password';
  * The screen owns the server-address control (collapsible; expanded when no
  * address is configured), the credential form and the change-password form.
  * No biometric button exists in V1; sessions never persist across cold
- * starts, so this screen is always the entry point.
+ * starts, so this screen is always the entry point. Optional remembered
+ * credentials are explicitly supplied by AppRoot after secure hydration.
  */
 export function SignInScreen({
   session,
-  defaultServerUrl,
+  initialServerUrl,
+  rememberedCredentials = null,
   initialNotice,
+  persistenceNotice,
+  onRememberedServerUrlSaved,
+  onRememberedCredentialsSaved,
+  onRememberedCredentialsCleared,
   onAuthenticated,
   onActivity,
 }: SignInScreenProps): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  // Prefill the configured server if there is one (e.g. right after sign
-  // out), otherwise the build-time default — the input always reflects what
-  // SIGN IN will actually use.
+  // AppRoot hydrates these values before mounting this screen. The session
+  // value still wins when returning from sign-out in the same process.
   const [serverUrl, setServerUrl] = useState(
-    () => session.getSnapshot().serverUrl ?? defaultServerUrl,
+    () => session.getSnapshot().serverUrl ?? initialServerUrl,
   );
   const [serverExpanded, setServerExpanded] = useState(
-    () => (session.getSnapshot().serverUrl ?? defaultServerUrl).trim().length === 0,
+    () => (session.getSnapshot().serverUrl ?? initialServerUrl).trim().length === 0,
   );
   const [serverError, setServerError] = useState<string | null>(null);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState(rememberedCredentials?.username ?? '');
+  const [password, setPassword] = useState(rememberedCredentials?.password ?? '');
   const [showPassword, setShowPassword] = useState(false);
   const [formError, setFormError] = useState<string | null>(initialNotice ?? null);
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [rememberPassword, setRememberPassword] = useState(
+    () => Boolean(rememberedCredentials?.username && rememberedCredentials?.password),
+  );
   const [phase, setPhase] = useState<Phase>('sign-in');
   const [submitting, setSubmitting] = useState(false);
   const [changeError, setChangeError] = useState<string | null>(null);
   const [signOutConfirmVisible, setSignOutConfirmVisible] = useState(false);
   const usernameRef = useRef(username);
   usernameRef.current = username;
+  const passwordRef = useRef(password);
+  passwordRef.current = password;
+  const rememberPasswordRef = useRef(rememberPassword);
+  rememberPasswordRef.current = rememberPassword;
+  const pendingNewPasswordRef = useRef<string | null>(null);
+  const skipNextAuthenticatedSaveRef = useRef(false);
+
+  const runPersistence = useCallback(
+    (operation: (() => void | Promise<void>) | undefined, failureMessage: string): void => {
+      if (!operation) {
+        return;
+      }
+      try {
+        void Promise.resolve(operation()).catch(() => setPersistenceError(failureMessage));
+      } catch {
+        setPersistenceError(failureMessage);
+      }
+    },
+    [],
+  );
+
+  const clearRememberedCredentials = useCallback((): void => {
+    runPersistence(
+      onRememberedCredentialsCleared,
+      '记住密码未能清除，请检查设备安全设置',
+    );
+  }, [onRememberedCredentialsCleared, runPersistence]);
 
   const applyServer = useCallback(
     (raw: string): boolean => {
@@ -76,10 +118,22 @@ export function SignInScreen({
         return false;
       }
       setServerError(null);
+      const previous = session.getSnapshot().serverUrl;
+      if (previous !== null && previous !== normalized) {
+        clearRememberedCredentials();
+        setPassword('');
+        passwordRef.current = '';
+      }
       session.setServerUrl(normalized);
+      runPersistence(
+        onRememberedServerUrlSaved
+          ? () => onRememberedServerUrlSaved(normalized)
+          : undefined,
+        '服务器地址未能保存，请下次重新输入',
+      );
       return true;
     },
-    [session],
+    [clearRememberedCredentials, onRememberedServerUrlSaved, runPersistence, session],
   );
 
   // Configure the server (and fetch the pre-auth CSRF) on mount and whenever
@@ -101,6 +155,21 @@ export function SignInScreen({
         setSubmitting(false);
       } else if (snap.phase === 'authenticated') {
         setSubmitting(false);
+        if (skipNextAuthenticatedSaveRef.current) {
+          skipNextAuthenticatedSaveRef.current = false;
+          onAuthenticated();
+          return;
+        }
+        const savedUsername = usernameRef.current.trim();
+        const savedPassword = passwordRef.current;
+        if (rememberPasswordRef.current && savedUsername && savedPassword) {
+          runPersistence(
+            onRememberedCredentialsSaved
+              ? () => onRememberedCredentialsSaved({username: savedUsername, password: savedPassword})
+              : undefined,
+            '记住密码未能保存，请重试',
+          );
+        }
         onAuthenticated();
       } else if (snap.phase === 'signed-out' || snap.phase === 'unconfigured') {
         setSubmitting(false);
@@ -110,8 +179,7 @@ export function SignInScreen({
       }
     });
     return unsubscribe;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session]);
+  }, [onAuthenticated, onRememberedCredentialsSaved, runPersistence, session]);
 
   // During the confirming-change window, surface the retry error and poll
   // nothing — the user presses RETRY CONFIRM explicitly.
@@ -187,8 +255,23 @@ export function SignInScreen({
     const result = await session.changePassword(current, next);
     if (result.ok) {
       // Confirm the session requirement is lifted; never resubmits the change.
+      pendingNewPasswordRef.current = next;
+      skipNextAuthenticatedSaveRef.current = true;
       const outcome = await session.confirmSession();
       if (outcome === 'confirmed') {
+        if (rememberPasswordRef.current && usernameRef.current.trim() && next) {
+          runPersistence(
+            onRememberedCredentialsSaved
+              ? () =>
+                  onRememberedCredentialsSaved({
+                    username: usernameRef.current.trim(),
+                    password: next,
+                  })
+              : undefined,
+            '记住密码未能保存，请重试',
+          );
+        }
+        pendingNewPasswordRef.current = null;
         return; // subscription navigates to Vault
       }
       if (outcome === 'still-required') {
@@ -202,6 +285,8 @@ export function SignInScreen({
         return;
       }
       // 'invalid': session controller already returned to sign-in.
+      pendingNewPasswordRef.current = null;
+      skipNextAuthenticatedSaveRef.current = false;
       setSubmitting(false);
       setPhase('sign-in');
       setChangeError('会话已失效，请重新登录');
@@ -221,6 +306,20 @@ export function SignInScreen({
     const outcome = await session.confirmSession();
     setSubmitting(false);
     if (outcome === 'confirmed') {
+      const next = pendingNewPasswordRef.current;
+      if (rememberPasswordRef.current && usernameRef.current.trim() && next) {
+        runPersistence(
+          onRememberedCredentialsSaved
+            ? () =>
+                onRememberedCredentialsSaved({
+                  username: usernameRef.current.trim(),
+                  password: next,
+                })
+            : undefined,
+          '记住密码未能保存，请重试',
+        );
+      }
+      pendingNewPasswordRef.current = null;
       return;
     }
     if (outcome === 'still-required') {
@@ -228,6 +327,8 @@ export function SignInScreen({
       return;
     }
     if (outcome === 'invalid') {
+      pendingNewPasswordRef.current = null;
+      skipNextAuthenticatedSaveRef.current = false;
       setPhase('sign-in');
       setChangeError('会话已失效，请重新登录');
       return;
@@ -237,6 +338,11 @@ export function SignInScreen({
 
   const doSignOut = async () => {
     setSignOutConfirmVisible(false);
+    pendingNewPasswordRef.current = null;
+    skipNextAuthenticatedSaveRef.current = false;
+    clearRememberedCredentials();
+    rememberPasswordRef.current = false;
+    setRememberPassword(false);
     const result = await session.signOut();
     setPhase('sign-in');
     setChangeError(null);
@@ -395,6 +501,27 @@ export function SignInScreen({
           </View>
         </View>
 
+        <Pressable
+          accessibilityRole="checkbox"
+          accessibilityLabel="记住密码"
+          accessibilityState={{checked: rememberPassword}}
+          onPress={() => {
+            const next = !rememberPasswordRef.current;
+            rememberPasswordRef.current = next;
+            setRememberPassword(next);
+            if (!next) {
+              clearRememberedCredentials();
+            }
+          }}
+          style={styles.rememberRow}
+          testID="remember-password">
+          <View style={[styles.checkbox, rememberPassword ? styles.checkboxChecked : null]}>
+            {rememberPassword ? <Text style={styles.checkboxMark}>✓</Text> : null}
+          </View>
+          <Text style={styles.rememberText}>REMEMBER PASSWORD</Text>
+        </Pressable>
+
+        <Banner kind="warning" text={persistenceError ?? persistenceNotice ?? ''} testID="persistence-notice" />
         <Banner kind="error" text={formError ?? ''} testID="sign-in-error" />
 
         <NewsprintButton
@@ -497,6 +624,36 @@ const styles = StyleSheet.create({
     ...typeScale.label,
     fontFamily: fonts.uiSemi,
     textTransform: 'uppercase',
+    letterSpacing: letterSpacing.label,
+    color: colors.foreground,
+  },
+  rememberRow: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderWidth: 1,
+    borderColor: colors.foreground,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.sm,
+  },
+  checkboxChecked: {
+    backgroundColor: colors.foreground,
+  },
+  checkboxMark: {
+    color: colors.background,
+    fontFamily: fonts.uiSemi,
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  rememberText: {
+    ...typeScale.label,
+    fontFamily: fonts.uiSemi,
     letterSpacing: letterSpacing.label,
     color: colors.foreground,
   },

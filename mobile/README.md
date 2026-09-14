@@ -38,14 +38,14 @@ android/app/src/main/assets/fonts/   # 自托管 TTF（Playfair/Lora/Inter/JetBr
 
 ```bash
 cd mobile
-npm install            # 含原生依赖：clipboard / slider / safe-area-context
+npm install            # 含原生依赖：clipboard / slider / safe-area-context / AsyncStorage / Keychain
 npm run start          # Metro 开发服务器
 npm run android        # 需连接设备或模拟器；构建并安装 debug 变体
 ```
 
 ## 服务器连接
 
-- 登录页顶部可折叠 `SERVER` 控件，输入 HTTPS 服务源地址（如 `https://vault.example.com`），点 `APPLY SERVER`。地址是唯一被允许记忆的配置；本 MVP 默认不持久化任何内容，冷启动需重新输入/预填。
+- 登录页顶部可折叠 `SERVER` 控件，输入 HTTPS 服务源地址（如 `https://vault.example.com`），点 `APPLY SERVER`。有效地址会自动记忆，冷启动时回填；登录页提供 `REMEMBER PASSWORD` 选项，勾选后用户名和密码会通过 Android Keystore 保护并在下次启动回填，但不会自动登录。
 - 预填默认地址：编辑 `src/config.ts` 的 `DEFAULT_SERVER_URL`（构建期常量，非敏感）。
 - 服务端需已完成一次 Web 初始化（setup）；MVP 不提供 setup 页面。测试服务器本地启动方式见仓库根 `compose.yaml` 或 `Makefile`。
 - 认证完全依赖 Cookie + `X-CSRF-Token`：登录前 `POST /api/v1/csrf` 获取预认证上下文，登录后使用会话 Cookie 与响应体中的 CSRF token；改密后消费 `X-CSRF-Token` 响应头完成轮换。
@@ -77,7 +77,8 @@ cd mobile/android
 
 ## 安全行为约定（实现要点）
 
-- Cookie/CSRF/密码/条目内容只存在于进程内存（`CookieJar`、控制器状态）；不使用 AsyncStorage/文件，`allowBackup=false`。冷启动回到登录页。
+- Cookie/CSRF/条目内容只存在于进程内存（`CookieJar`、控制器状态）；服务器地址使用 AsyncStorage，勾选记住密码时用户名/密码使用 `react-native-keychain`（Android Keystore），不写入普通文件，`allowBackup=false`。冷启动回到登录页，不自动登录。
+- 取消 `REMEMBER PASSWORD`、退出登录或切换服务器时，删除已记住的用户名和密码；服务器地址保留。
 - 会话生命周期由服务端决定：前台真实操作触发节流的 `POST /auth/session/activity`（≥5 分钟一次）；后台恢复先遮罩内容并 `GET /auth/session` 校验，通过后才恢复展示。
 - 退出/切换服务器/401 会中断在途请求并提升会话代号（generation），迟到响应一律丢弃；切换服务器时清空整个 Cookie jar，禁止跨服务器携带 Cookie 或 CSRF。
 - 条目更新合并原始 payload（保留 `password_updated_at`/`password_expires_at`），省略 `tags`/`favorite`/`vault_scope`；`revision` 冲突保留草稿，提供“重新加载服务端内容”，重新加载前二次确认。
