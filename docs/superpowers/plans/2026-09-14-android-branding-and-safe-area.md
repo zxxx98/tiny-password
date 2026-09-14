@@ -32,6 +32,13 @@ test('uses 77Password as the Android app label', () => {
   expect(strings).toContain('<string name="app_name">77Password</string>');
 });
 
+test('increments the Android release version so CI packages this branding update', () => {
+  const buildGradle = fs.readFileSync(path.join(androidMain, '..', '..', '..', 'app', 'build.gradle'), 'utf8');
+
+  expect(buildGradle).toMatch(/versionCode\s+4/);
+  expect(buildGradle).toMatch(/versionName\s+"1\.2\.1"/);
+});
+
 test.each([
   ['mdpi', 48],
   ['hdpi', 72],
@@ -94,7 +101,7 @@ Run:
 npm --prefix mobile test -- --runInBand __tests__/androidBranding.test.ts __tests__/NewsprintHeader.test.tsx
 ```
 
-Expected: the app-label assertion fails because the current value is `TinyPassword`, and the Header assertion fails because the current fixed top padding is `16dp` rather than `28 + 16dp`. The PNG shape/dimension test may pass because those resources already exist; that is acceptable because it guards the resource contract, while the generated artwork is verified by the build and visual inspection in Task 3.
+Expected: the app-label assertion fails because the current value is `TinyPassword`, the release-version assertion fails because the current values are `3`/`1.2.0`, and the Header assertion fails because the current fixed top padding is `16dp` rather than `28 + 16dp`. The PNG shape/dimension test may pass because those resources already exist; that is acceptable because it guards the resource contract, while the generated artwork is verified by the build and visual inspection in Task 3.
 
 - [ ] **Step 4: Commit the regression tests**
 
@@ -107,6 +114,7 @@ git commit -m "test: cover Android branding and header safe area"
 
 **Files:**
 - Modify: `mobile/android/app/src/main/res/values/strings.xml:2`
+- Modify: `mobile/android/app/build.gradle:86-87`
 - Modify: `mobile/src/components/NewsprintHeader.tsx:1-72`
 - Modify: `mobile/src/screens/GeneratorScreen.tsx:27,41`
 - Modify: `mobile/src/screens/EntryEditorScreen.tsx:396-408,1126`
@@ -121,7 +129,18 @@ Change only the existing resource value:
 
 Keep the Manifest references and `applicationId "com.tinypassword"` unchanged.
 
-- [ ] **Step 2: Make `NewsprintHeader` consume the top inset exactly once**
+- [ ] **Step 2: Bump the Android release metadata so CI packages the change**
+
+Change the Android `defaultConfig` values from `versionCode 3`/`versionName "1.2.0"` to:
+
+```gradle
+versionCode 4
+versionName "1.2.1"
+```
+
+This is required because `.github/workflows/build-apk.yml` skips a version whose `app-v<versionName>-<versionCode>` tag already exists; `app-v1.2.0-3` is already present on `origin`.
+
+- [ ] **Step 3: Make `NewsprintHeader` consume the top inset exactly once**
 
 In `mobile/src/components/NewsprintHeader.tsx`, import `useSafeAreaInsets`:
 
@@ -145,7 +164,7 @@ Change the returned container from `style={styles.container}` to:
 
 Remove the static `paddingTop` from `styles.container` so the dynamic safe-area calculation is the only source of top padding. Keep all horizontal, row, typography, touch-target, and rule styles unchanged.
 
-- [ ] **Step 3: Remove duplicate screen-level top padding for shared-header screens**
+- [ ] **Step 4: Remove duplicate screen-level top padding for shared-header screens**
 
 In `GeneratorScreen.tsx`, retain `const insets = useSafeAreaInsets()` for the bottom inset, but change the root to:
 
@@ -156,7 +175,7 @@ In `GeneratorScreen.tsx`, retain `const insets = useSafeAreaInsets()` for the bo
 In `EntryEditorScreen.tsx`, change both loading/error roots from:
 
 ```tsx
-<View style={[styles.root, {paddingTop: insets.top]}>
+<View style={[styles.root, {paddingTop: insets.top}]}>
 ```
 
 to:
@@ -173,7 +192,7 @@ Leave the normal editor root as its existing bottom-inset-only style:
 
 This makes loading, error, detail, edit, and generator Header positions use the same inset path, while preserving bottom safe areas.
 
-- [ ] **Step 4: Run the focused tests and verify they pass**
+- [ ] **Step 5: Run the focused tests and verify they pass**
 
 Run:
 
@@ -183,10 +202,10 @@ npm --prefix mobile test -- --runInBand __tests__/androidBranding.test.ts __test
 
 Expected: all tests pass, including `paddingTop === 44` for a simulated 28dp status-bar inset.
 
-- [ ] **Step 5: Commit the label and safe-area implementation**
+- [ ] **Step 6: Commit the label and safe-area implementation**
 
 ```bash
-git add mobile/android/app/src/main/res/values/strings.xml mobile/src/components/NewsprintHeader.tsx mobile/src/screens/GeneratorScreen.tsx mobile/src/screens/EntryEditorScreen.tsx
+git add mobile/android/app/src/main/res/values/strings.xml mobile/android/app/build.gradle mobile/src/components/NewsprintHeader.tsx mobile/src/screens/GeneratorScreen.tsx mobile/src/screens/EntryEditorScreen.tsx
 git commit -m "feat: brand Android app and respect header safe area"
 ```
 
@@ -287,14 +306,16 @@ git diff --check
 
 Expected: all source label/icon checks pass and there is no whitespace error. The pushed GitHub Actions run is the authoritative APK packaging check.
 
-- [ ] **Step 5: Review the final diff and push the current main branch**
+- [ ] **Step 5: Review the final diff, merge to main, and push the main branch**
 
 Run:
 
 ```bash
-git diff --check HEAD~3..HEAD
+git diff --check master..HEAD
 git status --short
 git log -3 --oneline
+cd /home/ubuntu/code/personal/tiny-password
+git merge --ff-only feature/android-branding-safe-area
 git push origin master
 ```
 

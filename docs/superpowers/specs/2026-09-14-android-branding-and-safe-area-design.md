@@ -16,6 +16,8 @@ Web/PWA、iOS、服务端接口、包名和现有登录/保险库行为不变。
 
 保留 `applicationId "com.tinypassword"`，保证新 APK 能作为原应用升级安装。保留 `mobile/app.json`、iOS 配置及 Web/PWA 名称 `TinyPassword`，避免扩大本次 Android-only 需求范围。
 
+由于 GitHub Actions 会按 `versionName`/`versionCode` 跳过已发布版本，本次 release metadata 从 `1.2.0`/`3` 提升为 `1.2.1`/`4`，仅用于触发这次 Android APK 打包，不改变应用行为。
+
 launcher 资源继续放在现有目录：
 
 - `mipmap-mdpi`：48 × 48
@@ -57,6 +59,6 @@ APK 不在本地构建，由推送后的 GitHub Actions 工作流负责打包。
 ## 非目标
 
 - 不修改 Web/PWA 的名称和图标。
-- 不修改 Android 包名、版本号、登录逻辑或导航行为。
+- 不修改 Android 包名、登录逻辑或导航行为；版本号仅按发布门控从 `1.2.0`/`3` 提升为 `1.2.1`/`4`。
 - 不把返回按钮改成系统导航按钮，也不改变 Android BackHandler 行为。
 - 不引入新的图标设计系统或 Adaptive Icon 架构。
