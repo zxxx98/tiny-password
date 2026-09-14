@@ -9,11 +9,26 @@ import {SessionController} from './auth/session';
 import {colors} from './theme/colors';
 import {fonts, letterSpacing, typeScale} from './theme/typography';
 import {DEFAULT_SERVER_URL} from './config';
+import {nativeRememberedLoginStore} from './auth/nativeRememberedLoginStore';
+import type {
+  RememberedCredentials,
+  RememberedLoginSnapshot,
+  RememberedLoginStore,
+} from './auth/rememberedLogin';
 
 type Route =
   | {name: 'signin'}
   | {name: 'vault'}
   | {name: 'editor'; editor: EditorRoute};
+
+interface AppRootProps {
+  rememberedLoginStore?: RememberedLoginStore;
+}
+
+const EMPTY_REMEMBERED_LOGIN: RememberedLoginSnapshot = {
+  serverUrl: null,
+  credentials: null,
+};
 
 /**
  * App root. Navigation is a tiny explicit state machine (three top-level
@@ -25,7 +40,7 @@ type Route =
  * session exists, sensitive content is masked first and the session is
  * revalidated; content returns only after the server confirms the session.
  */
-export function AppRoot(): React.JSX.Element {
+export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: AppRootProps = {}): React.JSX.Element {
   const sessionRef = useRef<SessionController | null>(null);
   if (sessionRef.current === null) {
     sessionRef.current = new SessionController();
@@ -38,7 +53,64 @@ export function AppRoot(): React.JSX.Element {
   const [editorNotice, setEditorNotice] = useState<string | null>(null);
   const [masked, setMasked] = useState(false);
   const [resumeUnreachable, setResumeUnreachable] = useState(false);
+  const [rememberedLogin, setRememberedLogin] = useState(EMPTY_REMEMBERED_LOGIN);
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
   const resumeValidationRef = useRef(false);
+
+  useEffect(() => {
+    let current = true;
+    void rememberedLoginStore
+      .load()
+      .then(snapshot => {
+        if (current) {
+          setRememberedLogin(snapshot);
+        }
+      })
+      .catch(() => {
+        if (current) {
+          setRememberedLogin(EMPTY_REMEMBERED_LOGIN);
+          setPersistenceNotice('无法读取本地登录设置，请重新输入登录信息');
+        }
+      })
+      .finally(() => {
+        if (current) {
+          setPreferencesReady(true);
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, [rememberedLoginStore]);
+
+  const saveRememberedServerUrl = useCallback(
+    (serverUrl: string): void => {
+      setRememberedLogin(previous => ({...previous, serverUrl}));
+      void rememberedLoginStore.saveServerUrl(serverUrl).catch(() => {
+        setPersistenceNotice('服务器地址未能保存，请下次重新输入');
+      });
+    },
+    [rememberedLoginStore],
+  );
+
+  const saveRememberedCredentials = useCallback(
+    (credentials: RememberedCredentials): void => {
+      setRememberedLogin(previous => ({...previous, credentials}));
+      void rememberedLoginStore.saveCredentials(credentials).catch(() => {
+        setPersistenceNotice('记住密码未能保存，请重试');
+      });
+    },
+    [rememberedLoginStore],
+  );
+
+  const clearRememberedCredentials = useCallback(async (): Promise<void> => {
+    setRememberedLogin(previous => ({...previous, credentials: null}));
+    try {
+      await rememberedLoginStore.clearCredentials();
+    } catch {
+      setPersistenceNotice('已退出登录，但记住密码未能清除');
+    }
+  }, [rememberedLoginStore]);
 
   // Central reaction to session phase changes.
   useEffect(() => {
@@ -94,13 +166,14 @@ export function AppRoot(): React.JSX.Element {
   }, [session]);
 
   const handleSignOutFromVault = useCallback(() => {
-    void session.signOut().then(result => {
+    void session.signOut().then(async result => {
+      await clearRememberedCredentials();
       setSignOutNotice(result.notice);
       setRoute({name: 'signin'});
       // Refresh pre-auth context for the next login.
       void session.preflight();
     });
-  }, [session]);
+  }, [clearRememberedCredentials, session]);
 
   const closeEditor = useCallback(
     (mutation?: 'created' | 'trashed') => {
@@ -123,11 +196,21 @@ export function AppRoot(): React.JSX.Element {
     <SafeAreaProvider>
       <StatusBar barStyle="dark-content" />
       <View style={styles.root}>
-        {route.name === 'signin' || snap.phase === 'signed-out' || snap.phase === 'unconfigured' ? (
+        {!preferencesReady ? (
+          <View style={styles.loading}>
+            <Text style={styles.loadingBrand}>tiny-password</Text>
+            <Text style={styles.loadingText}>正在读取登录设置…</Text>
+          </View>
+        ) : route.name === 'signin' || snap.phase === 'signed-out' || snap.phase === 'unconfigured' ? (
           <SignInScreen
             session={session}
-            defaultServerUrl={DEFAULT_SERVER_URL}
+            initialServerUrl={rememberedLogin.serverUrl ?? DEFAULT_SERVER_URL}
+            rememberedCredentials={rememberedLogin.credentials}
             initialNotice={signOutNotice}
+            persistenceNotice={persistenceNotice}
+            onRememberedServerUrlSaved={saveRememberedServerUrl}
+            onRememberedCredentialsSaved={saveRememberedCredentials}
+            onRememberedCredentialsCleared={clearRememberedCredentials}
             onAuthenticated={() => setRoute({name: 'vault'})}
             onActivity={onActivity}
           />
@@ -195,6 +278,24 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  loading: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    backgroundColor: colors.background,
+  },
+  loadingBrand: {
+    ...typeScale.hero,
+    fontFamily: fonts.displayHeavy,
+    color: colors.foreground,
+  },
+  loadingText: {
+    ...typeScale.meta,
+    fontFamily: fonts.mono,
+    color: colors.neutral600,
+    marginTop: 12,
   },
   mask: {
     ...StyleSheet.absoluteFill,
