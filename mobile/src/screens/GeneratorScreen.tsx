@@ -38,7 +38,7 @@ export function GeneratorScreen({
   }, []);
 
   return (
-    <View style={[styles.root, {paddingTop: insets.top, paddingBottom: insets.bottom}]}>
+    <View style={[styles.root, {paddingBottom: insets.bottom}]}>
       <NewsprintHeader
         title="PASSWORD GENERATOR"
         kicker="PERSONAL VAULT / TOOL"

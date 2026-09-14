@@ -393,7 +393,7 @@ export function EntryEditorScreen({
 
   if (loadState === 'loading') {
     return (
-      <View style={[styles.root, {paddingTop: insets.top}]}>
+      <View style={styles.root}>
         <NewsprintHeader title="ENTRY" kicker="PERSONAL VAULT" backLabel="Back" onBack={onClose} />
         <View style={styles.centered}>
           <ActivityIndicator size="small" color={colors.foreground} />
@@ -404,7 +404,7 @@ export function EntryEditorScreen({
 
   if (loadState === 'error' || (!isCreate && !detail)) {
     return (
-      <View style={[styles.root, {paddingTop: insets.top}]}>
+      <View style={styles.root}>
         <NewsprintHeader title="ENTRY" kicker="PERSONAL VAULT" backLabel="Back" onBack={onClose} />
         <View style={styles.centered}>
           <Banner kind="error" text={loadError ?? '条目不可用'} />

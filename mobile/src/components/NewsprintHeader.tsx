@@ -1,5 +1,6 @@
 import React from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {colors} from '../theme/colors';
 import {fonts, letterSpacing, typeScale} from '../theme/typography';
 import {borderSection, minTouchTarget, pageMargin, spacing} from '../theme/spacing';
@@ -28,8 +29,10 @@ export function NewsprintHeader({
   onBack,
   testID,
 }: NewsprintHeaderProps): React.JSX.Element {
+  const insets = useSafeAreaInsets();
+
   return (
-    <View style={styles.container} testID={testID}>
+    <View style={[styles.container, {paddingTop: insets.top + spacing.md}]} testID={testID}>
       <View style={styles.row}>
         {backLabel && onBack ? (
           <Pressable
@@ -64,7 +67,6 @@ export function NewsprintHeader({
 const styles = StyleSheet.create({
   container: {
     paddingHorizontal: pageMargin,
-    paddingTop: spacing.md,
     backgroundColor: colors.background,
   },
   row: {
