@@ -50,9 +50,9 @@ launcher 资源继续放在现有目录：
 
 1. `npm --prefix mobile test -- --runInBand`
 2. `npm --prefix mobile run lint`
-3. `cd mobile/android && ./gradlew :app:assembleDebug`
+3. 检查 `.github/workflows/build-apk.yml` 仍会在 GitHub Actions 中执行 Android release 构建。
 
-最后检查 APK 资源打包结果，确认 application label 为 `77Password`，并确认 launcher 图标资源存在。任何 Android 资源尺寸或格式错误都应由资源合并/构建阶段直接暴露，不添加运行时兜底逻辑。
+APK 不在本地构建，由推送后的 GitHub Actions 工作流负责打包。工作流完成后检查其产物构建成功；任何 Android 资源尺寸或格式错误都应由 GitHub Actions 的资源合并/构建阶段直接暴露，不添加运行时兜底逻辑。
 
 ## 非目标
 

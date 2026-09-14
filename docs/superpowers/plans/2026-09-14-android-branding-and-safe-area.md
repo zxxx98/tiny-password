@@ -240,10 +240,10 @@ git add mobile/android/app/src/main/res/mipmap-mdpi mobile/android/app/src/main/
 git commit -m "feat: add 77Password Android launcher icon"
 ```
 
-### Task 4: Run the complete verification and publish to the main remote branch
+### Task 4: Run local verification and publish to the main remote branch
 
 **Files:**
-- No source changes expected; inspect the APK generated under `mobile/android/app/build/outputs/apk/debug/`.
+- No source changes expected; inspect `.github/workflows/build-apk.yml` and the pushed GitHub Actions run for APK packaging.
 
 - [ ] **Step 1: Run the complete mobile test suite**
 
@@ -266,30 +266,26 @@ npm --prefix mobile run lint
 
 Expected: both commands exit 0 with no lint or type errors.
 
-- [ ] **Step 3: Build the Android debug APK**
+- [ ] **Step 3: Verify the GitHub Actions APK workflow configuration**
 
 Run:
 
 ```bash
-cd mobile/android
-./gradlew :app:assembleDebug
+rg -n "assemble(Release|Debug)|app-release\\.apk|Build Android APK|artifact" .github/workflows/build-apk.yml
 ```
 
-Expected: `BUILD SUCCESSFUL` and a debug APK at `mobile/android/app/build/outputs/apk/debug/app-debug.apk`.
+Expected: the workflow contains its Android build command and release APK artifact upload. APK compilation is intentionally delegated to GitHub Actions rather than run locally.
 
-- [ ] **Step 4: Verify the packaged APK metadata and launcher resources**
+- [ ] **Step 4: Verify source resources and package configuration locally**
 
-Use Android build tools when available:
+Run:
 
 ```bash
-APK=mobile/android/app/build/outputs/apk/debug/app-debug.apk
-if command -v aapt2 >/dev/null 2>&1; then
-  aapt2 dump badging "$APK" | rg "application-label:'77Password'|launchable-activity"
-fi
-unzip -l "$APK" | rg 'ic_launcher(_round)?\.png|resources\.arsc'
+npm --prefix mobile test -- --runInBand __tests__/androidBranding.test.ts
+git diff --check
 ```
 
-Expected: the packaged resources contain both launcher names and the application label is `77Password` when `aapt2` is installed. If `aapt2` is not on PATH, the successful Gradle resource merge plus the source metadata/resource tests provide the equivalent local verification.
+Expected: all source label/icon checks pass and there is no whitespace error. The pushed GitHub Actions run is the authoritative APK packaging check.
 
 - [ ] **Step 5: Review the final diff and push the current main branch**
 
