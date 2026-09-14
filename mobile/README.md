@@ -18,7 +18,7 @@ V1 范围：登录（含同页强制改密）、个人 `login` 条目列表/搜�
 `android/local.properties`（或 `ANDROID_HOME`）指向 SDK。模拟器需 x86_64 宿主，或带 KVM 的 arm64 宿主。
 
 > 本 MVP 在 linux-aarch64 无 KVM 的环境验证过完整 Gradle 构建：x86_64 的 aapt2/zipalign/NDK clang 通过 `qemu-user-static` binfmt 运行，需 `export QEMU_LD_PREFIX=/usr/x86_64-linux-gnu` 并安装 `libc6-amd64-cross`、`libgcc-s1-amd64-cross`、`libstdc++6-amd64-cross`（zlib1g 的 amd64 版需从 Ubuntu deb 解包放入前缀 `lib/`）。常规 x86_64 或 Apple Silicon 环境无需这些步骤。
-linux-aarch64 还需在 `android/app/build.gradle` 的 `react {}` 块指定 `hermesCommand`（插件无 arm64 分支；本工程已指向 `hermes-compiler` 包的 linux64-bin，可经 binfmt 运行）。
+linux-aarch64 还需在 `android/app/build.gradle` 的 `react {}` 块指定 `hermesCommand`（插件无 arm64 分支；本工程已指向 `hermes-compiler` 包的 linux64-bin，可经 binfmt 运行）。默认 APK 只打包 `armeabi-v7a` 和 `arm64-v8a`；如需 Android x86/x86_64 模拟器包，可通过 `-PreactNativeArchitectures=x86_64` 临时覆盖。
 
 ## 目录结构
 
