@@ -49,10 +49,10 @@ const PAGE_SIZE = 50;
 type ListStatus = 'loading' | 'ready' | 'error';
 
 /**
- * Personal vault: entry list built purely from server Meta, server-side
+ * Readable vault: entry list built purely from server Meta, server-side
  * search with debounce + stale-response isolation, cursor pagination, and
- * sign out. Only `scope=personal` is ever requested, across every supported
- * item type (login, ssh_key, credit_card, identity, secure_note, secret).
+ * sign out. The server supplies this user's personal items and readable
+ * shared items across every supported type.
  */
 export function VaultScreen({
   session,
@@ -320,7 +320,7 @@ export function VaultScreen({
             <View style={styles.empty}>
               <Text style={styles.emptyTitle}>{mode === 'search' ? 'NO MATCHES' : 'NO ENTRIES'}</Text>
               <Text style={styles.emptyText}>
-                {mode === 'search' ? '没有匹配的个人条目。' : '个人保险库中还没有条目，点击下方新增。'}
+                {mode === 'search' ? '没有匹配的可见条目。' : '可见保险库中还没有条目，点击下方新增。'}
               </Text>
             </View>
           }

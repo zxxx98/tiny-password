@@ -270,16 +270,32 @@ d('mobile API client against the real Go server', () => {
     );
     expect(secretEntry.kind).toBe('success');
 
+    const sharedPayload = {
+      name: 'Shared GitHub',
+      username: 'shared@example.com',
+      password: 'shared-secret-1',
+    };
+    const shared = await api.request<{id: string}>({
+      method: 'POST',
+      path: '/items',
+      body: {item_type: 'login', vault_scope: 'shared', payload: sharedPayload},
+      csrfToken: member.csrfToken!,
+      extraHeaders: {'Idempotency-Key': 'idem-key-shared-00001'},
+    });
+    expect(shared.kind).toBe('success');
+
     // List uses Meta only: no payload fields leak into the page, and all six
-    // types appear without any type filter.
+    // types appear without any type filter. Readable shared items are included
+    // alongside the member's personal items.
     const list = await api.listItems();
     expect(list.kind).toBe('success');
     const listData = (list as unknown as {data: {items: Array<Record<string, unknown>>; next_cursor: null}}).data;
-    expect(listData.items).toHaveLength(7);
+    expect(listData.items).toHaveLength(8);
     expect(listData.next_cursor).toBeNull();
     expect(listData.items[0].title).toBeDefined();
     expect(listData.items[0].payload).toBeUndefined();
-    expect(listData.items[0].vault_scope).toBe('personal');
+    expect(new Set(listData.items.map(item => item.vault_scope))).toEqual(new Set(['personal', 'shared']));
+    expect(listData.items.some(item => item.title === 'Shared GitHub' && item.vault_scope === 'shared')).toBe(true);
     const listedTypes = new Set(listData.items.map(i => i.item_type));
     expect([...listedTypes].sort()).toEqual(['credit_card', 'identity', 'login', 'secret', 'secure_note', 'ssh_key']);
 
@@ -287,9 +303,13 @@ d('mobile API client against the real Go server', () => {
     const hit = await api.searchItems('octocat', null, member.csrfToken!);
     const miss = await api.searchItems('not-present-query', null, member.csrfToken!);
     const urlHit = await api.searchItems('gist.github.com', null, member.csrfToken!);
+    const sharedHit = await api.searchItems('Shared GitHub', null, member.csrfToken!);
     expect((hit as unknown as {data: {items: unknown[]}}).data.items).toHaveLength(1);
     expect((miss as unknown as {data: {items: unknown[]}}).data.items).toHaveLength(0);
     expect((urlHit as unknown as {data: {items: unknown[]}}).data.items).toHaveLength(1);
+    expect((sharedHit as unknown as {data: {items: Array<{title?: string; vault_scope: string}>}}).data.items).toEqual([
+      expect.objectContaining({title: 'Shared GitHub', vault_scope: 'shared'}),
+    ]);
 
     // Detail exposes the full payload including the unshown date field.
     const detail = await api.getItem(first!.id);

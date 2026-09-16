@@ -160,7 +160,7 @@ describe('ApiClient request plumbing', () => {
 });
 
 describe('TinyPasswordApi endpoint shapes', () => {
-  it('list/search cover the personal vault across every item type', async () => {
+  it('list/search cover all readable vault items', async () => {
     const client = new ApiClient('https://vault.example.com');
     const urls: string[] = [];
     const bodies: unknown[] = [];
@@ -170,15 +170,15 @@ describe('TinyPasswordApi endpoint shapes', () => {
       return jsonResponse(200, {items: [], next_cursor: null});
     });
     const api = new TinyPasswordApi(client);
-    await api.listItems('cursor-1');
-    expect(urls[0]).toContain('/items?scope=personal');
-    expect(urls[0]).not.toContain('type=');
+    await api.listItems('cursor-1', 37);
+    expect(urls[0]).toContain('/items?limit=37');
+    expect(urls[0]).not.toContain('scope=personal');
     expect(urls[0]).toContain('cursor=cursor-1');
 
-    await api.searchItems('git hub', 'cursor-2', 'csrf-1');
+    await api.searchItems('git hub', 'cursor-2', 'csrf-1', undefined, 37);
     expect(urls[1]).toContain('/items/search');
-    expect(bodies[1]).toMatchObject({query: 'git hub', scope: 'personal', cursor: 'cursor-2'});
-    expect(bodies[1]).not.toHaveProperty('type');
+    expect(bodies[1]).toMatchObject({query: 'git hub', cursor: 'cursor-2', limit: 37});
+    expect(bodies[1]).not.toHaveProperty('scope');
   });
 
   it('update omits tags/favorite/vault_scope and sends the revision', async () => {

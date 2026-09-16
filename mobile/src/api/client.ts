@@ -292,9 +292,9 @@ export class TinyPasswordApi {
     limit = 50,
     signal?: AbortSignal,
   ): Promise<ApiResult<CursorPage<ItemMeta>>> {
-    // No type filter: the personal vault lists every supported item type
-    // (login, ssh_key, credit_card, identity, secure_note, secret).
-    let path = `/items?scope=personal&limit=${limit}`;
+    // No scope or type filter: the server returns this user's personal items
+    // together with every shared item the session can read.
+    let path = `/items?limit=${limit}`;
     if (cursor) {
       path += `&cursor=${encodeURIComponent(cursor)}`;
     }
@@ -310,7 +310,6 @@ export class TinyPasswordApi {
   ): Promise<ApiResult<CursorPage<ItemMeta>>> {
     const body: Record<string, unknown> = {
       query,
-      scope: 'personal',
       limit,
     };
     if (cursor) {
