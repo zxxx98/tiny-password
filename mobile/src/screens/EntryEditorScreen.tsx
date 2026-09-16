@@ -85,11 +85,11 @@ const SSH_ALGORITHMS: {value: 'ed25519' | 'rsa4096'; label: string}[] = [
 /**
  * Entry detail / edit / create — one screen for all item types (design §6).
  * Every supported type (login, ssh_key, credit_card, identity, secure_note,
- * secret) can be created, viewed and edited here; sensitive fields are masked
- * with audited reveal/copy. Saves merge changes onto the ORIGINAL payload so
- * unshown fields (login password dates, card billing address reference)
- * survive; saves carry the read revision and a REVISION_CONFLICT keeps the
- * draft on screen.
+ * secret) can be created and viewed here; personal items can also be edited.
+ * Shared items remain read-only while sensitive fields are masked with audited
+ * reveal/copy. Saves merge changes onto the ORIGINAL payload so unshown fields
+ * (login password dates, card billing address reference) survive; saves carry
+ * the read revision and a REVISION_CONFLICT keeps the draft on screen.
  */
 export function EntryEditorScreen({
   session,
@@ -142,14 +142,11 @@ export function EntryEditorScreen({
     }
     if (result.kind === 'success') {
       const d = result.data;
-      // Personal items of every supported type open in this editor.
-      if (d.vault_scope !== 'personal') {
-        setLoadState('error');
-        setLoadError('该条目不在个人保险库中，请通过 Web 使用。');
-        return;
-      }
+      // The server has already authorized this detail read. Shared items are
+      // displayed below as read-only; only personal items require the extra
+      // owner check because a shared item's owner may be another user.
       const principal = session.currentPrincipal;
-      if (principal && d.owner_id && d.owner_id !== principal.user_id) {
+      if (d.vault_scope === 'personal' && principal && d.owner_id && d.owner_id !== principal.user_id) {
         setLoadState('error');
         setLoadError('该条目不属于当前用户，请通过 Web 使用。');
         return;
@@ -258,6 +255,10 @@ export function EntryEditorScreen({
     onActivity();
     setSaveError(null);
     setConflict(null);
+    if (!isCreate && detailRef.current?.vault_scope !== 'personal') {
+      setSaveError('共享条目仅可查看，修改请通过 Web 使用。');
+      return;
+    }
     const errors = validateEdits(itemType, edits);
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
@@ -353,6 +354,10 @@ export function EntryEditorScreen({
     if (!detail) {
       return;
     }
+    if (detail.vault_scope !== 'personal') {
+      setDeleteError('共享条目仅可查看，移入回收站请通过 Web 使用。');
+      return;
+    }
     if (!csrf) {
       setDeleteError('会话上下文缺失，请返回重试');
       return;
@@ -394,7 +399,7 @@ export function EntryEditorScreen({
   if (loadState === 'loading') {
     return (
       <View style={styles.root}>
-        <NewsprintHeader title="ENTRY" kicker="PERSONAL VAULT" backLabel="Back" onBack={onClose} />
+        <NewsprintHeader title="ENTRY" kicker="READABLE VAULT" backLabel="Back" onBack={onClose} />
         <View style={styles.centered}>
           <ActivityIndicator size="small" color={colors.foreground} />
         </View>
@@ -405,7 +410,7 @@ export function EntryEditorScreen({
   if (loadState === 'error' || (!isCreate && !detail)) {
     return (
       <View style={styles.root}>
-        <NewsprintHeader title="ENTRY" kicker="PERSONAL VAULT" backLabel="Back" onBack={onClose} />
+        <NewsprintHeader title="ENTRY" kicker="READABLE VAULT" backLabel="Back" onBack={onClose} />
         <View style={styles.centered}>
           <Banner kind="error" text={loadError ?? '条目不可用'} />
           <NewsprintButton label="RETRY" variant="secondary" onPress={() => void loadDetail()} />
@@ -415,6 +420,7 @@ export function EntryEditorScreen({
   }
 
   const typeLabel = ITEM_TYPES.find(t => t.value === itemType)?.label ?? itemType.toUpperCase();
+  const isShared = !isCreate && detail!.vault_scope === 'shared';
   const title = isCreate
     ? 'NEW ENTRY'
     : mode === 'edit'
@@ -422,7 +428,7 @@ export function EntryEditorScreen({
       : detail!.payload.name || detail!.title || 'ENTRY';
 
   const headerActions = () => {
-    if (isCreate || mode === 'edit') {
+    if (isCreate || (mode === 'edit' && !isShared)) {
       return (
         <View style={styles.headerActions}>
           <View style={styles.headerActionButton}>
@@ -445,6 +451,9 @@ export function EntryEditorScreen({
           </View>
         </View>
       );
+    }
+    if (isShared) {
+      return null;
     }
     return (
       <View style={styles.headerActions}>
@@ -1129,7 +1138,9 @@ export function EntryEditorScreen({
         kicker={
           isCreate
             ? 'PERSONAL VAULT / CREATE'
-            : `${typeLabel} / PERSONAL · REV ${detail!.revision}`
+            : isShared
+              ? `SHARED · READ ONLY · REV ${detail!.revision}`
+              : `${typeLabel} / PERSONAL · REV ${detail!.revision}`
         }
         backLabel="Back"
         onBack={tryClose}
@@ -1204,7 +1215,7 @@ export function EntryEditorScreen({
             renderViewFields()
           )}
 
-          {!isCreate ? (
+          {!isCreate && !isShared ? (
             <View style={styles.dangerZone}>
               {deleteError ? <Banner kind="error" text={deleteError} actionLabel="重试" onAction={() => setDeleteConfirmVisible(true)} /> : null}
               <NewsprintButton

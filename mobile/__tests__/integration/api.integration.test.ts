@@ -283,6 +283,7 @@ d('mobile API client against the real Go server', () => {
       extraHeaders: {'Idempotency-Key': 'idem-key-shared-00001'},
     });
     expect(shared.kind).toBe('success');
+    const sharedId = (shared as unknown as {data: {id: string}}).data.id;
 
     // List uses Meta only: no payload fields leak into the page, and all six
     // types appear without any type filter. Readable shared items are included
@@ -310,6 +311,16 @@ d('mobile API client against the real Go server', () => {
     expect((sharedHit as unknown as {data: {items: Array<{title?: string; vault_scope: string}>}}).data.items).toEqual([
       expect.objectContaining({title: 'Shared GitHub', vault_scope: 'shared'}),
     ]);
+
+    const sharedDetail = await api.getItem(sharedId);
+    expect(sharedDetail.kind).toBe('success');
+    const sharedFull = (sharedDetail as unknown as {data: {payload: Record<string, unknown>; vault_scope: string}}).data;
+    expect(sharedFull.vault_scope).toBe('shared');
+    expect(sharedFull.payload).toMatchObject({
+      name: 'Shared GitHub',
+      username: 'shared@example.com',
+      password: 'shared-secret-1',
+    });
 
     // Detail exposes the full payload including the unshown date field.
     const detail = await api.getItem(first!.id);
