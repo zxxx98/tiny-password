@@ -236,7 +236,7 @@ export function VaultScreen({
         <View style={styles.headerRow}>
           <View style={styles.flex}>
             <Text style={styles.brand}>tiny-password</Text>
-            <Text style={styles.kicker}>PERSONAL VAULT</Text>
+            <Text style={styles.kicker}>READABLE VAULT</Text>
           </View>
           <View style={styles.headerActions}>
             <Pressable

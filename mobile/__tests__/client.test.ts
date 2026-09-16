@@ -172,7 +172,7 @@ describe('TinyPasswordApi endpoint shapes', () => {
     const api = new TinyPasswordApi(client);
     await api.listItems('cursor-1', 37);
     expect(urls[0]).toContain('/items?limit=37');
-    expect(urls[0]).not.toContain('scope=personal');
+    expect(new URL(urls[0]).searchParams.has('scope')).toBe(false);
     expect(urls[0]).toContain('cursor=cursor-1');
 
     await api.searchItems('git hub', 'cursor-2', 'csrf-1', undefined, 37);

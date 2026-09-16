@@ -20,4 +20,3 @@
 - Android 集成测试创建个人和共享条目，断言 `listItems` 同时返回两者，搜索也能命中共享条目。
 - 运行 `npx tsc --noEmit` 与 `npx jest --runInBand`。
 - 检查 Android 版本号递增，运行可用的 Gradle 校验或 release 构建；推送后确认远端工作流以 `app-v1.2.2-5` 作为新 APK 版本。
-

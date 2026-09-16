@@ -59,6 +59,7 @@ Expected: the new test fails because the current client still sends `scope=perso
 - Modify: `mobile/src/api/client.ts:295-315`
 - Modify: `mobile/src/screens/VaultScreen.tsx:51-55,322-326`
 - Modify: `mobile/README.md:6,91`
+- Test: `mobile/__tests__/VaultScreen.test.tsx`
 
 - [ ] **Step 1: Make list and search use the server's readable-item default**
 
@@ -84,6 +85,8 @@ Keep cursor encoding, CSRF, pagination, and all other request behavior unchanged
 Change the `VaultScreen` documentation from “Personal vault” / “Only `scope=personal`...” to describe the readable vault containing personal and shared items. Change the empty-state strings to `没有可见条目。` and `可见保险库中还没有条目，点击下方新增。`; leave the row's `item.vault_scope` label intact so shared items remain visibly identified.
 
 Update `mobile/README.md` to state that personal and readable shared items appear in list/search, while shared detail/edit remains a Web-only limitation.
+
+Add a React Native renderer regression asserting the mixed list header says `READABLE VAULT`.
 
 - [ ] **Step 3: Run the focused unit test and typecheck**
 
@@ -214,7 +217,7 @@ Run:
 ```bash
 git diff --check
 git status --short
-git diff HEAD -- mobile/src/api/client.ts mobile/src/screens/VaultScreen.tsx mobile/README.md mobile/__tests__/client.test.ts mobile/__tests__/integration/api.integration.test.ts mobile/android/app/build.gradle
+git diff HEAD -- mobile/src/api/client.ts mobile/src/screens/VaultScreen.tsx mobile/README.md mobile/__tests__/VaultScreen.test.tsx mobile/__tests__/client.test.ts mobile/__tests__/integration/api.integration.test.ts mobile/__tests__/androidBranding.test.ts mobile/android/app/build.gradle
 ```
 
 Confirm no server or permission code changed, shared list/search coverage is present, and version values are 5/1.2.2.
@@ -222,7 +225,7 @@ Confirm no server or permission code changed, shared list/search coverage is pre
 - [ ] **Step 4: Commit the implementation**
 
 ```bash
-git add mobile/src/api/client.ts mobile/src/screens/VaultScreen.tsx mobile/README.md mobile/__tests__/client.test.ts mobile/__tests__/integration/api.integration.test.ts mobile/android/app/build.gradle
+git add mobile/src/api/client.ts mobile/src/screens/VaultScreen.tsx mobile/README.md mobile/__tests__/VaultScreen.test.tsx mobile/__tests__/client.test.ts mobile/__tests__/integration/api.integration.test.ts mobile/__tests__/androidBranding.test.ts mobile/android/app/build.gradle
 git commit -m "fix: show shared items in Android vault"
 ```
 
