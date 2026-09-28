@@ -15,6 +15,7 @@ import {NewsprintHeader} from '../components/NewsprintHeader';
 import {NewsprintInput} from '../components/NewsprintInput';
 import {NewsprintButton} from '../components/NewsprintButton';
 import {CopyValueRow} from '../components/CopyValueRow';
+import {CopyBlockButton} from '../components/CopyBlockButton';
 import {Banner} from '../components/Banner';
 import {ConfirmDialog} from '../components/ConfirmDialog';
 import {UrlListField} from '../components/UrlListField';
@@ -52,6 +53,7 @@ import {
   type SshKeyEdits,
 } from '../vault/payloadMerge';
 import {createIdempotencyKeyManager, canonicalCreateContent} from '../vault/idempotency';
+import {formatIdentityClipboard, hasIdentityClipboardContent} from '../vault/identityClipboard';
 import type {SessionController} from '../auth/session';
 
 export type EditorRoute =
@@ -1098,6 +1100,16 @@ export function EntryEditorScreen({
             <CopyValueRow label="ADDRESS" value={i.address_line || ''} />
             <CopyValueRow label="POSTAL CODE" value={i.postal_code || ''} />
             <CopyValueRow label="NOTES" value={i.notes || ''} copyable={false} />
+            {hasIdentityClipboardContent(i) ? (
+              <View style={styles.viewCopyAction}>
+                <CopyBlockButton
+                  label="COPY ADDRESS"
+                  value={formatIdentityClipboard(i)}
+                  accessibilityLabel="复制身份地址"
+                  testID="copy-identity-address"
+                />
+              </View>
+            ) : null}
           </View>
         );
       }
@@ -1538,6 +1550,9 @@ const styles = StyleSheet.create({
   },
   viewPasswordRow: {
     flexDirection: 'row',
+  },
+  viewCopyAction: {
+    marginTop: spacing.lg,
   },
   flex1: {
     flex: 1,

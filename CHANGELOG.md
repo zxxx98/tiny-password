@@ -8,6 +8,7 @@
 - Explicit Compose deployment profiles for secure default isolation, LAN reverse-proxy binding, optional R2 credentials, and Cloudflare Tunnel token-file operation.
 - Chinese deployment, secret-handling, Tunnel, backup/recovery, release-checklist, accessibility, security-header, secret-scan, search-benchmark, and restore-drill documentation/tools.
 - Multi-architecture release workflow with amd64/arm64 runtime smoke tests, provenance/SBOM attestations, and high/critical vulnerability scanning.
+- Native app identity entries gained a one-tap `COPY ADDRESS` action that writes the same name/address/phone block the web vault copies, with a transient `COPIED` state.
 
 ### Security
 
