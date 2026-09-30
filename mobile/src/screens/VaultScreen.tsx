@@ -34,6 +34,7 @@ interface VaultScreenProps {
   session: SessionController;
   api: TinyPasswordApi;
   refreshKey: number;
+  active?: boolean;
   /** One-shot info banner, e.g. “已移入回收站” after a trash action. */
   notice: string | null;
   onOpenEntry: (itemId: string) => void;
@@ -58,6 +59,7 @@ export function VaultScreen({
   session,
   api,
   refreshKey,
+  active = true,
   notice,
   onOpenEntry,
   onAddEntry,
@@ -115,7 +117,6 @@ export function VaultScreen({
         ? await api.searchItems(trimmed, opts.cursor ?? null, session.csrfToken ?? '', controller.signal, PAGE_SIZE)
         : await api.listItems(opts.cursor ?? null, PAGE_SIZE, controller.signal);
       if (!tracker.current.isCurrent(id)) {
-        setRefreshing(false);
         return; // stale: a newer query or pagination step superseded this
       }
       if (result.kind === 'success') {
@@ -164,10 +165,13 @@ export function VaultScreen({
 
   // Debounced search on query change.
   const changeQuery = (text: string) => {
+    onActivity();
     setQuery(text);
-    if (debounceRef.current !== null) {
-      clearTimeout(debounceRef.current);
-    }
+    clearRequest();
+    tracker.current.next();
+    setLoadingMore(false);
+    setRefreshing(false);
+    setCursor(null);
     const trimmed = text.trim();
     if (trimmed.length === 0) {
       // Pure-whitespace or empty query restores the plain list.
@@ -184,6 +188,7 @@ export function VaultScreen({
       setErrorText(limitError);
       return;
     }
+    setStatus('loading');
     searchSeq.current += 1;
     const seq = searchSeq.current;
     debounceRef.current = setTimeout(() => {
@@ -234,7 +239,7 @@ export function VaultScreen({
     <View style={[styles.root, {paddingBottom: insets.bottom}]}>
       <View style={[styles.header, {paddingTop: insets.top}]}>
         <View style={styles.headerRow}>
-          <View style={styles.flex}>
+          <View>
             <Text style={styles.brand}>tiny-password</Text>
             <Text style={styles.kicker}>READABLE VAULT</Text>
           </View>
@@ -373,7 +378,7 @@ export function VaultScreen({
       </View>
 
       <ConfirmDialog
-        visible={signOutConfirm}
+        visible={active && signOutConfirm}
         title="退出登录？"
         message="将撤销当前会话并返回登录页。"
         confirmLabel="SIGN OUT"
@@ -398,13 +403,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'stretch',
     minHeight: minTouchTarget,
     marginTop: spacing.sm,
-  },
-  flex: {
-    flex: 1,
   },
   brand: {
     ...typeScale.h2,
@@ -426,6 +427,8 @@ const styles = StyleSheet.create({
   },
   headerActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
     alignItems: 'center',
     gap: spacing.xs,
   },

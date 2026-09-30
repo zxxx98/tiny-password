@@ -19,6 +19,7 @@ import {colors} from '../theme/colors';
 import {fonts, letterSpacing, typeScale} from '../theme/typography';
 import {borderSection, pageMargin, spacing} from '../theme/spacing';
 import {normalizeServerUrl} from '../api/client';
+import {useInteraction} from '../privacy/interaction';
 import type {SessionController} from '../auth/session';
 import type {RememberedCredentials} from '../auth/rememberedLogin';
 
@@ -68,6 +69,7 @@ export function SignInScreen({
   onAuthenticated,
   onActivity,
 }: SignInScreenProps): React.JSX.Element {
+  const {hidden} = useInteraction();
   const insets = useSafeAreaInsets();
   // AppRoot hydrates these values before mounting this screen. The session
   // value still wins when returning from sign-out in the same process.
@@ -86,7 +88,10 @@ export function SignInScreen({
   const [rememberPassword, setRememberPassword] = useState(
     () => Boolean(rememberedCredentials?.username && rememberedCredentials?.password),
   );
-  const [phase, setPhase] = useState<Phase>('sign-in');
+  const [phase, setPhase] = useState<Phase>(() => {
+    const current = session.getSnapshot().phase;
+    return current === 'must-change' || current === 'confirming-change' ? 'change-password' : 'sign-in';
+  });
   const [submitting, setSubmitting] = useState(false);
   const [changeError, setChangeError] = useState<string | null>(null);
   const [changeSuccess, setChangeSuccess] = useState<string | null>(null);
@@ -94,6 +99,8 @@ export function SignInScreen({
   // rotation so the success banner is actually visible before navigating.
   const holdNavigationRef = useRef(false);
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loginPendingRef = useRef(false);
+  const loginAttemptRef = useRef(0);
   const [signOutConfirmVisible, setSignOutConfirmVisible] = useState(false);
   const usernameRef = useRef(username);
   usernameRef.current = username;
@@ -133,6 +140,7 @@ export function SignInScreen({
         return false;
       }
       setServerError(null);
+      loginAttemptRef.current += 1;
       const previous = session.getSnapshot().serverUrl;
       if (previous !== null && previous !== normalized) {
         clearRememberedCredentials();
@@ -154,11 +162,17 @@ export function SignInScreen({
   // Configure the server (and fetch the pre-auth CSRF) on mount and whenever
   // the user applies a new address.
   useEffect(() => {
-    if (serverUrl.trim().length > 0 && applyServer(serverUrl)) {
+    if (!session.serverConfigured && serverUrl.trim().length > 0 && applyServer(serverUrl)) {
       void session.preflight();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (hidden) {
+      setShowPassword(false);
+    }
+  }, [hidden]);
 
   // Forced change password: session phase flips to must-change after login
   // or a session restore; mirror it into local UI phase.
@@ -231,7 +245,7 @@ export function SignInScreen({
   }, [phase, signOutConfirmVisible, submitting]);
 
   const doSignIn = async () => {
-    if (submitting) {
+    if (submitting || loginPendingRef.current) {
       return;
     }
     onActivity();
@@ -244,19 +258,14 @@ export function SignInScreen({
       setServerExpanded(true);
       return;
     }
-    if (!session.serverConfigured || session.getSnapshot().serverUrl !== desired) {
+    const previousServer = session.getSnapshot().serverUrl;
+    if (!session.serverConfigured || previousServer !== desired) {
       if (!applyServer(serverUrl)) {
         setServerExpanded(true);
         return;
       }
-    }
-    // A 401 (e.g. a failed forced password change) wipes the pre-auth context,
-    // and an old context expires server-side after 15 minutes; re-fetch it so
-    // a retry cannot dead-end on "缺少预认证上下文" or "安全校验失败".
-    if (!session.preauthToken || session.preauthIsStale(PREAUTH_REFRESH_MS)) {
-      const preflightOk = await session.preflight();
-      if (!preflightOk) {
-        setFormError('无法获取预认证上下文，请检查服务器地址');
+      if (previousServer !== null && previousServer !== desired) {
+        setFormError('服务器已切换，请重新输入该服务器的密码');
         return;
       }
     }
@@ -264,16 +273,48 @@ export function SignInScreen({
       setFormError('请输入用户名和密码');
       return;
     }
+    loginPendingRef.current = true;
     setSubmitting(true);
-    const result = await session.login(username.trim(), password);
-    if (result.ok) {
-      return; // phase subscription drives the next screen
-    }
-    setSubmitting(false);
-    if (result.error) {
-      setFormError(result.error);
+    const attempt = ++loginAttemptRef.current;
+    try {
+      // A 401 (e.g. a failed forced password change) wipes the pre-auth context,
+      // and an old context expires server-side after 15 minutes; re-fetch it so
+      // a retry cannot dead-end on "缺少预认证上下文" or "安全校验失败".
+      if (!session.preauthToken || session.preauthIsStale(PREAUTH_REFRESH_MS)) {
+        const preflightOk = await session.preflight();
+        if (attempt !== loginAttemptRef.current || session.getSnapshot().serverUrl !== desired) {
+          return;
+        }
+        if (!preflightOk) {
+          setFormError('无法获取预认证上下文，请检查服务器地址');
+          return;
+        }
+      }
+      const result = await session.login(username.trim(), password);
+      if (result.ok) {
+        return; // phase subscription drives the next screen
+      }
+      setSubmitting(false);
+      if (result.error) {
+        setFormError(result.error);
+      }
+    } finally {
+      loginPendingRef.current = false;
+      if (attempt === loginAttemptRef.current) {
+        setSubmitting(false);
+      }
     }
   };
+
+  useEffect(
+    () => () => {
+      loginAttemptRef.current += 1;
+      if (successTimerRef.current !== null) {
+        clearTimeout(successTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const doChangePassword = async (current: string, next: string) => {
     setChangeError(null);
@@ -492,6 +533,7 @@ export function SignInScreen({
               <NewsprintInput
                 label="SERVER ADDRESS"
                 value={serverUrl}
+                editable={!submitting}
                 onChangeText={setServerUrl}
                 error={serverError}
                 autoCapitalize="none"
@@ -504,6 +546,7 @@ export function SignInScreen({
               <NewsprintButton
                 label="APPLY SERVER"
                 variant="secondary"
+                disabled={submitting}
                 onPress={() => {
                   if (applyServer(serverUrl)) {
                     setServerExpanded(false);

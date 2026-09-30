@@ -18,7 +18,7 @@ export interface SessionSnapshot {
   serverUrl: string | null;
 }
 
-/** Throttle window for POST /auth/session/activity (foreground gestures only). */
+/** Upper bound; short sessions renew earlier, always after a real gesture. */
 export const ACTIVITY_THROTTLE_MS = 5 * 60 * 1000;
 
 type Listener = () => void;
@@ -43,6 +43,8 @@ export class SessionController {
   private listeners = new Set<Listener>();
   private inFlight = new Set<AbortController>();
   private lastActivityMs = 0;
+  private lastActivityAttemptMs = -Infinity;
+  private activityPending = false;
   private clock: () => number;
   private readonly fetchImpl: FetchLike | undefined;
 
@@ -101,6 +103,9 @@ export class SessionController {
   /** Abort everything in flight; called on sign out / server switch / 401. */
   private bumpGeneration(): void {
     this.generation += 1;
+    this.api?.client.cancelPending();
+    this.activityPending = false;
+    this.lastActivityAttemptMs = -Infinity;
     for (const controller of this.inFlight) {
       controller.abort();
     }
@@ -116,13 +121,22 @@ export class SessionController {
    */
   setServerUrl(url: string): boolean {
     this.bumpGeneration();
+    this.api?.client.jar.clear();
     this.preauthCsrf = null;
     this.preauthIssuedAtMs = null;
     this.sessionCsrf = null;
     this.principal = null;
     this.confirmError = null;
     try {
-      this.api = new TinyPasswordApi(new ApiClient(url, {fetchImpl: this.fetchImpl}));
+      const client: ApiClient = new ApiClient(url, {
+        fetchImpl: this.fetchImpl,
+        onUnauthorized: () => {
+          if (this.api?.client === client && this.sessionCsrf) {
+            this.invalidateLocally();
+          }
+        },
+      });
+      this.api = new TinyPasswordApi(client);
     } catch {
       this.api = null;
       this.phase = 'unconfigured';
@@ -280,10 +294,11 @@ export class SessionController {
         tracked.signal,
       );
       if (!this.isCurrent(gen)) {
-        return {ok: false, error: '会话已变更'};
+        return {ok: false, error: result.kind === 'http-error' && result.status === 401 ? '认证失败，请重新登录' : '会话已变更'};
       }
       if (result.kind === 'success') {
         const rotated = result.headers.get('x-csrf-token');
+        this.lastActivityMs = this.clock(); // password rotation issues a fresh session
         if (rotated) {
           this.sessionCsrf = rotated;
         }
@@ -343,7 +358,6 @@ export class SessionController {
           return 'still-required';
         }
         this.confirmError = null;
-        this.lastActivityMs = this.clock();
         this.setPhase('authenticated');
         return 'confirmed';
       }
@@ -361,7 +375,7 @@ export class SessionController {
 
   /** Foreground resume validation. Returns whether content may be shown. */
   async validateOnResume(): Promise<'ok' | 'signed-out' | 'unreachable'> {
-    if (this.phase !== 'authenticated' && this.phase !== 'must-change') {
+    if (this.phase !== 'authenticated' && this.phase !== 'must-change' && this.phase !== 'confirming-change') {
       return 'signed-out';
     }
     const outcome = await this.confirmSession();
@@ -383,10 +397,13 @@ export class SessionController {
       return;
     }
     const now = this.clock();
-    if (now - this.lastActivityMs < ACTIVITY_THROTTLE_MS) {
+    const idleMinutes = this.principal?.idle_timeout_minutes ?? 5;
+    const interval = Math.min(ACTIVITY_THROTTLE_MS, Math.max(1, idleMinutes) * 60 * 1000 / 3);
+    if (this.activityPending || now - this.lastActivityMs < interval || now - this.lastActivityAttemptMs < 5000) {
       return;
     }
-    this.lastActivityMs = now;
+    this.lastActivityAttemptMs = now;
+    this.activityPending = true;
     const api = this.api;
     const gen = this.currentGeneration();
     const tracked = this.trackSignal(gen);
@@ -398,6 +415,9 @@ export class SessionController {
       if (!this.isCurrent(gen)) {
         return;
       }
+      if (result.kind === 'success') {
+        this.lastActivityMs = now;
+      }
       if (result.kind === 'http-error' && result.status === 401) {
         this.invalidateLocally();
       }
@@ -405,6 +425,9 @@ export class SessionController {
     } catch {
       // never propagate
     } finally {
+      if (this.isCurrent(gen)) {
+        this.activityPending = false;
+      }
       tracked.done();
     }
   }
@@ -422,11 +445,14 @@ export class SessionController {
     // logout call must carry the session cookie it is meant to revoke, and
     // the local wipe below clears it.
     this.bumpGeneration();
+    const gen = this.currentGeneration();
     let result: ApiResult<void> | null = null;
     if (api && csrf) {
       result = await api.logout(csrf);
     }
-    this.invalidateLocally();
+    if (this.isCurrent(gen)) {
+      this.invalidateLocally();
+    }
     if (!result) {
       return {serverConfirmed: false, notice: null};
     }
@@ -451,6 +477,9 @@ export class SessionController {
    * server switch). Cancels in-flight work so late responses are ignored.
    */
   invalidateLocally(): void {
+    if (this.phase === 'signed-out' || this.phase === 'unconfigured') {
+      return;
+    }
     this.bumpGeneration();
     if (this.api) {
       this.api.client.jar.clear();

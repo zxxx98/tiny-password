@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
-import Clipboard from '@react-native-clipboard/clipboard';
+import {sensitiveClipboard} from '../privacy/clipboard';
 import {NewsprintButton} from './NewsprintButton';
 
 interface CopyBlockButtonProps {
@@ -27,7 +27,7 @@ export function CopyBlockButton({
   }, []);
 
   const copy = () => {
-    Clipboard.setString(value);
+    sensitiveClipboard.copy(value);
     setCopied(true);
     if (timer.current !== null) {
       clearTimeout(timer.current);

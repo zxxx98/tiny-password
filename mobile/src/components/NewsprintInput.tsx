@@ -3,6 +3,7 @@ import {StyleSheet, Text, TextInput, View, type TextInputProps} from 'react-nati
 import {colors} from '../theme/colors';
 import {fonts, letterSpacing, typeScale} from '../theme/typography';
 import {borderHeavy, spacing} from '../theme/spacing';
+import {useInteraction} from '../privacy/interaction';
 
 interface NewsprintInputProps extends TextInputProps {
   label: string;
@@ -22,14 +23,20 @@ export function NewsprintInput({
   mono = true,
   secure = false,
   style,
+  onChangeText,
   ...rest
 }: NewsprintInputProps): React.JSX.Element {
+  const {onActivity} = useInteraction();
   return (
     <View style={[styles.container, style]}>
       <Text style={styles.label}>{label}</Text>
       <View style={[styles.fieldWrap, error ? styles.fieldError : null]}>
         <TextInput
           {...rest}
+          onChangeText={text => {
+            onActivity();
+            onChangeText?.(text);
+          }}
           style={[styles.input, mono ? styles.mono : styles.plain]}
           secureTextEntry={secure}
           placeholderTextColor={colors.neutral400}

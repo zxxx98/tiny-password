@@ -1,5 +1,5 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {AppState, StatusBar, StyleSheet, Text, View} from 'react-native';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {AppState, Keyboard, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {SignInScreen} from './screens/SignInScreen';
 import {VaultScreen} from './screens/VaultScreen';
@@ -9,19 +9,13 @@ import {NewsprintButton} from './components/NewsprintButton';
 import {SessionController} from './auth/session';
 import {colors} from './theme/colors';
 import {fonts, letterSpacing, typeScale} from './theme/typography';
+import {InteractionContext} from './privacy/interaction';
+import {sensitiveClipboard} from './privacy/clipboard';
 import {DEFAULT_SERVER_URL} from './config';
 import {nativeRememberedLoginStore} from './auth/nativeRememberedLoginStore';
-import type {
-  RememberedCredentials,
-  RememberedLoginSnapshot,
-  RememberedLoginStore,
-} from './auth/rememberedLogin';
+import type {RememberedCredentials, RememberedLoginSnapshot, RememberedLoginStore} from './auth/rememberedLogin';
 
-type Route =
-  | {name: 'signin'}
-  | {name: 'vault'}
-  | {name: 'generator'}
-  | {name: 'editor'; editor: EditorRoute};
+type Route = {name: 'signin'} | {name: 'vault'} | {name: 'generator'} | {name: 'editor'; editor: EditorRoute};
 
 interface AppRootProps {
   rememberedLoginStore?: RememberedLoginStore;
@@ -58,7 +52,11 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
   const [rememberedLogin, setRememberedLogin] = useState(EMPTY_REMEMBERED_LOGIN);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
-  const resumeValidationRef = useRef(false);
+  const [snap, setSnap] = useState(() => session.getSnapshot());
+  const maskedRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
+  const resumeAttemptRef = useRef(0);
+  const pendingResumeRef = useRef<number | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -114,62 +112,85 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
     }
   }, [rememberedLoginStore]);
 
-  // Central reaction to session phase changes.
-  useEffect(() => {
-    const unsubscribe = session.subscribe(() => {
-      const snap = session.getSnapshot();
-      if (
-        (snap.phase === 'signed-out' || snap.phase === 'unconfigured') &&
-        route.name !== 'signin'
-      ) {
-        setRoute({name: 'signin'});
-        setMasked(false);
-      } else if (snap.phase === 'authenticated' && route.name === 'signin') {
-        setSignOutNotice(null);
-        setRoute({name: 'vault'});
-      }
-    });
-    return unsubscribe;
-  }, [session, route.name]);
+  // Every phase update refreshes the API context, including rotated CSRF.
+  useEffect(
+    () =>
+      session.subscribe(() => {
+        const next = session.getSnapshot();
+        setSnap(next);
+        if (next.phase === 'signed-out' || next.phase === 'unconfigured') {
+          setRoute({name: 'signin'});
+          setEditorNotice(null);
+          void sensitiveClipboard.clear();
+        } else if (next.phase === 'must-change' || next.phase === 'confirming-change') {
+          setRoute({name: 'signin'});
+        }
+      }),
+    [session],
+  );
 
-  // Foreground resume: mask, revalidate, then reveal.
+  const reveal = useCallback(() => {
+    maskedRef.current = false;
+    setMasked(false);
+    setResumeUnreachable(false);
+  }, []);
+
+  const validateResume = useCallback(async () => {
+    if (appStateRef.current !== 'active' || pendingResumeRef.current !== null) {
+      return;
+    }
+    const attempt = ++resumeAttemptRef.current;
+    pendingResumeRef.current = attempt;
+    setResumeUnreachable(false);
+    const outcome = await session.validateOnResume();
+    if (attempt !== resumeAttemptRef.current || appStateRef.current !== 'active') {
+      return;
+    }
+    pendingResumeRef.current = null;
+    if (outcome === 'unreachable') {
+      setResumeUnreachable(true);
+    } else {
+      reveal();
+    }
+  }, [session, reveal]);
+
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'background') {
-        if (session.getSnapshot().phase === 'authenticated') {
-          setMasked(true);
+      appStateRef.current = state;
+      if (state !== 'active') {
+        resumeAttemptRef.current += 1;
+        pendingResumeRef.current = null;
+        maskedRef.current = true;
+        setMasked(true);
+        Keyboard.dismiss();
+      } else {
+        void sensitiveClipboard.clearExpired();
+        if (maskedRef.current) {
+          void validateResume();
         }
-        return;
-      }
-      if (state === 'active' && masked && !resumeValidationRef.current) {
-        resumeValidationRef.current = true;
-        void session
-          .validateOnResume()
-          .then(outcome => {
-            if (outcome === 'ok') {
-              setMasked(false);
-            } else if (outcome === 'signed-out') {
-              setMasked(false); // phase subscription routes to sign-in
-            } else {
-              // unreachable: keep the mask, show retry affordance
-              setResumeUnreachable(true);
-            }
-          })
-          .finally(() => {
-            resumeValidationRef.current = false;
-          });
       }
     });
-    return () => subscription.remove();
-  }, [session, masked]);
+    return () => {
+      subscription.remove();
+      resumeAttemptRef.current += 1;
+    };
+  }, [validateResume]);
 
   const onActivity = useCallback(() => {
-    void session.touchActivity();
+    if (!maskedRef.current && appStateRef.current === 'active') {
+      void session.touchActivity();
+    }
   }, [session]);
+  const interaction = useMemo(() => ({hidden: masked, onActivity}), [masked, onActivity]);
 
   const handleSignOutFromVault = useCallback(() => {
-    void session.signOut().then(async result => {
-      await clearRememberedCredentials();
+    const signingOutApi = session.getApi();
+    void clearRememberedCredentials();
+    void sensitiveClipboard.clear();
+    void session.signOut().then(result => {
+      if (session.getApi() !== signingOutApi || session.getSnapshot().phase !== 'signed-out') {
+        return;
+      }
       setSignOutNotice(result.notice);
       setRoute({name: 'signin'});
       // Refresh pre-auth context for the next login.
@@ -177,116 +198,122 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
     });
   }, [clearRememberedCredentials, session]);
 
-  const closeEditor = useCallback(
-    (mutation?: 'created' | 'trashed') => {
-      setRoute({name: 'vault'});
-      if (mutation === 'trashed') {
-        setEditorNotice('已移入回收站；可在保留期内通过 Web 回收站恢复。');
-        setRefreshKey(k => k + 1);
-      } else if (mutation === 'created') {
-        setEditorNotice('条目已创建。');
-        setRefreshKey(k => k + 1);
-      }
-    },
-    [],
-  );
-
-  const snap = session.getSnapshot();
+  const closeEditor = useCallback((mutation?: 'created' | 'trashed' | 'updated') => {
+    setRoute({name: 'vault'});
+    if (mutation === 'trashed') {
+      setEditorNotice('已移入回收站；可在保留期内通过 Web 回收站恢复。');
+      setRefreshKey(k => k + 1);
+    } else if (mutation === 'created') {
+      setEditorNotice('条目已创建。');
+      setRefreshKey(k => k + 1);
+    } else if (mutation === 'updated') {
+      setRefreshKey(k => k + 1);
+    }
+  }, []);
   const api = session.getApi();
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle="dark-content" />
-      <View style={styles.root}>
-        {!preferencesReady ? (
-          <View style={styles.loading}>
-            <Text style={styles.loadingBrand}>tiny-password</Text>
-            <Text style={styles.loadingText}>正在读取登录设置…</Text>
-          </View>
-        ) : route.name === 'signin' || snap.phase === 'signed-out' || snap.phase === 'unconfigured' ? (
-          <SignInScreen
-            session={session}
-            initialServerUrl={rememberedLogin.serverUrl ?? DEFAULT_SERVER_URL}
-            rememberedCredentials={rememberedLogin.credentials}
-            initialNotice={signOutNotice}
-            persistenceNotice={persistenceNotice}
-            onRememberedServerUrlSaved={saveRememberedServerUrl}
-            onRememberedCredentialsSaved={saveRememberedCredentials}
-            onRememberedCredentialsCleared={clearRememberedCredentials}
-            onAuthenticated={() => setRoute({name: 'vault'})}
-            onActivity={onActivity}
-          />
-        ) : route.name === 'generator' ? (
-          api ? (
-            <GeneratorScreen
-              api={api}
-              csrfToken={session.csrfToken}
-              onClose={() => setRoute({name: 'vault'})}
-              onActivity={onActivity}
-            />
-          ) : null
-        ) : route.name === 'editor' ? (
-          api ? (
-            <EntryEditorScreen
-              session={session}
-              api={api}
-              route={route.editor}
-              onClose={closeEditor}
-              onActivity={onActivity}
-            />
-          ) : null
-        ) : (
-          api && (
-            <VaultScreen
-              session={session}
-              api={api}
-              refreshKey={refreshKey}
-              notice={editorNotice}
-              onOpenEntry={itemId => setRoute({name: 'editor', editor: {mode: 'detail', itemId}})}
-              onAddEntry={() => setRoute({name: 'editor', editor: {mode: 'create'}})}
-              onOpenGenerator={() => setRoute({name: 'generator'})}
-              onSignOut={handleSignOutFromVault}
-              onActivity={onActivity}
-            />
-          )
-        )}
-
-        {masked ? (
-          <View accessibilityViewIsModal style={styles.mask} testID="resume-mask">
-            <Text style={styles.maskBrand}>tiny-password</Text>
-            <Text style={styles.maskText}>内容已隐藏</Text>
-            <Text style={styles.maskHint}>
-              {resumeUnreachable
-                ? '无法连接服务器，暂时无法确认会话。请检查网络后重试。'
-                : '正在校验会话…'}
-            </Text>
-            {resumeUnreachable ? (
-              <View style={styles.maskRetry}>
-                <NewsprintButton
-                  label="RETRY"
-                  variant="secondary"
-                  onPress={() => {
-                    // Keep the mask up until the server confirms the session.
-                    setResumeUnreachable(false);
-                    void session.validateOnResume().then(outcome => {
-                      if (outcome === 'unreachable') {
-                        setResumeUnreachable(true);
-                      } else {
-                        setMasked(false);
-                      }
-                    });
-                  }}
+      <InteractionContext.Provider value={interaction}>
+        <StatusBar barStyle="dark-content" />
+        <View style={styles.root} onTouchStart={onActivity}>
+          <View
+            style={styles.root}
+            pointerEvents={masked ? 'none' : 'auto'}
+            accessibilityElementsHidden={masked}
+            importantForAccessibility={masked ? 'no-hide-descendants' : 'auto'}
+          >
+            {!preferencesReady ? (
+              <View style={styles.loading}>
+                <Text style={styles.loadingBrand}>tiny-password</Text>
+                <Text style={styles.loadingText}>正在读取登录设置…</Text>
+              </View>
+            ) : route.name === 'signin' || snap.phase === 'signed-out' || snap.phase === 'unconfigured' ? (
+              <SignInScreen
+                session={session}
+                initialServerUrl={rememberedLogin.serverUrl ?? DEFAULT_SERVER_URL}
+                rememberedCredentials={rememberedLogin.credentials}
+                initialNotice={signOutNotice}
+                persistenceNotice={persistenceNotice}
+                onRememberedServerUrlSaved={saveRememberedServerUrl}
+                onRememberedCredentialsSaved={saveRememberedCredentials}
+                onRememberedCredentialsCleared={clearRememberedCredentials}
+                onAuthenticated={() => {
+                  setSignOutNotice(null);
+                  setRoute({name: 'vault'});
+                }}
+                onActivity={onActivity}
+              />
+            ) : route.name === 'generator' ? (
+              api ? (
+                <GeneratorScreen
+                  api={api}
+                  csrfToken={session.csrfToken}
+                  onClose={() => setRoute({name: 'vault'})}
+                  onActivity={onActivity}
+                />
+              ) : null
+            ) : route.name === 'editor' ? (
+              api ? (
+                <EntryEditorScreen
+                  session={session}
+                  api={api}
+                  route={route.editor}
+                  onClose={closeEditor}
+                  onActivity={onActivity}
+                />
+              ) : null
+            ) : null}
+            {preferencesReady && snap.phase === 'authenticated' && api ? (
+              <View
+                style={[styles.root, route.name !== 'vault' && styles.hiddenScreen]}
+                pointerEvents={route.name === 'vault' ? 'auto' : 'none'}
+                importantForAccessibility={route.name === 'vault' ? 'auto' : 'no-hide-descendants'}
+              >
+                <VaultScreen
+                  session={session}
+                  api={api}
+                  active={route.name === 'vault'}
+                  refreshKey={refreshKey}
+                  notice={editorNotice}
+                  onOpenEntry={itemId => setRoute({name: 'editor', editor: {mode: 'detail', itemId}})}
+                  onAddEntry={() => setRoute({name: 'editor', editor: {mode: 'create'}})}
+                  onOpenGenerator={() => setRoute({name: 'generator'})}
+                  onSignOut={handleSignOutFromVault}
+                  onActivity={onActivity}
                 />
               </View>
             ) : null}
           </View>
-        ) : null}
-      </View>
+
+          {masked ? (
+            <View accessibilityViewIsModal style={styles.mask} testID="resume-mask">
+              <Text style={styles.maskBrand}>tiny-password</Text>
+              <Text style={styles.maskText}>内容已隐藏</Text>
+              <Text style={styles.maskHint}>
+                {resumeUnreachable ? '无法连接服务器，暂时无法确认会话。请检查网络后重试。' : '正在校验会话…'}
+              </Text>
+              {resumeUnreachable ? (
+                <View style={styles.maskRetry}>
+                  <NewsprintButton
+                    label="RETRY"
+                    variant="secondary"
+                    onPress={() => {
+                      void validateResume();
+                    }}
+                  />
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+      </InteractionContext.Provider>
     </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  hiddenScreen: {...StyleSheet.absoluteFill, opacity: 0},
   root: {
     flex: 1,
     backgroundColor: colors.background,

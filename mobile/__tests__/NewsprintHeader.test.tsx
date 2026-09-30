@@ -7,7 +7,7 @@ import {NewsprintHeader} from '../src/components/NewsprintHeader';
 test('places the header after the status-bar inset plus the standard top spacing', () => {
   let tree!: ReactTestRenderer;
   act(() => {
-    tree = renderer.create(
+    tree = createTree(
       <SafeAreaProvider
         initialMetrics={{
           frame: {x: 0, y: 0, width: 360, height: 800},
@@ -26,4 +26,14 @@ test('places the header after the status-bar inset plus the standard top spacing
   const header = tree.root.findAllByType(View).find(node => node.props.testID === 'header');
   expect(header).toBeDefined();
   expect(StyleSheet.flatten(header?.props.style).paddingTop).toBe(44);
+});
+
+const renderedTrees: ReactTestRenderer[] = [];
+function createTree(element: React.ReactElement): ReactTestRenderer {
+  const tree = renderer.create(element);
+  renderedTrees.push(tree);
+  return tree;
+}
+afterEach(async () => {
+  act(() => renderedTrees.splice(0).forEach(tree => tree.unmount()));
 });

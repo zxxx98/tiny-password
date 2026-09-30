@@ -5,8 +5,7 @@ name: Build Android APK
 # git tag 比对 —— 没有对应 tag 即视为新版本，编译 release APK 并发布到
 # GitHub Release；版本未变时本任务直接跳过。
 #
-# 说明：release 变体当前仍以仓库内的 debug.keystore 签名（仓库现状，见
-# mobile/README.md），仅用于安装体验；上架前必须更换正式签名。
+# release 使用 GitHub Secrets 中独立保管的正式密钥；缺少签名配置时拒绝发布。
 on:
   push:
     branches: [master]
@@ -75,9 +74,26 @@ jobs:
       - name: Build release APK
         if: steps.version.outputs.changed == 'true'
         working-directory: mobile/android
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         # 缺失的 SDK Platform / Build-Tools / NDK 由 Gradle 自动下载
         # （runner 的 SDK license 已预先接受）。
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing release signing secret: ${name}"
+              exit 1
+            fi
+          done
+          export ANDROID_KEYSTORE_FILE="${RUNNER_TEMP}/tiny-password-release.keystore"
+          trap 'rm -f "$ANDROID_KEYSTORE_FILE"' EXIT
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 --decode > "$ANDROID_KEYSTORE_FILE"
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Upload APK artifact
         if: steps.version.outputs.changed == 'true'

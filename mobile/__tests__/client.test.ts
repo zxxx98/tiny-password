@@ -37,6 +37,21 @@ describe('normalizeServerUrl', () => {
 });
 
 describe('ApiClient request plumbing', () => {
+  it('does not send an already cancelled request', async () => {
+    const fetchImpl = jest.fn();
+    const client = new ApiClient('https://vault.example.com', {fetchImpl});
+    const controller = new AbortController();
+    controller.abort();
+    expect((await client.request({method: 'GET', path: '/items', signal: controller.signal})).kind).toBe('aborted');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('reports body-read failures as recoverable network errors', async () => {
+    const client = new ApiClient('https://vault.example.com', {fetchImpl: async () => ({
+      status: 200, headers: {get: () => null}, text: async () => {throw new Error('connection lost');},
+    })});
+    expect((await client.request({method: 'GET', path: '/items'})).kind).toBe('network-error');
+  });
   it('sends matching cookies and records Set-Cookie from responses', async () => {
     const client = new ApiClient('https://vault.example.com');
     const seen: FetchInit[] = [];

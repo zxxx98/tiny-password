@@ -1,11 +1,13 @@
 import React from 'react';
 import renderer, {act, type ReactTestRenderer} from 'react-test-renderer';
 import {Text} from 'react-native';
+import {sensitiveClipboard} from '../src/privacy/clipboard';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {EntryEditorScreen} from '../src/screens/EntryEditorScreen';
 import type {TinyPasswordApi} from '../src/api/client';
 import type {SessionController} from '../src/auth/session';
 import type {ItemDetail} from '../src/api/types';
+import {ConfirmDialog} from '../src/components/ConfirmDialog';
 
 jest.mock('@react-native-clipboard/clipboard', () => ({
   __esModule: true,
@@ -46,7 +48,7 @@ test('renders a readable shared item as a read-only detail', async () => {
   let tree!: ReactTestRenderer;
 
   await act(async () => {
-    tree = renderer.create(
+    tree = createTree(
       <EntryEditorScreen
         session={session}
         api={api}
@@ -57,7 +59,7 @@ test('renders a readable shared item as a read-only detail', async () => {
     );
   });
 
-  expect(api.getItem).toHaveBeenCalledWith('shared-1');
+  expect(api.getItem).toHaveBeenCalledWith('shared-1', expect.anything());
   expect(tree.root.findAllByType(Text).some(node => node.props.children === 'SHARED · READ ONLY · REV 1')).toBe(true);
   expect(tree.root.findAllByProps({testID: 'view-title'}).length).toBeGreaterThan(0);
   expect(tree.root.findAllByProps({testID: 'view-username'}).length).toBeGreaterThan(0);
@@ -97,7 +99,7 @@ test('copies the whole identity address block in one tap', async () => {
   let tree!: ReactTestRenderer;
 
   await act(async () => {
-    tree = renderer.create(
+    tree = createTree(
       <EntryEditorScreen
         session={session}
         api={api}
@@ -142,7 +144,7 @@ test('hides the identity block copy when there is nothing to copy', async () => 
   let tree!: ReactTestRenderer;
 
   await act(async () => {
-    tree = renderer.create(
+    tree = createTree(
       <EntryEditorScreen
         session={session}
         api={api}
@@ -154,4 +156,68 @@ test('hides the identity block copy when there is nothing to copy', async () => 
   });
 
   expect(tree.root.findAllByProps({testID: 'copy-identity-address'})).toHaveLength(0);
+});
+
+test('returns to sign in when loading a detail receives 401', async () => {
+  const api = {getItem: jest.fn(async () => ({kind: 'http-error', status: 401, error: {code: 'UNAUTHORIZED', message: 'expired'}}))} as unknown as TinyPasswordApi;
+  const invalidateLocally = jest.fn();
+  const session = {csrfToken: 'csrf', invalidateLocally} as unknown as SessionController;
+  await act(async () => {
+    createTree(<EntryEditorScreen session={session} api={api} route={{mode: 'detail', itemId: 'test'}} onClose={jest.fn()} onActivity={jest.fn()} />);
+  });
+  expect(invalidateLocally).toHaveBeenCalledTimes(1);
+});
+
+test('switching types preserves the draft until the user confirms', async () => {
+  let tree!: ReactTestRenderer;
+  await act(async () => {
+    tree = createTree(<EntryEditorScreen session={{csrfToken: 'csrf'} as SessionController} api={{} as TinyPasswordApi} route={{mode: 'create'}} onClose={jest.fn()} onActivity={jest.fn()} />);
+  });
+  act(() => tree.root.findByProps({testID: 'field-title'}).props.onChangeText('unsaved draft'));
+  act(() => tree.root.findByProps({testID: 'type-secure_note'}).props.onPress());
+  expect(tree.root.findByProps({testID: 'field-title'}).props.value).toBe('unsaved draft');
+  const dialog = () => tree.root.findAllByType(ConfirmDialog).find(node => node.props.testID === 'switch-type-confirm')!;
+  expect(dialog().props.visible).toBe(true);
+  act(() => dialog().props.onCancel());
+  expect(tree.root.findByProps({testID: 'field-title'}).props.value).toBe('unsaved draft');
+  act(() => tree.root.findByProps({testID: 'type-secure_note'}).props.onPress());
+  act(() => dialog().props.onConfirm());
+  expect(tree.root.findByProps({testID: 'field-title'}).props.value).toBe('');
+  expect(tree.root.findByProps({testID: 'type-secure_note'}).props.accessibilityState.selected).toBe(true);
+});
+
+test('blocks leaving during save and ignores a late result after unmount', async () => {
+  let resolveCreate!: (value: unknown) => void;
+  const api = {createItem: jest.fn(() => new Promise(resolve => {resolveCreate = resolve;}))} as unknown as TinyPasswordApi;
+  const onClose = jest.fn();
+  let tree!: ReactTestRenderer;
+  await act(async () => {
+    tree = createTree(<EntryEditorScreen session={{csrfToken: 'csrf'} as SessionController} api={api} route={{mode: 'create'}} onClose={onClose} onActivity={jest.fn()} />);
+  });
+  act(() => tree.root.findByProps({testID: 'field-title'}).props.onChangeText('draft'));
+  act(() => tree.root.findByProps({testID: 'field-password'}).props.onChangeText('dummy-password'));
+  let saving!: Promise<void>;
+  act(() => {saving = tree.root.findByProps({testID: 'editor-save'}).props.onPress();});
+  expect(api.createItem).toHaveBeenCalledTimes(1);
+  act(() => tree.root.findByProps({testID: 'editor-header'}).props.onBack());
+  expect(onClose).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+  const signal = (api.createItem as jest.Mock).mock.calls[0][4] as AbortSignal;
+  expect(signal.aborted).toBe(true);
+  await act(async () => {
+    resolveCreate({kind: 'success', status: 201, data: {}});
+    await saving;
+  });
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+const renderedTrees: ReactTestRenderer[] = [];
+function createTree(element: React.ReactElement): ReactTestRenderer {
+  const tree = renderer.create(element);
+  renderedTrees.push(tree);
+  return tree;
+}
+afterEach(async () => {
+  act(() => renderedTrees.splice(0).forEach(tree => tree.unmount()));
+  await sensitiveClipboard.clear();
 });

@@ -1,7 +1,7 @@
 # Android APK 发布指南（GitHub Actions）
 
 本文说明如何发布 tiny-password 的 Android APK。日常发布只需要**改一个版本号然后 push**，
-编译、签名、打包、发布全部由 CI 完成。
+配置正式签名后，编译、签名、打包、发布全部由 CI 完成。普通 PR 和 push 另有独立的移动端类型检查、单测与 Android debug 构建，不依赖版本号变更。
 
 流水线文件：[`.github/workflows/build-apk.yml`](../../.github/workflows/build-apk.yml)
 
@@ -50,7 +50,7 @@ git push
 | **Releases**（推荐） | 仓库 → Releases → 对应 `TinyPassword v{versionName}` → 下载 `app-release.apk`，自动生成 release notes |
 | **Artifacts** | Actions → 对应 run → Artifacts 区域，仅登录 GitHub 可见，适合测试用 |
 
-APK 直接传到手机安装即可（当前以仓库内 `debug.keystore` 签名，安装时如提示未知来源属正常现象）。
+APK 使用 GitHub Secrets 中配置的正式密钥签名。首次从旧的调试签名版本迁移时，Android 通常无法直接覆盖安装，需卸载旧版再安装；服务器中的保险库数据不受影响，本地登录设置需重新填写。
 
 ## 版本门控原理
 
@@ -93,21 +93,30 @@ cd android
 
 ## 签名注意事项
 
-**当前状态**：release 变体使用仓库内 `mobile/android/app/debug.keystore`（调试签名）。
-这个 key 是 RN 模板的公开调试密钥，仅适合开发与体验安装，**不能用于正式上架**。
+`release` 只使用独立的正式密钥，缺少配置会失败，不会回退到调试签名。
+`debug` 和 `e2e` 保留调试签名，供本地验证使用。
 
-换成正式签名的步骤概要：
+首次配置：
 
-1. 生成正式 keystore（**不要提交进仓库**）：
+1. 如果已有正式发布密钥，请继续使用该密钥；没有时在可信环境生成，并备份到仓库之外：
    ```bash
    keytool -genkeypair -v -keystore tiny-password-release.keystore \
      -alias tiny-password -keyalg RSA -keysize 2048 -validity 10000
    ```
-2. 把 keystore base64 后存入 GitHub Secrets（如 `ANDROID_KEYSTORE_B64`），
-   密码与 alias 存入 `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS`
-3. 修改 `mobile/android/app/build.gradle` 的 release `signingConfig`，从环境变量
-   / CI 解码的 keystore 文件读取
-4. 在工作流里加解码 keystore 的步骤，并删除上面"debug 签名"的注释说明
+2. 在仓库的 **Settings → Secrets and variables → Actions** 中添加：
+
+   | Secret | 内容 |
+   | --- | --- |
+   | `ANDROID_KEYSTORE_B64` | 正式 keystore 文件的 Base64 编码 |
+   | `ANDROID_KEYSTORE_PASSWORD` | keystore 密码 |
+   | `ANDROID_KEY_ALIAS` | 签名条目 alias，如 `tiny-password` |
+   | `ANDROID_KEY_PASSWORD` | 签名条目的密码；PKCS12 常与 keystore 密码一致 |
+
+3. 工作流会把 keystore 解码到 runner 临时目录，仅供构建使用，结束后删除；不要提交密钥或密码。
+
+本地 `assembleRelease` 从环境读取 `ANDROID_KEYSTORE_FILE`（绝对路径）、
+`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。
+开发测试可直接运行 `assembleE2e`，无需正式密钥。
 
 ## 常见问题
 
@@ -116,5 +125,5 @@ cd android
 - **版本号改了但没触发**：确认推送的分支是 `master`，且改动涉及 `mobile/**` 路径。
 - **想同时出 debug 包**：工作流里把 `assembleRelease` 改为
   `assembleRelease assembleDebug`，并在上传步骤加对应路径。
-- **keystore 丢失**：debug 签名无所谓；正式签名 keystore 一旦丢失将无法以同一签名
+- **keystore 丢失**：正式签名 keystore 一旦丢失将无法以同一签名
   更新应用，务必备份在密码管理器之外的安全位置。

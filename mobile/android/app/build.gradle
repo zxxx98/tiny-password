@@ -9,7 +9,9 @@ apply plugin: "com.facebook.react"
 react {
     // Linux-aarch64 hosts have no dedicated hermesc build; the linux64-bin
     // compiler runs fine under qemu-user binfmt (see README environment notes).
-    hermesCommand = "${rootDir}/../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc"
+    if (System.getProperty('os.name').toLowerCase().contains('linux')) {
+        hermesCommand = "${rootDir}/../node_modules/hermes-compiler/hermesc/linux64-bin/hermesc"
+    }
 
     /* Folders */
     //   The root of your project, i.e. where "package.json" lives. Default is '../..'
@@ -76,6 +78,11 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+def releaseStoreFile = System.getenv('ANDROID_KEYSTORE_FILE')
+def releaseStorePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -96,15 +103,22 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (releaseStoreFile) {
+                storeFile file(releaseStoreFile)
+            }
+            storePassword releaseStorePassword
+            keyAlias releaseKeyAlias
+            keyPassword releaseKeyPassword
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
@@ -118,6 +132,27 @@ android {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
         }
     }
+}
+
+// AGP omits its signing-validation task when a config is incomplete. An
+// explicit prerequisite must therefore guard release builds against falling
+// back to an unsigned APK as well as against using the public debug key.
+def verifyReleaseSigning = tasks.register('verifyReleaseSigning') {
+    doLast {
+        if (!releaseStoreFile || !releaseStorePassword || !releaseKeyAlias || !releaseKeyPassword) {
+            throw new GradleException('Release signing requires ANDROID_KEYSTORE_FILE, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD. Use assembleE2e for local testing.')
+        }
+        if (file(releaseStoreFile).canonicalFile == file('debug.keystore').canonicalFile || releaseKeyAlias == 'androiddebugkey') {
+            throw new GradleException('The public debug keystore must not be used for release signing.')
+        }
+        if (!file(releaseStoreFile).isFile()) {
+            throw new GradleException('The configured release keystore file does not exist.')
+        }
+    }
+}
+
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach {
+    dependsOn(verifyReleaseSigning)
 }
 
 dependencies {

@@ -75,7 +75,7 @@ function renderSignIn(options?: {
   const fake = options?.session ?? makeFakeSession().session;
   let tree!: ReactTestRenderer;
   act(() => {
-    tree = renderer.create(
+    tree = createTree(
       <SignInScreen
         session={fake}
         initialServerUrl={options?.initialServerUrl ?? ''}
@@ -140,6 +140,29 @@ test('switching servers clears remembered credentials and the password field', a
 
   expect(onClear).toHaveBeenCalledTimes(1);
   expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('');
+});
+
+test('switching servers via SIGN IN never sends the old password to the new server', async () => {
+  const fake = makeFakeSession();
+  const tree = renderSignIn({
+    session: fake.session,
+    initialServerUrl: 'https://old.example.com',
+    rememberedCredentials: {username: 'alice', password: 'old-server-password'},
+    onRememberedCredentialsCleared: jest.fn(),
+  });
+  act(() => tree.root.findByProps({accessibilityLabel: '配置服务器地址'}).props.onPress());
+  act(() => tree.root.findByProps({testID: 'server-input'}).props.onChangeText('https://new.example.com'));
+  await act(async () => {
+    await tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
+  });
+  expect(fake.session.getSnapshot().serverUrl).toBe('https://new.example.com');
+  expect(fake.session.login).not.toHaveBeenCalled();
+  expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('');
+  act(() => tree.root.findByProps({testID: 'password-input'}).props.onChangeText('new-server-password'));
+  await act(async () => {
+    await tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
+  });
+  expect(fake.session.login).toHaveBeenCalledWith('alice', 'new-server-password');
 });
 
 test('saves credentials only after an authenticated login', async () => {
@@ -227,4 +250,14 @@ test('signing out from forced password change clears the remembered-password cho
 
   expect(onClear).toHaveBeenCalledTimes(1);
   expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toEqual({checked: false});
+});
+
+const renderedTrees: ReactTestRenderer[] = [];
+function createTree(element: React.ReactElement): ReactTestRenderer {
+  const tree = renderer.create(element);
+  renderedTrees.push(tree);
+  return tree;
+}
+afterEach(async () => {
+  act(() => renderedTrees.splice(0).forEach(tree => tree.unmount()));
 });

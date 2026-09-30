@@ -21,7 +21,7 @@ test('labels the mixed personal and shared list as the readable vault', async ()
   let tree!: ReactTestRenderer;
 
   await act(async () => {
-    tree = renderer.create(
+    tree = createTree(
       <VaultScreen
         session={session}
         api={api}
@@ -37,4 +37,14 @@ test('labels the mixed personal and shared list as the readable vault', async ()
   });
 
   expect(tree.root.findAllByType(Text).some(node => node.props.children === 'READABLE VAULT')).toBe(true);
+});
+
+const renderedTrees: ReactTestRenderer[] = [];
+function createTree(element: React.ReactElement): ReactTestRenderer {
+  const tree = renderer.create(element);
+  renderedTrees.push(tree);
+  return tree;
+}
+afterEach(async () => {
+  act(() => renderedTrees.splice(0).forEach(tree => tree.unmount()));
 });

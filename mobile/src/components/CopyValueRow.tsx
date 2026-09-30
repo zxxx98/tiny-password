@@ -1,6 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
-import Clipboard from '@react-native-clipboard/clipboard';
+import {sensitiveClipboard} from '../privacy/clipboard';
 import {colors} from '../theme/colors';
 import {fonts, letterSpacing, typeScale} from '../theme/typography';
 import {minTouchTarget, spacing} from '../theme/spacing';
@@ -53,7 +53,7 @@ export function CopyValueRow({
     if (!hasValue) {
       return;
     }
-    Clipboard.setString(value!);
+    sensitiveClipboard.copy(value!);
     setCopied(true);
     onCopy?.();
     if (timer.current !== null) {

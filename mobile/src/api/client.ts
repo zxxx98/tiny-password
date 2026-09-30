@@ -71,10 +71,12 @@ export class ApiClient {
   readonly jar: CookieJar;
   private readonly base: string;
   private readonly fetchImpl: FetchLike;
+  private readonly onUnauthorized?: () => void;
+  private readonly pending = new Set<AbortController>();
 
   constructor(
     serverUrl: string,
-    options?: {fetchImpl?: FetchLike; jar?: CookieJar; now?: () => number},
+    options?: {fetchImpl?: FetchLike; jar?: CookieJar; now?: () => number; onUnauthorized?: () => void},
   ) {
     const normalized = normalizeServerUrl(serverUrl);
     if (!normalized) {
@@ -83,6 +85,15 @@ export class ApiClient {
     this.base = normalized;
     this.fetchImpl = options?.fetchImpl ?? defaultFetch;
     this.jar = options?.jar ?? new CookieJar(options?.now);
+    this.onUnauthorized = options?.onUnauthorized;
+  }
+
+  /** Cancel every request, including requests made directly by screens. */
+  cancelPending(): void {
+    for (const controller of this.pending) {
+      controller.abort();
+    }
+    this.pending.clear();
   }
 
   get serverUrl(): string {
@@ -94,6 +105,9 @@ export class ApiClient {
   }
 
   async request<T>(opts: RequestOptions): Promise<ApiResult<T>> {
+    if (opts.signal?.aborted) {
+      return {kind: 'aborted'};
+    }
     const url = this.apiUrl(opts.path);
     const headers: Record<string, string> = {
       Accept: 'application/json',
@@ -113,11 +127,11 @@ export class ApiClient {
     }
 
     const controller = new AbortController();
+    this.pending.add(controller);
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
-    if (opts.signal) {
-      opts.signal.addEventListener('abort', () => controller.abort(), {once: true});
-    }
+    const abort = () => controller.abort();
+    opts.signal?.addEventListener('abort', abort, {once: true});
     const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (timeoutMs > 0) {
       timeoutHandle = setTimeout(() => {
@@ -126,15 +140,40 @@ export class ApiClient {
       }, timeoutMs);
     }
 
-    let response: FetchResponseLike;
     try {
-      response = await this.fetchImpl(url, {
+      const response = await this.fetchImpl(url, {
         method: opts.method,
         headers,
         body,
         signal: controller.signal,
         credentials: 'omit',
       });
+      const raw = await response.text();
+      // Some transports finish despite cancellation. Never accept their
+      // cookies or data into a newer session, even after body consumption.
+      if (controller.signal.aborted) {
+        return timedOut
+          ? {kind: 'network-error', message: '请求超时，请检查网络后重试'}
+          : {kind: 'aborted'};
+      }
+      this.recordCookies(url, response.headers);
+      if (response.status === 401 && opts.path !== '/auth/login') {
+        this.onUnauthorized?.();
+      }
+      if (response.status >= 200 && response.status < 300) {
+        try {
+          const data = (raw.length === 0 ? undefined : JSON.parse(raw)) as T;
+          return {kind: 'success', status: response.status, data, headers: response.headers};
+        } catch {
+          return {kind: 'http-error', status: response.status, error: parseErrorEnvelope(raw, response.status)};
+        }
+      }
+      const error = parseErrorEnvelope(raw, response.status);
+      const retryAfterSeconds = Number(response.headers.get('retry-after'));
+      if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+        error.retryAfterSeconds = Math.round(retryAfterSeconds);
+      }
+      return {kind: 'http-error', status: response.status, error};
     } catch (err) {
       if (controller.signal.aborted) {
         // A timeout must surface as a network error so the UI can show it;
@@ -152,45 +191,13 @@ export class ApiClient {
         message: err instanceof Error ? err.message : '网络请求失败',
       };
     } finally {
+      this.pending.delete(controller);
+      opts.signal?.removeEventListener('abort', abort);
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
     }
 
-    this.recordCookies(url, response.headers);
-
-    const raw = await response.text();
-    if (response.status >= 200 && response.status < 300) {
-      let data: T;
-      if (raw.length === 0) {
-        data = undefined as T;
-      } else {
-        try {
-          data = JSON.parse(raw) as T;
-        } catch {
-          return {
-            kind: 'http-error',
-            status: response.status,
-            error: parseErrorEnvelope(raw, response.status),
-          };
-        }
-      }
-      return {kind: 'success', status: response.status, data, headers: response.headers};
-    }
-    const error = parseErrorEnvelope(raw, response.status);
-    // Rate limiting carries Retry-After (seconds); surface it for the UI.
-    const retryAfterRaw = response.headers.get('retry-after');
-    if (retryAfterRaw) {
-      const retryAfterSeconds = Number(retryAfterRaw);
-      if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
-        error.retryAfterSeconds = Math.round(retryAfterSeconds);
-      }
-    }
-    return {
-      kind: 'http-error',
-      status: response.status,
-      error,
-    };
   }
 
   private recordCookies(url: string, headers: HeadersLike): void {

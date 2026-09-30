@@ -5,6 +5,30 @@ on:
   pull_request:
 
 jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm --prefix mobile ci
+      - name: Check mobile types and regressions
+        working-directory: mobile
+        run: |
+          npx tsc --noEmit
+          npx jest --runInBand --silent
+      - name: Build Android debug APK
+        working-directory: mobile/android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
   web:
     runs-on: ubuntu-latest
     steps:

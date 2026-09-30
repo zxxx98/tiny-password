@@ -45,7 +45,7 @@ npm run android        # 需连接设备或模拟器；构建并安装 debug 变
 
 ## 服务器连接
 
-- 登录页顶部可折叠 `SERVER` 控件，输入 HTTPS 服务源地址（如 `https://vault.example.com`），点 `APPLY SERVER`。有效地址会自动记忆，冷启动时回填；登录页提供 `REMEMBER PASSWORD` 选项，勾选后用户名和密码会通过 Android Keystore 保护并在下次启动回填，但不会自动登录。
+- 登录页顶部可折叠 `SERVER` 控件，输入 HTTPS 服务源地址（如 `https://vault.example.com`），点 `APPLY SERVER`。有效地址会自动记忆，冷启动时回填；切换地址后必须重新输入密码，直接点登录也不会向新服务器提交旧密码；登录页提供 `REMEMBER PASSWORD` 选项，勾选后用户名和密码会通过 Android Keystore 保护并在下次启动回填，但不会自动登录。
 - 预填默认地址：编辑 `src/config.ts` 的 `DEFAULT_SERVER_URL`（构建期常量，非敏感）。
 - 服务端需已完成一次 Web 初始化（setup）；MVP 不提供 setup 页面。测试服务器本地启动方式见仓库根 `compose.yaml` 或 `Makefile`。
 - 认证完全依赖 Cookie + `X-CSRF-Token`：登录前 `POST /api/v1/csrf` 获取预认证上下文，登录后使用会话 Cookie 与响应体中的 CSRF token；改密后消费 `X-CSRF-Token` 响应头完成轮换。
@@ -72,14 +72,16 @@ cd mobile/android
 ./gradlew assembleDebug     # 开发变体：Metro 热更新，不带 bundle
 ```
 
-- `release`：打包 Hermes 字节码与字体资源；不允许明文流量；当前以 debug keystore 签名（便于安装体验，上架前必须更换正式签名）。
+- `release`：打包 Hermes 字节码与字体资源；不允许明文流量；使用独立正式密钥签名，缺少配置或使用默认调试密钥时拒绝构建。配置见 `../docs/mobile/android-release.md`。
 - `e2e`：在 release 基础上允许对测试服务器使用 HTTP（`usesCleartextTraffic=true`）。不要用于生产。
 
 ## 安全行为约定（实现要点）
 
 - Cookie/CSRF/条目内容只存在于进程内存（`CookieJar`、控制器状态）；服务器地址使用 AsyncStorage，勾选记住密码时用户名/密码使用 `react-native-keychain`（Android Keystore），不写入普通文件，`allowBackup=false`。冷启动回到登录页，不自动登录。
 - 取消 `REMEMBER PASSWORD`、退出登录或切换服务器时，删除已记住的用户名和密码；服务器地址保留。
-- 会话生命周期由服务端决定：前台真实操作触发节流的 `POST /auth/session/activity`（≥5 分钟一次）；后台恢复先遮罩内容并 `GET /auth/session` 校验，通过后才恢复展示。
+- 会话生命周期由服务端决定：前台真实操作触发节流的 `POST /auth/session/activity`（间隔为账号空闲超时的 1/3，最长 5 分钟；失败后允许后续操作重试）；后台恢复先遮罩内容并 `GET /auth/session` 校验，通过后才恢复展示。
+- 复制内容在 60 秒后仅当剪贴板仍是本应用写入的值时清除；退出登录也会清除。Android 在后台限制读取剪贴板时，回到前台补做清理，不影响复制后切换到其他应用粘贴。
+- Android 窗口及原生弹窗启用 `FLAG_SECURE`；切后台隐藏弹窗、收起键盘并重置密码显示状态，会话确认前禁止触控和无障碍访问底层内容。
 - 退出/切换服务器/401 会中断在途请求并提升会话代号（generation），迟到响应一律丢弃；切换服务器时清空整个 Cookie jar，禁止跨服务器携带 Cookie 或 CSRF。
 - 条目更新合并原始 payload（保留 `password_updated_at`/`password_expires_at`），省略 `tags`/`favorite`/`vault_scope`；`revision` 冲突保留草稿，提供“重新加载服务端内容”，重新加载前二次确认。
 - 创建使用内容绑定的 `Idempotency-Key`：同内容网络重试复用 key，修改内容即换 key。

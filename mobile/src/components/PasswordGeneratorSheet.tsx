@@ -1,5 +1,7 @@
 import React from 'react';
-import {Dimensions, Modal, Pressable, StyleSheet, Text, View} from 'react-native';
+import {Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {useInteraction} from '../privacy/interaction';
 import {PasswordGeneratorPanel} from './PasswordGeneratorPanel';
 import {colors} from '../theme/colors';
 import {fonts, letterSpacing, typeScale} from '../theme/typography';
@@ -27,22 +29,27 @@ export function PasswordGeneratorSheet({
   onClose,
   onUse,
 }: PasswordGeneratorSheetProps): React.JSX.Element {
+  const insets = useSafeAreaInsets();
+  const {hidden, onActivity} = useInteraction();
+  if (hidden) {
+    return <></>;
+  }
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
       <Pressable style={styles.backdrop} accessibilityLabel="关闭密码生成器" onPress={onClose} />
-      <View accessibilityViewIsModal style={styles.sheet}>
+      <ScrollView accessibilityViewIsModal style={styles.sheet}
+        contentContainerStyle={[styles.sheetContent, {paddingBottom: Math.max(insets.bottom, spacing.md) + spacing.md}]}
+        keyboardShouldPersistTaps="handled" onTouchStart={onActivity}>
         <View style={styles.sheetRule} />
         <Text style={styles.title}>PASSWORD GENERATOR</Text>
         <View style={styles.rule} />
         {visible ? (
           <PasswordGeneratorPanel api={api} csrfToken={csrfToken} showUse onUse={onUse} />
         ) : null}
-      </View>
+      </ScrollView>
     </Modal>
   );
 }
-
-const sheetWidth = Dimensions.get('window').width;
 
 const styles = StyleSheet.create({
   backdrop: {
@@ -58,14 +65,14 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    width: sheetWidth,
     maxHeight: '90%',
     backgroundColor: colors.background,
     borderTopWidth: borderHeavy,
     borderTopColor: colors.foreground,
+  },
+  sheetContent: {
     paddingHorizontal: pageMargin,
     paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
   },
   sheetRule: {
     alignSelf: 'center',

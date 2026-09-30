@@ -1,5 +1,6 @@
 import React from 'react';
-import {Modal, StyleSheet, Text, View} from 'react-native';
+import {Modal, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {useInteraction} from '../privacy/interaction';
 import {NewsprintButton} from './NewsprintButton';
 import {colors} from '../theme/colors';
 import {fonts, typeScale} from '../theme/typography';
@@ -33,15 +34,16 @@ export function ConfirmDialog({
   onCancel,
   testID,
 }: ConfirmDialogProps): React.JSX.Element {
+  const {hidden, onActivity} = useInteraction();
   return (
     <Modal
-      visible={visible}
+      visible={visible && !hidden}
       transparent
       animationType="fade"
       onRequestClose={onCancel}
       statusBarTranslucent>
-      <View style={styles.backdrop}>
-        <View accessibilityViewIsModal style={styles.box} testID={testID}>
+      <View style={styles.backdrop} onTouchStart={onActivity}>
+        <ScrollView accessibilityViewIsModal style={styles.box} contentContainerStyle={styles.boxContent} testID={testID}>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.message}>{message}</Text>
           <View style={styles.actions}>
@@ -56,7 +58,7 @@ export function ConfirmDialog({
               />
             </View>
           </View>
-        </View>
+        </ScrollView>
       </View>
     </Modal>
   );
@@ -70,9 +72,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   box: {
+    flexGrow: 0,
+    maxHeight: '90%',
     backgroundColor: colors.background,
     borderWidth: borderWidth,
     borderColor: colors.foreground,
+  },
+  boxContent: {
     padding: spacing.lg,
   },
   title: {

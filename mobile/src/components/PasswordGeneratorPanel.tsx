@@ -1,7 +1,8 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {Pressable, StyleSheet, Text, View} from 'react-native';
 import Slider from '@react-native-community/slider';
-import Clipboard from '@react-native-clipboard/clipboard';
+import {sensitiveClipboard} from '../privacy/clipboard';
+import {useInteraction} from '../privacy/interaction';
 import {NewsprintButton} from './NewsprintButton';
 import {Banner} from './Banner';
 import {colors} from '../theme/colors';
@@ -52,11 +53,18 @@ export function PasswordGeneratorPanel({
   showUse = false,
   onUse,
 }: PasswordGeneratorPanelProps): React.JSX.Element {
+  const {onActivity} = useInteraction();
   const [params, setParams] = useState<PasswordGeneratorOptions>(GENERATOR_DEFAULTS);
   const [status, setStatus] = useState<GeneratorStatus>('generating');
   const [value, setValue] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (copyTimer.current !== null) {
+      clearTimeout(copyTimer.current);
+    }
+  }, []);
   const runnerRef = useRef<DebouncedRunner | null>(null);
   if (runnerRef.current === null) {
     runnerRef.current = new DebouncedRunner(PARAM_DEBOUNCE_MS);
@@ -119,6 +127,7 @@ export function PasswordGeneratorPanel({
   useEffect(() => () => runner.dispose(), [runner]);
 
   const updateParams = (patch: Partial<PasswordGeneratorOptions>) => {
+    onActivity();
     const next = {...params, ...patch};
     setParams(next);
     // Invalidate the old value the instant parameters change: during the
@@ -128,6 +137,7 @@ export function PasswordGeneratorPanel({
   };
 
   const toggle = (key: 'uppercase' | 'lowercase' | 'digits' | 'symbols') => {
+    onActivity();
     const enabledCount =
       Number(params.uppercase) + Number(params.lowercase) + Number(params.digits) + Number(params.symbols);
     if (params[key] && enabledCount <= 1) {
@@ -145,9 +155,12 @@ export function PasswordGeneratorPanel({
     if (!ready || !value) {
       return;
     }
-    Clipboard.setString(value);
+    sensitiveClipboard.copy(value);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    if (copyTimer.current !== null) {
+      clearTimeout(copyTimer.current);
+    }
+    copyTimer.current = setTimeout(() => setCopied(false), 1500);
   };
 
   const use = () => {

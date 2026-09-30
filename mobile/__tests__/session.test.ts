@@ -484,6 +484,24 @@ describe('SessionController — cancellation and stale-response isolation', () =
     expect(controller.getApi()!.client.jar.size).toBe(0);
   });
 
+  it('an old logout cannot invalidate a new server login', async () => {
+    const {controller, server} = setup();
+    server.loginHandler(() => ({status: 200, body: {csrf_token: 'csrf', user: USER_OK}, setCookie: ['tiny_password_session=session; Path=/']}));
+    await controller.preflight();
+    await controller.login('alice', 'password');
+    let finishLogout!: (value: FetchResponseLike) => void;
+    const old = controller.getApi()!;
+    (old.client as unknown as {fetchImpl: unknown}).fetchImpl = () => new Promise(resolve => {finishLogout = resolve;});
+    const pending = controller.signOut();
+    controller.setServerUrl('https://other.example.com');
+    await controller.preflight();
+    await controller.login('alice', 'password');
+    finishLogout({status: 204, headers: {get: () => null}, text: async () => ''});
+    await pending;
+    expect(controller.getSnapshot().phase).toBe('authenticated');
+    expect(controller.csrfToken).toBe('csrf');
+  });
+
   it('signOut revokes the server session before the local wipe', async () => {
     const {controller, server} = setup();
     server.loginHandler(() => ({
@@ -576,5 +594,75 @@ describe('SessionController — activity renewal and resume validation', () => {
     });
     expect(await controller.validateOnResume()).toBe('signed-out');
     expect(controller.getSnapshot().phase).toBe('signed-out');
+  });
+
+  it('keeps a five-minute session alive during continuous real activity', async () => {
+    const {server, fetchImpl} = createMockServer();
+    let now = 1_000_000;
+    let expiry = now + 5 * 60_000;
+    const controller = new SessionController(() => now, async (url, init) => {
+      if (url.endsWith('/auth/session/activity')) {
+        if (now >= expiry) {
+          return {status: 401, headers: {get: () => null}, text: async () => '{"code":"UNAUTHORIZED","message":"expired"}'};
+        }
+        expiry = now + 5 * 60_000;
+      }
+      return fetchImpl(url, init);
+    });
+    controller.setServerUrl('https://vault.example.com');
+    server.loginHandler(() => ({status: 200, body: {csrf_token: 'csrf', user: {...USER_OK, idle_timeout_minutes: 5}}, setCookie: ['tiny_password_session=session; Path=/']}));
+    await controller.preflight();
+    await controller.login('alice', 'password');
+    for (let minute = 0; minute < 10; minute++) {
+      now += 60_000;
+      await controller.touchActivity();
+    }
+    expect(controller.getSnapshot().phase).toBe('authenticated');
+    expect(expiry).toBeGreaterThan(now);
+    expect(server.calls.filter(call => call.url.endsWith('/activity')).length).toBeGreaterThan(0);
+  });
+
+  it('read-only resume checks do not postpone the next activity renewal', async () => {
+    const {controller, server, advance} = setup();
+    loginOk(controller, server);
+    await controller.preflight();
+    await controller.login('alice', 'password');
+    advance(4 * 60_000);
+    await controller.validateOnResume();
+    advance(2 * 60_000);
+    await controller.touchActivity();
+    expect(server.calls.filter(call => call.url.endsWith('/activity'))).toHaveLength(1);
+  });
+
+  it.each(['/items/missing', '/generators/password'])('invalidates the session for any authenticated 401: %s', async path => {
+    const {controller, server} = setup();
+    loginOk(controller, server);
+    await controller.preflight();
+    await controller.login('alice', 'password');
+    const api = controller.getApi()!;
+    (api.client as unknown as {fetchImpl: unknown}).fetchImpl = async () => ({
+      status: 401, headers: {get: () => null}, text: async () => '{"code":"UNAUTHORIZED","message":"expired"}',
+    });
+    await api.request({method: 'GET', path});
+    expect(controller.getSnapshot().phase).toBe('signed-out');
+    expect(api.client.jar.size).toBe(0);
+  });
+
+  it('cancels screen requests at logout and rejects late cookies and data', async () => {
+    const {controller, server} = setup();
+    loginOk(controller, server);
+    await controller.preflight();
+    await controller.login('alice', 'password');
+    const api = controller.getApi()!;
+    const client = api.client as unknown as {fetchImpl: (url: string, init: FetchInit) => Promise<FetchResponseLike>};
+    const original = client.fetchImpl;
+    let resolveDetail!: (value: FetchResponseLike) => void;
+    client.fetchImpl = (url, init) => url.endsWith('/items/slow')
+      ? new Promise(resolve => {resolveDetail = resolve;}) : original(url, init);
+    const pending = api.getItem('slow');
+    await controller.signOut();
+    resolveDetail({status: 200, headers: {get: () => null, getSetCookie: () => ['tiny_password_session=late; Path=/']}, text: async () => '{"payload":{"password":"late-secret"}}'});
+    expect((await pending).kind).toBe('aborted');
+    expect(api.client.jar.size).toBe(0);
   });
 });

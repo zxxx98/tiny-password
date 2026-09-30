@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   BackHandler,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   Pressable,
   ScrollView,
@@ -55,6 +56,7 @@ import {
 import {createIdempotencyKeyManager, canonicalCreateContent} from '../vault/idempotency';
 import {formatIdentityClipboard, hasIdentityClipboardContent} from '../vault/identityClipboard';
 import type {SessionController} from '../auth/session';
+import {useInteraction} from '../privacy/interaction';
 
 export type EditorRoute =
   | {mode: 'create'}
@@ -64,7 +66,7 @@ interface EntryEditorScreenProps {
   session: SessionController;
   api: TinyPasswordApi;
   route: EditorRoute;
-  onClose: (mutation?: 'created' | 'trashed') => void;
+  onClose: (mutation?: 'created' | 'trashed' | 'updated') => void;
   onActivity: () => void;
 }
 
@@ -100,6 +102,7 @@ export function EntryEditorScreen({
   onClose,
   onActivity,
 }: EntryEditorScreenProps): React.JSX.Element {
+  const {hidden} = useInteraction();
   const insets = useSafeAreaInsets();
   const isCreate = route.mode === 'create';
   const csrf = session.csrfToken;
@@ -125,6 +128,23 @@ export function EntryEditorScreen({
   const [generatorVisible, setGeneratorVisible] = useState(false);
   const keyManager = useRef(createIdempotencyKeyManager());
   const [loadTracker] = useState(() => new LatestTracker());
+  const requestScope = useRef(new AbortController());
+  const mutationPending = useRef(false);
+  const hasSaved = useRef(false);
+  const [pendingType, setPendingType] = useState<ItemType | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    requestScope.current = controller;
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (hidden) {
+      setShowSecrets({});
+      setGeneratorVisible(false);
+    }
+  }, [hidden]);
 
   const detailRef = useRef<ItemDetail | null>(null);
   detailRef.current = detail;
@@ -138,8 +158,9 @@ export function EntryEditorScreen({
     const myId = loadTracker.next();
     setLoadState('loading');
     setLoadError(null);
-    const result = await api.getItem(route.itemId);
-    if (!loadTracker.isCurrent(myId)) {
+    const signal = requestScope.current.signal;
+    const result = await api.getItem(route.itemId, signal);
+    if (signal.aborted || !loadTracker.isCurrent(myId)) {
       return;
     }
     if (result.kind === 'success') {
@@ -162,6 +183,10 @@ export function EntryEditorScreen({
       setMode('view');
       setShowSecrets({});
     } else if (result.kind === 'http-error') {
+      if (result.status === 401) {
+        session.invalidateLocally();
+        return;
+      }
       setLoadState('error');
       setLoadError(
         result.status === 404
@@ -190,11 +215,14 @@ export function EntryEditorScreen({
   // --- Android Back -----------------------------------------------------------
 
   const tryClose = useCallback(() => {
+    if (mutationPending.current) {
+      return;
+    }
     if (mode === 'edit' && dirty) {
       setDiscardConfirmVisible(true);
       return;
     }
-    onClose();
+    onClose(hasSaved.current ? 'updated' : undefined);
   }, [mode, dirty, onClose]);
 
   const tryCloseRef = useRef(tryClose);
@@ -205,7 +233,7 @@ export function EntryEditorScreen({
         setGeneratorVisible(false);
         return true;
       }
-      if (reloadConfirmVisible || discardConfirmVisible || deleteConfirmVisible) {
+      if (reloadConfirmVisible || discardConfirmVisible || deleteConfirmVisible || pendingType) {
         return true;
       }
       tryCloseRef.current();
@@ -213,7 +241,7 @@ export function EntryEditorScreen({
     };
     const subscription = BackHandler.addEventListener('hardwareBackPress', handler);
     return () => subscription.remove();
-  }, [generatorVisible, reloadConfirmVisible, discardConfirmVisible, deleteConfirmVisible]);
+  }, [generatorVisible, reloadConfirmVisible, discardConfirmVisible, deleteConfirmVisible, pendingType]);
 
   // --- edit state helpers ------------------------------------------------------
 
@@ -229,15 +257,27 @@ export function EntryEditorScreen({
     });
   };
 
+  const applyType = (type: ItemType) => {
+    const next = emptyEdits(type);
+    setItemType(type);
+    setEdits(next);
+    setInitialSnapshot(JSON.stringify(next));
+    setPendingType(null);
+    setShowSecrets({});
+    setFieldErrors({});
+    setSaveError(null);
+  };
+
   const switchType = (type: ItemType) => {
-    if (type === itemType) {
+    if (type === itemType || mutationPending.current) {
       return;
     }
     onActivity();
-    setItemType(type);
-    setEdits(emptyEdits(type));
-    setFieldErrors({});
-    setSaveError(null);
+    if (dirty) {
+      setPendingType(type);
+    } else {
+      applyType(type);
+    }
   };
 
   const toggleReveal = (key: string, auditField?: AuditField) => {
@@ -251,7 +291,7 @@ export function EntryEditorScreen({
   // --- save (create / update) -------------------------------------------------
 
   const save = async () => {
-    if (saving) {
+    if (mutationPending.current) {
       return;
     }
     onActivity();
@@ -271,6 +311,9 @@ export function EntryEditorScreen({
       return;
     }
     setSaving(true);
+    mutationPending.current = true;
+    Keyboard.dismiss();
+    const signal = requestScope.current.signal;
     if (isCreate) {
       const payload = payloadFromEdits(itemType, edits);
       const content = canonicalCreateContent(payload as unknown as Record<string, unknown>, {
@@ -278,7 +321,11 @@ export function EntryEditorScreen({
         vault_scope: 'personal',
       });
       const key = keyManager.current.keyFor(content);
-      const result = await api.createItem(payload, itemType, key, csrf);
+      const result = await api.createItem(payload, itemType, key, csrf, signal);
+      if (signal.aborted) {
+        return;
+      }
+      mutationPending.current = false;
       setSaving(false);
       if (result.kind === 'success') {
         keyManager.current.reset();
@@ -293,19 +340,25 @@ export function EntryEditorScreen({
         setSaveError(result.error.message || '创建失败');
         return;
       }
-      setSaveError(result.kind === 'network-error' ? '网络异常，尚未保存至服务端；草稿已保留，可重试。' : '创建失败');
+      setSaveError(result.kind === 'network-error' ? '网络异常，无法确认保存结果；草稿已保留，可重试。' : '创建失败');
       return;
     }
 
     const d = detailRef.current;
     if (!d) {
+      mutationPending.current = false;
       setSaving(false);
       return;
     }
     const payload = mergePayload(itemType, d.payload, edits);
-    const result = await api.updateItem(d.id, d.revision, payload, csrf);
+    const result = await api.updateItem(d.id, d.revision, payload, csrf, signal);
+    if (signal.aborted) {
+      return;
+    }
+    mutationPending.current = false;
     setSaving(false);
     if (result.kind === 'success') {
+      hasSaved.current = true;
       const fresh = result.data;
       setDetail(fresh);
       const e = editsFromDetail(fresh);
@@ -338,7 +391,7 @@ export function EntryEditorScreen({
       setSaveError(result.error.message || '保存失败');
       return;
     }
-    setSaveError(result.kind === 'network-error' ? '网络异常，尚未保存至服务端；草稿已保留，可重试。' : '保存失败');
+    setSaveError(result.kind === 'network-error' ? '网络异常，无法确认保存结果；草稿已保留，可重试。' : '保存失败');
   };
 
   // --- conflict resolution ----------------------------------------------------
@@ -352,6 +405,9 @@ export function EntryEditorScreen({
   // --- delete (move to trash) -------------------------------------------------
 
   const doDelete = async () => {
+    if (mutationPending.current) {
+      return;
+    }
     setDeleteConfirmVisible(false);
     if (!detail) {
       return;
@@ -365,8 +421,14 @@ export function EntryEditorScreen({
       return;
     }
     setDeleting(true);
+    mutationPending.current = true;
     setDeleteError(null);
-    const result = await api.trashItem(detail.id, csrf);
+    const signal = requestScope.current.signal;
+    const result = await api.trashItem(detail.id, csrf, signal);
+    if (signal.aborted) {
+      return;
+    }
+    mutationPending.current = false;
     setDeleting(false);
     if (result.kind === 'success') {
       onClose('trashed');
@@ -1165,6 +1227,7 @@ export function EntryEditorScreen({
         behavior={Platform.OS === 'android' ? undefined : 'padding'}
         style={styles.flex}>
         <ScrollView
+          pointerEvents={saving || deleting ? 'none' : 'auto'}
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled">
 
@@ -1234,6 +1297,7 @@ export function EntryEditorScreen({
                 label="MOVE TO TRASH"
                 variant="danger"
                 loading={deleting}
+                disabled={saving || deleting}
                 onPress={() => {
                   setDeleteError(null);
                   setDeleteConfirmVisible(true);
@@ -1261,6 +1325,17 @@ export function EntryEditorScreen({
         />
       ) : null}
 
+      <ConfirmDialog
+        visible={pendingType !== null}
+        title="切换条目类型？"
+        message="切换类型会清空当前未保存的内容。"
+        confirmLabel="SWITCH TYPE"
+        cancelLabel="KEEP EDITING"
+        destructive
+        onConfirm={() => { if (pendingType) { applyType(pendingType); } }}
+        onCancel={() => setPendingType(null)}
+        testID="switch-type-confirm"
+      />
       <ConfirmDialog
         visible={reloadConfirmVisible}
         title="重新加载服务端内容？"
