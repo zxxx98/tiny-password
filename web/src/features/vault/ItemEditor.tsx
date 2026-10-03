@@ -41,6 +41,7 @@ export type ItemEditorProps = {
   initial?: ItemDetailData;
   /** Optional in-memory values handed off by the generator for a new login. */
   initialLoginDraft?: Partial<LoginPayload>;
+  creationDraft?: { item_type: ItemType; payload: ItemPayload; tags: string[] };
   onSaved: (detail: ItemDetailData) => void;
   onCancel: () => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -61,26 +62,28 @@ export function ItemEditor({
   csrfToken,
   initial,
   initialLoginDraft,
+  creationDraft,
   onSaved,
   onCancel,
   onDirtyChange,
   onBusyChange,
   onMoveConfirm,
 }: ItemEditorProps) {
-  const [type, setType] = useState<ItemType>(initial?.item_type ?? "login");
+  const [type, setType] = useState<ItemType>(initial?.item_type ?? creationDraft?.item_type ?? "login");
   const [scope, setScope] = useState<"personal" | "shared">(initial?.vault_scope ?? "personal");
   const [payload, setPayload] = useState<ItemPayload>(
     initial
       ? (initial.payload as ItemPayload)
-      : ({ ...emptyPayload("login"), ...(initialLoginDraft ?? {}) } as ItemPayload),
+      : creationDraft?.payload ?? ({ ...emptyPayload("login"), ...(initialLoginDraft ?? {}) } as ItemPayload),
   );
-  const [tagText, setTagText] = useState(initial ? initial.tags.join(", ") : "");
+  const [tagText, setTagText] = useState((initial?.tags ?? creationDraft?.tags ?? []).join(", "));
   const [favorite, setFavorite] = useState(initial?.favorite ?? false);
   // The revision is part of the editor's authoritative snapshot. It must
   // advance when the user reloads after an optimistic-lock conflict.
   const [revision, setRevision] = useState(initial?.revision ?? 0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [requestId, setRequestId] = useState<string | undefined>();
   const [conflict, setConflict] = useState<number | null>(null);
@@ -111,8 +114,8 @@ export function ItemEditor({
   }, [favorite, onDirtyChange, payload, scope, tagText, type]);
 
   useEffect(() => {
-    onBusyChange?.(submitting);
-  }, [onBusyChange, submitting]);
+    onBusyChange?.(submitting || generating);
+  }, [onBusyChange, submitting, generating]);
 
   const changeType = (next: ItemType) => {
     setType(next);
@@ -122,6 +125,7 @@ export function ItemEditor({
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (submitting || generating) return;
     setError(null);
     setRequestId(undefined);
     const validator = validators[type];
@@ -247,6 +251,7 @@ export function ItemEditor({
             <label htmlFor="e-type" className="block font-mono text-xs uppercase tracking-widest">类型</label>
             <select
               id="e-type"
+              disabled={submitting || generating}
               value={type}
               onChange={(e) => changeType(e.target.value as ItemType)}
               className="min-h-[44px] w-full border-b-2 border-ink bg-transparent px-3 py-2 font-mono text-sm"
@@ -273,7 +278,7 @@ export function ItemEditor({
         </div>
       </fieldset>
 
-      {type === "login" && <LoginFields payload={payload as LoginPayload} errors={errors} disabled={submitting} csrfToken={csrfToken} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
+      {type === "login" && <LoginFields payload={payload as LoginPayload} errors={errors} disabled={submitting || generating} csrfToken={csrfToken} onGenerationBusyChange={setGenerating} onChange={(patch) => setPayload((current) => ({ ...current, ...patch } as ItemPayload))} />}
       {type === "ssh_key" && <SshKeyFields payload={payload as SshKeyPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "credit_card" && <CreditCardFields payload={payload as CreditCardPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
       {type === "identity" && <IdentityFields payload={payload as IdentityPayload} errors={errors} disabled={submitting} onChange={(patch) => setPayload({ ...payload, ...patch } as ItemPayload)} />}
@@ -295,10 +300,10 @@ export function ItemEditor({
       </div>
 
       <div className="flex gap-2">
-        <Button type="submit" disabled={submitting}>
+        <Button type="submit" disabled={submitting || generating}>
           {submitting ? "保存中…" : initial ? "保存修改" : "创建条目"}
         </Button>
-        <Button variant="secondary" disabled={submitting} onClick={onCancel}>取消</Button>
+        <Button variant="secondary" disabled={submitting || generating} onClick={onCancel}>取消</Button>
       </div>
     </form>
   );

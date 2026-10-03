@@ -17,6 +17,9 @@ import { ConfirmDialog } from "../../design-system/Dialog";
 import { ErrorSummary, Loading } from "../../design-system/Status";
 import { ItemDialog, type ItemDialogMode } from "./ItemDialog";
 import { TrashPage } from "./TrashPage";
+import { HealthDialog } from "./HealthDialog";
+import { BulkActions } from "./BulkActions";
+import { QuickCopy } from "./QuickCopy";
 import {
   ITEM_TYPES,
   TYPE_LABELS,
@@ -49,8 +52,28 @@ export function VaultPage({ section }: { section?: "trash" }) {
   const [items, setItems] = useState<ItemMeta[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
   const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [sortOrder, setSortOrder] = useState("updated_desc");
+  const [tagFilter, setTagFilter] = useState("");
+  const [scopeFilter, setScopeFilter] = useState("");
+  const [groupBy, setGroupBy] = useState("");
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const queryKey = JSON.stringify([principal?.user_id, csrfToken, searchQuery, typeFilter, favoriteOnly, sortOrder, tagFilter, scopeFilter]);
+  const [resultKey, setResultKey] = useState<string | null>(null);
+  const [replacingResults, setReplacingResults] = useState(false);
+  const [selectionState, setSelectionState] = useState<{ key: string; items: Map<string, ItemMeta> }>({ key: queryKey, items: new Map() });
+  const selection = selectionState.key === queryKey ? selectionState.items : new Map<string, ItemMeta>();
+  const selectionDisabled = replacingResults || resultKey !== queryKey || query.trim() !== searchQuery;
+  const setSelection = (update: Map<string, ItemMeta> | ((previous: Map<string, ItemMeta>) => Map<string, ItemMeta>)) => {
+    setSelectionState((previous) => ({ key: queryKey, items: typeof update === "function" ? update(previous.key === queryKey ? previous.items : new Map()) : update }));
+  };
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkBusyRef = useRef(false);
+  const [healthOpen, setHealthOpen] = useState(false);
+  const [healthVersion, setHealthVersion] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [listRequestId, setListRequestId] = useState<string | undefined>();
   const [health, setHealth] = useState<HealthReport | null>(null);
@@ -130,49 +153,43 @@ export function VaultPage({ section }: { section?: "trash" }) {
     listRequestRef.current = null;
   }, []);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(query.trim()), 200);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
   const loadPage = useCallback(
-    async (nextCursor: string | null, append: boolean) => {
+    async (nextCursor: string | null, append: boolean, preserveFailures = false) => {
       abortListRequest();
+      if (!append) {
+        setReplacingResults(true);
+        if (!preserveFailures) setSelectionState({ key: queryKey, items: new Map() });
+      }
       const controller = new AbortController();
       const sequence = ++listSequenceRef.current;
       listRequestRef.current = { controller, sequence };
       try {
-        const params = new URLSearchParams();
-        if (typeFilter) params.set("type", typeFilter);
-        if (favoriteOnly) params.set("favorite", "true");
-        if (nextCursor) params.set("cursor", nextCursor);
-        let page: Page;
-        if (query.trim()) {
-          page = await request<Page>(
-            "POST",
-            "/api/v1/items/search",
-            {
-              query: query.trim(),
-              type: typeFilter || undefined,
-              tag: undefined,
-              cursor: nextCursor ?? undefined,
-            },
-            { csrfToken, signal: controller.signal },
-          );
-        } else {
-          page = await request<Page>("GET", `/api/v1/items?${params.toString()}`, undefined, {
-            csrfToken,
-            signal: controller.signal,
-          });
-        }
+        const page = await request<Page>("POST", "/api/v1/items/browse", {
+          query: searchQuery, type: typeFilter, scope: scopeFilter, tag: tagFilter,
+          favorite: favoriteOnly ? true : undefined, sort: sortOrder, cursor: nextCursor ?? undefined,
+        }, { csrfToken, signal: controller.signal });
         if (controller.signal.aborted || listRequestRef.current?.sequence !== sequence) return;
         setItems((prev) => (append && prev ? [...prev, ...page.items] : page.items));
         setCursor(page.next_cursor);
+        setResultKey(queryKey);
         setListError(null);
         setListRequestId(undefined);
       } catch (err) {
         if (controller.signal.aborted || isAbortError(err) || listRequestRef.current?.sequence !== sequence) return;
         failList(err);
       } finally {
-        if (listRequestRef.current?.sequence === sequence) listRequestRef.current = null;
+        if (listRequestRef.current?.sequence === sequence) {
+          listRequestRef.current = null;
+          setReplacingResults(false);
+        }
       }
     },
-    [abortListRequest, csrfToken, favoriteOnly, failList, query, typeFilter],
+    [abortListRequest, csrfToken, favoriteOnly, failList, searchQuery, typeFilter, sortOrder, tagFilter, scopeFilter, queryKey],
   );
 
   useEffect(() => {
@@ -193,7 +210,18 @@ export function VaultPage({ section }: { section?: "trash" }) {
       active = false;
       controller.abort();
     };
-  }, [csrfToken]);
+  }, [csrfToken, healthVersion]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setAvailableTags([]);
+    void request<{ tags: string[] }>("POST", "/api/v1/items/browse/tags", {
+      scope: scopeFilter, type: typeFilter, favorite: favoriteOnly ? true : undefined,
+    }, { csrfToken, signal: controller.signal }).then((page) => {
+      if (!controller.signal.aborted) setAvailableTags(page.tags);
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [csrfToken, scopeFilter, typeFilter, favoriteOnly, healthVersion]);
 
   const abortDetailRequest = useCallback(() => {
     detailRequestRef.current?.controller.abort();
@@ -347,7 +375,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
 
   useEffect(() => {
     const release = setNavigationGuard((intent: NavigationIntent) => {
-      if (editorBusyRef.current) return false;
+      if (editorBusyRef.current || bulkBusyRef.current) return false;
       if (!dirtyRef.current) return true;
       pendingLeaveRef.current = { kind: "push", path: intent.path, meta: intent.meta };
       setConfirmDiscard(true);
@@ -416,6 +444,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
       if (!mountedRef.current) return;
       const sequence = ++refreshSequenceRef.current;
       setModal({ kind: "detail", detail });
+      setHealthVersion((value) => value + 1);
       setDirtyState(false);
       if (sourceScope && sourceScope !== detail.vault_scope) {
         setStatusMessage(detail.vault_scope === "shared" ? "已移至共享" : "已移至个人保险库");
@@ -498,6 +527,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
       await request("DELETE", `/api/v1/items/${modal.detail.id}`, undefined, { csrfToken, signal: controller.signal });
       if (!mountedRef.current || controller.signal.aborted || trashRequestRef.current?.sequence !== sequence) return;
       setConfirmTrash(false);
+      setHealthVersion((value) => value + 1);
       focusListAfterDeleteRef.current = true;
       setModal({ kind: "closed" });
       setDirtyState(false);
@@ -524,6 +554,38 @@ export function VaultPage({ section }: { section?: "trash" }) {
     [principal],
   );
 
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (section || modal.kind !== "closed" || bulkBusyRef.current || document.querySelector("dialog[open]")) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const typing = target?.closest("input, textarea, select, [contenteditable='true']");
+      if ((event.key === "/" && !typing) || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k")) {
+        event.preventDefault(); searchRef.current?.focus();
+      } else if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "n") {
+        event.preventDefault(); openCreate();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [modal.kind, openCreate, section]);
+
+  const selectedItems = [...selection.values()];
+  const toggleSelection = (item: ItemMeta, checked: boolean) => {
+    if (selectionDisabled) return;
+    setSelection((previous) => {
+      const next = new Map(previous);
+      if (checked) next.set(item.id, item); else next.delete(item.id);
+      return next;
+    });
+  };
+  const groups = new Map<string, ItemMeta[]>();
+  for (const item of items ?? []) {
+    const names = groupBy === "tag" ? (item.tags?.length ? item.tags : ["未分类"])
+      : [groupBy === "type" ? TYPE_LABELS[item.item_type] : groupBy === "scope" ? (item.vault_scope === "personal" ? "个人保险库" : "共享保险库") : ""];
+    for (const name of names) groups.set(name, [...(groups.get(name) ?? []), item]);
+  }
+
   if (section === "trash") {
     return (
       <AppFrame>
@@ -540,10 +602,13 @@ export function VaultPage({ section }: { section?: "trash" }) {
             className="flex min-w-0 flex-wrap gap-2"
             onSubmit={(event) => {
               event.preventDefault();
-              void loadPage(null, false);
+              if (query.trim() === searchQuery) void loadPage(null, false);
+              else setSearchQuery(query.trim());
             }}
           >
             <input
+              ref={searchRef}
+              disabled={bulkBusy}
               type="search"
               aria-label="搜索条目"
               placeholder="搜索标题、用户名、网址、标签、备注"
@@ -551,11 +616,12 @@ export function VaultPage({ section }: { section?: "trash" }) {
               onChange={(event) => setQuery(event.target.value)}
               className="min-h-[44px] min-w-0 flex-1 basis-48 border-b-2 border-ink bg-transparent px-3 py-2 font-mono text-sm focus-visible:bg-neutral-100 focus-visible:outline-none"
             />
-            <Button type="submit">搜索</Button>
+            <Button type="submit" disabled={bulkBusy}>搜索</Button>
           </form>
 
           <div className="flex flex-wrap gap-2">
             <select
+              disabled={bulkBusy}
               aria-label="按类型筛选"
               value={typeFilter}
               onChange={(event) => setTypeFilter(event.target.value)}
@@ -564,18 +630,43 @@ export function VaultPage({ section }: { section?: "trash" }) {
               <option value="">全部类型</option>
               {ITEM_TYPES.map((type) => <option key={type} value={type}>{TYPE_LABELS[type]}</option>)}
             </select>
-            <Button variant={favoriteOnly ? "primary" : "secondary"} onClick={() => setFavoriteOnly((value) => !value)}>
+            <Button disabled={bulkBusy} variant={favoriteOnly ? "primary" : "secondary"} onClick={() => setFavoriteOnly((value) => !value)}>
               收藏
             </Button>
             <Link to="/vault/trash" className="flex min-h-[44px] items-center px-3 font-mono text-xs uppercase tracking-widest underline-offset-4 hover:underline">
               回收站
             </Link>
-            <Button className="ml-auto" onClick={openCreate}>新建条目</Button>
+            <Button className="ml-auto" disabled={bulkBusy} onClick={openCreate}>新建条目</Button>
           </div>
 
+          <div className="flex flex-wrap gap-2">
+            <select aria-label="排序" disabled={bulkBusy} value={sortOrder} onChange={(event) => setSortOrder(event.target.value)} className="min-h-[44px] border border-ink bg-paper px-2 font-mono text-xs">
+              <option value="updated_desc">最近更新</option><option value="updated_asc">最早更新</option><option value="created_desc">最近创建</option><option value="title_asc">名称升序</option><option value="title_desc">名称降序</option>
+            </select>
+            <select aria-label="按保险库筛选" disabled={bulkBusy} value={scopeFilter} onChange={(event) => setScopeFilter(event.target.value)} className="min-h-[44px] border border-ink bg-paper px-2 font-mono text-xs">
+              <option value="">全部保险库</option><option value="personal">个人保险库</option><option value="shared">共享保险库</option>
+            </select>
+            <select aria-label="按标签筛选" disabled={bulkBusy} value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} className="min-h-[44px] border border-ink bg-paper px-2 font-mono text-xs">
+              <option value="">全部标签</option>{[...new Set([...availableTags, ...(tagFilter ? [tagFilter] : [])])].map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+            </select>
+            <select aria-label="分组" disabled={bulkBusy} value={groupBy} onChange={(event) => setGroupBy(event.target.value)} className="min-h-[44px] border border-ink bg-paper px-2 font-mono text-xs">
+              <option value="">不分组</option><option value="tag">按标签分组</option><option value="type">按类型分组</option><option value="scope">按保险库分组</option>
+            </select>
+            <Button variant="ghost" disabled={bulkBusy} onClick={() => { setSelection(new Map()); setHealthVersion((value) => value + 1); void loadPage(null, false); }}>刷新列表</Button>
+          </div>
+          <p className="font-body text-xs text-neutral-500">快捷键：/ 或 Ctrl/⌘ K 搜索，N 新建。按标签分组时，多标签条目会出现在各组中。</p>
+          <label className="flex min-h-[44px] items-center gap-2 font-body text-sm">
+            <input type="checkbox" disabled={bulkBusy || selectionDisabled || !items?.length} checked={Boolean(items?.length && items.every((item) => selection.has(item.id)))} onChange={(event) => { if (!selectionDisabled) setSelection(event.target.checked ? new Map((items ?? []).map((item) => [item.id, item])) : new Map()); }} />选择已加载的全部条目
+          </label>
+          <BulkActions key={queryKey} disabled={selectionDisabled} items={selectedItems} csrfToken={csrfToken} canManage={canManage}
+            onSucceeded={(id) => setSelection((previous) => { const next = new Map(previous); next.delete(id); return next; })}
+            onClear={() => setSelection(new Map())}
+            onBusyChange={(busy) => { bulkBusyRef.current = busy; setBulkBusy(busy); }}
+            onChanged={() => { setHealthVersion((value) => value + 1); void loadPage(null, false, true); }} />
           {health && (health.weak > 0 || health.reused > 0 || health.expired > 0) && (
             <p className="border border-ink px-3 py-2 font-body text-xs" role="status">
               密码健康：弱密码 {health.weak} · 重复 {health.reused} · 已过期 {health.expired}
+              <Button variant="link" disabled={bulkBusy} onClick={() => setHealthOpen(true)}>查看问题条目</Button>
             </p>
           )}
           {statusMessage && <p className="border border-ink px-3 py-2 font-body text-sm" role="status">{statusMessage}</p>}
@@ -589,20 +680,26 @@ export function VaultPage({ section }: { section?: "trash" }) {
             {query ? "没有匹配的条目。" : "保险库还是空的——创建第一个条目。"}
           </p>
         ) : (
-          <ul className="divide-y divide-divider border-y border-ink">
-            {items.map((item) => (
-              <li key={item.id}>
+          <div>{[...groups].map(([group, members]) => <section key={group} aria-label={group || "保险库条目"}>
+            {group && <h3 className="border-b border-divider bg-neutral-100 px-4 py-2 font-body font-semibold">{group} · {members.length}</h3>}
+            <ul className="divide-y divide-divider border-y border-ink">
+            {members.map((item) => (
+              <li key={item.id} className="flex flex-wrap items-center">
+                <label className="flex min-h-[44px] min-w-[44px] items-center justify-center">
+                  <input type="checkbox" aria-label={`选择 ${item.title}`} disabled={bulkBusy || selectionDisabled} checked={selection.has(item.id)} onChange={(event) => toggleSelection(item, event.target.checked)} />
+                </label>
                 <button
                   ref={(element) => {
                     if (element && modal.kind !== "detail") element.dataset.vaultItem = item.id;
                   }}
                   type="button"
+                  disabled={bulkBusy}
                   onClick={() => {
                     modalSourceRef.current = "list";
                     setStatusMessage(null);
                     navigate(`/vault/${item.id}`, { source: "list", modal: "item" });
                   }}
-                  className={`grid w-full min-w-0 grid-cols-1 gap-1 px-4 py-3 text-left hover:bg-neutral-100 md:grid-cols-[minmax(0,1fr)_8rem_12rem_2rem] md:items-center md:gap-4 ${routeItemId === item.id ? "border-l-4 border-accent" : ""}`}
+                  className={`grid flex-1 min-w-0 grid-cols-1 gap-1 px-4 py-3 text-left hover:bg-neutral-100 md:grid-cols-[minmax(0,1fr)_8rem_12rem_2rem] md:items-center md:gap-4 ${routeItemId === item.id ? "border-l-4 border-accent" : ""}`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate font-body font-semibold md:whitespace-normal">
@@ -619,11 +716,12 @@ export function VaultPage({ section }: { section?: "trash" }) {
                   </span>
                   <span className="hidden justify-self-end font-mono text-xs md:block" aria-hidden="true">↗</span>
                 </button>
+                {item.item_type === "login" && !bulkBusy && <QuickCopy key={item.id} itemId={item.id} title={item.title} csrfToken={csrfToken} />}
               </li>
             ))}
-          </ul>
+          </ul></section>)}</div>
         )}
-        {cursor && <div className="p-4"><Button variant="secondary" onClick={() => void loadPage(cursor, true)}>加载更多</Button></div>}
+        {cursor && <div className="p-4"><Button variant="secondary" disabled={bulkBusy || selectionDisabled} onClick={() => void loadPage(cursor, true)}>加载更多</Button></div>}
       </div>
 
       {modal.kind !== "closed" && (
@@ -633,6 +731,15 @@ export function VaultPage({ section }: { section?: "trash" }) {
           canManage={modal.kind === "detail" || modal.kind === "edit" || modal.kind === "history" ? canManage(modal.detail) : false}
           onClose={requestClose}
           onEdit={openEdit}
+          onDuplicate={() => {
+            if (modal.kind !== "detail") return;
+            const detail = modal.detail;
+            navigate("/vault");
+            modalSourceRef.current = null;
+            setModal({ kind: "create", creationDraft: { item_type: detail.item_type, tags: detail.tags,
+              payload: { ...detail.payload, name: Array.from(detail.title).slice(0, 251).join("") + "（副本）" } } });
+            setDirtyState(false);
+          }}
           onShowHistory={openHistory}
           onToggleFavorite={() => void toggleFavorite()}
           onTrash={() => { setTrashError(null); setConfirmTrash(true); }}
@@ -665,6 +772,7 @@ export function VaultPage({ section }: { section?: "trash" }) {
         />
       )}
 
+      {healthOpen && health && <HealthDialog report={health} onClose={() => setHealthOpen(false)} onOpen={(id) => { setHealthOpen(false); navigate(`/vault/${id}`, { source: "list", modal: "item" }); }} />}
       <ConfirmDialog
         open={confirmDiscard}
         title="放弃未保存修改？"

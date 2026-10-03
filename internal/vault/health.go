@@ -16,6 +16,7 @@ const WeakPasswordRunes = 12
 // HealthItem is one login item with at least one finding.
 type HealthItem struct {
 	ItemID  string   `json:"item_id"`
+	Title   string   `json:"title"`
 	Reasons []string `json:"reasons"`
 }
 
@@ -49,6 +50,7 @@ func (s *Service) Health(ctx context.Context, actor *auth.Principal) (HealthRepo
 	}
 	type finding struct {
 		id      string
+		title   string
 		reasons []string
 	}
 	passwordOwners := make(map[string][]string)
@@ -72,7 +74,7 @@ func (s *Service) Health(ctx context.Context, actor *auth.Principal) (HealthRepo
 		if login.Password != "" {
 			passwordOwners[login.Password] = append(passwordOwners[login.Password], row.ID)
 		}
-		findings = append(findings, finding{id: row.ID, reasons: reasons})
+		findings = append(findings, finding{id: row.ID, title: login.Name, reasons: reasons})
 	}
 	reusedByItem := make(map[string]bool)
 	for _, ids := range passwordOwners {
@@ -100,7 +102,7 @@ func (s *Service) Health(ctx context.Context, actor *auth.Principal) (HealthRepo
 				}
 			}
 		}
-		report.Items = append(report.Items, HealthItem{ItemID: f.id, Reasons: ordered})
+		report.Items = append(report.Items, HealthItem{ItemID: f.id, Title: f.title, Reasons: ordered})
 		for _, reason := range ordered {
 			switch reason {
 			case reasonWeak:

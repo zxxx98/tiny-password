@@ -92,6 +92,7 @@ export type ItemMeta = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  tags?: string[];
 };
 
 export type ItemDetail = ItemMeta & {
@@ -105,7 +106,7 @@ export type HealthReport = {
   weak: number;
   reused: number;
   expired: number;
-  items: Array<{ item_id: string; reasons: string[] }>;
+  items: Array<{ item_id: string; title?: string; reasons: string[] }>;
 };
 
 /** Sensitive field categories audited on reveal/copy (design §6.4). */

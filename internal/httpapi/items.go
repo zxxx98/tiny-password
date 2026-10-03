@@ -67,6 +67,8 @@ func registerItems(api *http.ServeMux, deps ItemsDeps) {
 	guarded := func(handler http.HandlerFunc) http.Handler {
 		return RequireSession(deps.Session, false, handler)
 	}
+	api.Handle("POST /api/v1/items/browse", guarded(deps.browse))
+	api.Handle("POST /api/v1/items/browse/tags", guarded(deps.browseTags))
 
 	api.Handle("POST /api/v1/items/login-page-probe", guarded(func(w http.ResponseWriter, r *http.Request) {
 		deps.probeLoginPage(w, r)

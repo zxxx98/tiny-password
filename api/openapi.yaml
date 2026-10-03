@@ -5,7 +5,7 @@
 openapi: 3.1.0
 info:
   title: Tiny Password API
-  version: 1.0.0
+  version: 1.0.1
   description: |
     Same-origin REST API served by the Go single binary at `/api/v1`.
 
@@ -594,6 +594,74 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+  /items/browse:
+    post:
+      tags: [items]
+      summary: Filter and sort authorized metadata, including encrypted titles and tags
+      description: Payloads are never returned. Titles and tags remain encrypted at rest. Timestamp sorts use SQL keyset pagination; encrypted filters scan until the page is filled. Title sorts scan authorized candidates globally while retaining only a bounded page of metadata. Cursors bind the user, filters and sort; equal sort keys use ascending item ID. Available tag options are loaded separately via POST /items/browse/tags.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query: { type: string, maxLength: 256 }
+                scope: { type: string, enum: ["", personal, shared] }
+                type: { type: string, enum: ["", login, ssh_key, credit_card, identity, secure_note, secret] }
+                tag: { type: string, maxLength: 64 }
+                favorite: { type: boolean }
+                sort: { type: string, enum: [updated_desc, updated_asc, created_desc, title_asc, title_desc], default: updated_desc }
+                cursor: { type: string, maxLength: 4096 }
+                limit: { $ref: "#/components/schemas/LimitValue" }
+      responses:
+        "200":
+          description: Authorized metadata page; each item includes its own tags
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  next_cursor: { type: string, nullable: true, maxLength: 4096 }
+                  items:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: "#/components/schemas/ItemMeta"
+                        - type: object
+                          required: [tags]
+                          properties:
+                            tags: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /items/browse/tags:
+    post:
+      tags: [items]
+      summary: Load available tags independently from metadata pagination
+      description: Explicitly scans and decrypts authorized active candidates in bounded batches. Only distinct tags are retained and returned in lexical order. Scope, type and favorite filters apply; search, selected tag and sorting do not narrow the options. Clients can retain options across result pages and reload after writes or option-filter changes. Business fields remain encrypted at rest.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scope: { type: string, enum: ["", personal, shared] }
+                type: { type: string, enum: ["", login, ssh_key, credit_card, identity, secure_note, secret] }
+                favorite: { type: boolean }
+      responses:
+        "200":
+          description: Available tags within the authorized scope/type/favorite filters
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tags]
+                properties:
+                  tags: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /items/search:
     post:
       tags: [items]
@@ -842,9 +910,10 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [item_id, reasons]
+                      required: [item_id, title, reasons]
                       properties:
                         item_id: { $ref: "#/components/schemas/OpaqueId" }
+                        title: { type: string, maxLength: 256 }
                         reasons:
                           type: array
                           items: { type: string, enum: [weak, reused, expired] }

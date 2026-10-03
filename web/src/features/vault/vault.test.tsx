@@ -26,8 +26,12 @@ type Stub = { status: number; body?: unknown; headers?: Record<string, string> }
 
 function stubFetch(steps: Stub[]) {
   const queue = [...steps];
-  const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit): Promise<Response> => {
+  const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit): Promise<Response> => {
     void init;
+    // Tag options are now an independent request, outside the scenario queue.
+    if (url === "/api/v1/items/browse/tags") return new Response(JSON.stringify({ tags: ["bank"] }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
     const step = queue.shift() ?? { status: 200, body: { items: [], next_cursor: null } };
     if (step.status === 204) {
       return new Response(null, { status: 204 });
@@ -677,7 +681,8 @@ describe("VaultPage", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(window.location.pathname).toBe("/vault");
     expect(row).toHaveFocus();
-    expect(fetchMock.mock.calls[2][0]).toBe("/api/v1/items/item-1");
+    expect(fetchMock.mock.calls[2][0]).toBe("/api/v1/items/browse/tags");
+    expect(fetchMock.mock.calls[3][0]).toBe("/api/v1/items/item-1");
   });
 
   it("protects dirty edits from close and keeps the draft when discard is canceled", async () => {
@@ -721,15 +726,15 @@ describe("VaultPage", () => {
 
     const confirm = await screen.findByRole("dialog", { name: "移动条目？" });
     expect(confirm).toHaveTextContent("移动后将创建一个新的共享条目并删除当前条目，历史记录不会保留。仍要继续吗？");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     await user.click(within(confirm).getByRole("button", { name: "取消" }));
     expect(screen.getByLabelText("共享")).toBeChecked();
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
 
     await user.click(screen.getByRole("button", { name: "保存修改" }));
     await user.click(await screen.findByRole("button", { name: "确认移动" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
-    const [url, init] = fetchMock.mock.calls[3];
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+    const [url, init] = fetchMock.mock.calls[4];
     expect(url).toBe("/api/v1/items/item-1");
     expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ vault_scope: "shared", revision: 1 });
     expect((init as RequestInit).headers).toMatchObject({ "Idempotency-Key": expect.any(String) });
@@ -764,15 +769,15 @@ describe("VaultPage", () => {
 
     const confirm = await screen.findByRole("dialog", { name: "移动条目？" });
     expect(confirm).toHaveTextContent("移动后将创建一个新的个人条目并删除当前条目，历史记录不会保留。仍要继续吗？");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     await user.click(within(confirm).getByRole("button", { name: "取消" }));
     expect(screen.getByLabelText("个人保险库")).toBeChecked();
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
 
     await user.click(screen.getByRole("button", { name: "保存修改" }));
     await user.click(await screen.findByRole("button", { name: "确认移动" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
-    const [url, init] = fetchMock.mock.calls[3];
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+    const [url, init] = fetchMock.mock.calls[4];
     expect(url).toBe("/api/v1/items/item-1");
     expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ vault_scope: "personal", revision: 1 });
     expect(await screen.findByText("已移至个人保险库")).toBeInTheDocument();
@@ -789,6 +794,7 @@ describe("VaultPage", () => {
       { status: 200, body: loginDetail },
       { status: 200, body: movedDetail },
       { status: 200, body: { items: [movedDetail], next_cursor: null } },
+      { status: 200, body: { weak: 0, reused: 0, expired: 0, items: [] } },
       { status: 200, body: movedDetail },
     ]);
     render(<VaultPage />);
@@ -797,7 +803,7 @@ describe("VaultPage", () => {
     await user.click(screen.getByLabelText("共享"));
     await user.click(screen.getByRole("button", { name: "保存修改" }));
     await user.click(await screen.findByRole("button", { name: "确认移动" }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
     expect(screen.getByText("已移至共享")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "关闭弹窗" }));
@@ -807,7 +813,7 @@ describe("VaultPage", () => {
     await user.click(await screen.findByRole("button", { name: /Family bank/ }));
 
     expect(await screen.findByRole("dialog", { name: "Family bank" })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(9);
   });
 
   it("returns to detail when the editor cancel discards a dirty draft", async () => {
@@ -900,7 +906,7 @@ describe("VaultPage", () => {
     await waitFor(() => expect(screen.getByText("Family bank")).toBeInTheDocument());
     expect(screen.getByText("Shared wifi")).toBeInTheDocument();
     expect(screen.getByText(/共享 · 创建者 bob/)).toBeInTheDocument();
-    expect(screen.getByText(/个人/)).toBeInTheDocument();
+    expect(screen.getByText("个人", { exact: true })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建条目" })).toBeInTheDocument();
   });
 

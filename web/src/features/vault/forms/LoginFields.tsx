@@ -3,6 +3,7 @@ import { request } from "../../../app/api";
 import { Button } from "../../../design-system/Button";
 import { Field } from "../../../design-system/Field";
 import { LIMITS, errorText, overLimit, type LoginPayload } from "../types";
+import { PasswordTools } from "../PasswordTools";
 
 export type FieldsProps<P> = {
   payload: P;
@@ -10,6 +11,7 @@ export type FieldsProps<P> = {
   onChange: (patch: Partial<P>) => void;
   disabled?: boolean;
   csrfToken?: string;
+  onGenerationBusyChange?: (busy: boolean) => void;
 };
 
 type LoginProbeCandidate = {
@@ -48,7 +50,7 @@ export function validateLogin(p: LoginPayload): Record<string, string> {
   return errors;
 }
 
-export function LoginFields({ payload, errors, onChange, disabled, csrfToken }: FieldsProps<LoginPayload>) {
+export function LoginFields({ payload, errors, onChange, disabled, csrfToken, onGenerationBusyChange }: FieldsProps<LoginPayload>) {
   const [probingIndex, setProbingIndex] = useState<number | null>(null);
   const [probeState, setProbeState] = useState<{ index: number; candidates: LoginProbeCandidate[]; message?: string } | null>(null);
 
@@ -82,6 +84,7 @@ export function LoginFields({ payload, errors, onChange, disabled, csrfToken }: 
         onChange={(e) => onChange({ username: e.target.value })} />
       <Field id="f-password" label="密码" type="password" autoComplete="off" value={payload.password ?? ""} error={errors.password} disabled={disabled}
         onChange={(e) => onChange({ password: e.target.value })} />
+      <PasswordTools value={payload.password ?? ""} username={payload.username} name={payload.name} csrfToken={csrfToken} disabled={disabled} onBusyChange={onGenerationBusyChange} onChange={(password) => onChange({ password, password_updated_at: new Date().toISOString().slice(0, 10) })} />
       <div className="space-y-2">
         <span className="block font-mono text-xs uppercase tracking-widest">网址</span>
         {(payload.urls ?? []).map((url, i) => (

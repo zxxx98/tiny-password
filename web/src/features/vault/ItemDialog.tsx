@@ -4,12 +4,13 @@ import { ErrorSummary, Loading } from "../../design-system/Status";
 import { HistoryPage } from "./HistoryPage";
 import { ItemDetail } from "./ItemDetail";
 import { ItemEditor } from "./ItemEditor";
+import type { ItemEditorProps } from "./ItemEditor";
 import { describeItem, TYPE_LABELS, type ItemDetail as ItemDetailData, type SecretPayload } from "./types";
 
 export type ItemDialogMode =
   | { kind: "loading"; itemId: string }
   | { kind: "detail"; detail: ItemDetailData }
-  | { kind: "create"; initialLoginDraft?: { password: string } }
+  | { kind: "create"; initialLoginDraft?: { password: string }; creationDraft?: ItemEditorProps["creationDraft"] }
   | { kind: "edit"; detail: ItemDetailData }
   | { kind: "history"; detail: ItemDetailData }
   | { kind: "error"; itemId?: string; message: string; requestId?: string };
@@ -20,6 +21,7 @@ export type ItemDialogProps = {
   canManage?: boolean;
   onClose: () => void;
   onEdit?: () => void;
+  onDuplicate?: () => void;
   onShowHistory?: () => void;
   onToggleFavorite?: () => void;
   onTrash?: () => void;
@@ -89,6 +91,7 @@ function detailFooter({
   detail,
   canManage,
   onEdit,
+  onDuplicate,
   onShowHistory,
   onToggleFavorite,
   onTrash,
@@ -96,6 +99,7 @@ function detailFooter({
   detail: ItemDetailData;
   canManage: boolean;
   onEdit?: () => void;
+  onDuplicate?: () => void;
   onShowHistory?: () => void;
   onToggleFavorite?: () => void;
   onTrash?: () => void;
@@ -111,6 +115,7 @@ function detailFooter({
         </>
       )}
       <Button variant="ghost" onClick={onShowHistory}>历史记录</Button>
+      {onDuplicate && <Button variant="secondary" onClick={onDuplicate}>复制为新条目</Button>}
       {canManage && (
         <Button variant="danger" className="ml-auto" onClick={onTrash}>
           移入回收站
@@ -127,6 +132,7 @@ export function ItemDialog({
   canManage = false,
   onClose,
   onEdit,
+  onDuplicate,
   onShowHistory,
   onToggleFavorite,
   onTrash,
@@ -149,7 +155,7 @@ export function ItemDialog({
       onClose={onClose}
       footer={
         mode.kind === "detail" && detail
-          ? detailFooter({ detail, canManage, onEdit, onShowHistory, onToggleFavorite, onTrash })
+          ? detailFooter({ detail, canManage, onEdit, onDuplicate, onShowHistory, onToggleFavorite, onTrash })
           : mode.kind === "error"
           ? (
               <div className="flex justify-end gap-2">
@@ -182,6 +188,7 @@ export function ItemDialog({
           <ItemEditor
             csrfToken={csrfToken}
             initialLoginDraft={mode.initialLoginDraft}
+            creationDraft={mode.creationDraft}
             onSaved={onSaved ?? (() => {})}
             onCancel={onCancelEdit ?? onClose}
             onDirtyChange={onDirtyChange}

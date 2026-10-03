@@ -19,7 +19,7 @@ test.describe("vault workspace", () => {
   test("desktop grid: seeded item lists with scope text and masked payload", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await expect(page.getByText("e2e login")).toBeVisible();
-    await expect(page.getByText(/个人/).first()).toBeVisible();
+    await expect(page.getByText("个人", { exact: true }).first()).toBeVisible();
 
     await page.getByRole("button", { name: /e2e login/ }).click();
     const dialog = page.getByRole("dialog", { name: "e2e login" });
