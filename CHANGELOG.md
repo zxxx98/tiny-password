@@ -17,6 +17,11 @@
 
 ## Mobile 1.4.0 (9) - 2026-10-08
 
+### Fixed
+
+- Restore the signing identity used by previous APK releases to retain upgrade compatibility without signing Secrets.
+- Retry APK publication when a version tag exists but no complete release APK has been published.
+
 ### Added
 
 - Manual Android update checks on the sign-in and vault screens, showing the installed APK version and release notes before opening the APK download in a browser.

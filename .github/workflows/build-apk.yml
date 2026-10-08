@@ -1,11 +1,7 @@
 name: Build Android APK
 
-# 版本号变更自动编译 APK：
-# 从 mobile/android/app/build.gradle 读取 versionName/versionCode，与已有
-# git tag 比对 —— 没有对应 tag 即视为新版本，编译 release APK 并发布到
-# GitHub Release；版本未变时本任务直接跳过。
-#
-# release 使用 GitHub Secrets 中独立保管的正式密钥；缺少签名配置时拒绝发布。
+# 按版本对应的 Release APK 判断是否已发布，只有 tag 时仍可重试构建。
+# 沿用仓库中的 debug.keystore，保持与历史 APK 的覆盖安装兼容性。
 on:
   push:
     branches: [master]
@@ -27,24 +23,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 需要完整 tag 列表做版本比对
+          fetch-depth: 0
 
       - name: Read app version and decide whether to build
         id: version
-        run: |
-          VERSION_NAME=$(sed -n 's/.*versionName[[:space:]]*=\{0,1\}[[:space:]]*"\([^"]*\)".*/\1/p' mobile/android/app/build.gradle)
-          VERSION_CODE=$(sed -n 's/.*versionCode[[:space:]]*=\{0,1\}[[:space:]]*\([0-9][0-9]*\).*/\1/p' mobile/android/app/build.gradle)
-          TAG="app-v${VERSION_NAME}-${VERSION_CODE}"
-          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
-          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Version ${TAG} already built; skipping."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::New version ${TAG} detected; building APK."
-          fi
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const gradle = fs.readFileSync('mobile/android/app/build.gradle', 'utf8');
+            const versionName = gradle.match(/versionName\s*(?:=\s*)?"([^"]+)"/)[1];
+            const versionCode = gradle.match(/versionCode\s*(?:=\s*)?(\d+)/)[1];
+            const tag = `app-v${versionName}-${versionCode}`;
+            core.setOutput('version_name', versionName);
+            core.setOutput('version_code', versionCode);
+            core.setOutput('tag', tag);
+            let published = false;
+            try {
+              const {data: release} = await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag,
+              });
+              published = !release.draft && !release.prerelease && release.assets.some(
+                asset => asset.name === 'app-release.apk' && asset.state === 'uploaded' && asset.size > 0,
+              );
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            core.setOutput('changed', String(!published));
+            core.notice(published ? `${tag} already published; skipping.` : `Building APK for ${tag}.`);
 
       - uses: actions/setup-node@v4
         if: steps.version.outputs.changed == 'true'
@@ -74,26 +80,8 @@ jobs:
       - name: Build release APK
         if: steps.version.outputs.changed == 'true'
         working-directory: mobile/android
-        env:
-          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        # 缺失的 SDK Platform / Build-Tools / NDK 由 Gradle 自动下载
-        # （runner 的 SDK license 已预先接受）。
-        run: |
-          set -euo pipefail
-          for name in ANDROID_KEYSTORE_B64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Missing release signing secret: ${name}"
-              exit 1
-            fi
-          done
-          export ANDROID_KEYSTORE_FILE="${RUNNER_TEMP}/tiny-password-release.keystore"
-          trap 'rm -f "$ANDROID_KEYSTORE_FILE"' EXIT
-          umask 077
-          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 --decode > "$ANDROID_KEYSTORE_FILE"
-          ./gradlew assembleRelease --no-daemon --stacktrace
+        # Gradle 自动下载缺失的 SDK / Build-Tools / NDK。
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Upload APK artifact
         if: steps.version.outputs.changed == 'true'
@@ -108,6 +96,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: TinyPassword v${{ steps.version.outputs.version_name }} (code ${{ steps.version.outputs.version_code }})
           files: mobile/android/app/build/outputs/apk/release/app-release.apk
           generate_release_notes: true

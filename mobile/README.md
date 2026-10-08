@@ -90,7 +90,7 @@ cd mobile/android
 ./gradlew assembleDebug     # 开发变体：Metro 热更新，不带 bundle
 ```
 
-- `release`：打包 Hermes 字节码与字体资源；不允许明文流量；使用独立正式密钥签名，缺少配置或使用默认调试密钥时拒绝构建。配置见 `../docs/mobile/android-release.md`。
+- `release`：打包 Hermes 字节码与字体资源；不允许明文流量；沿用仓库内的 `debug.keystore` 签名，与历史 APK 保持覆盖安装兼容，无需签名 Secrets。说明见 `../docs/mobile/android-release.md`。
 - `e2e`：在 release 基础上允许对测试服务器使用 HTTP（`usesCleartextTraffic=true`）。不要用于生产。
 
 ## 安全行为约定（实现要点）

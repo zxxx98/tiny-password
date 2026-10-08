@@ -1,7 +1,7 @@
 # Android APK 发布指南（GitHub Actions）
 
 本文说明如何发布 tiny-password 的 Android APK。日常发布只需要**改一个版本号然后 push**，
-配置正式签名后，编译、签名、打包、发布全部由 CI 完成。普通 PR 和 push 另有独立的移动端类型检查、单测与 Android debug 构建，不依赖版本号变更。
+编译、签名、打包、发布全部由 CI 完成，无需额外配置签名 Secrets。普通 PR 和 push 另有独立的移动端类型检查、单测与 Android debug 构建，不依赖版本号变更。
 
 流水线文件：[`.github/workflows/build-apk.yml`](../../.github/workflows/build-apk.yml)
 
@@ -50,7 +50,7 @@ git push
 | **Releases**（推荐） | 仓库 → Releases → 对应 `TinyPassword v{versionName}` → 下载 `app-release.apk`，自动生成 release notes |
 | **Artifacts** | Actions → 对应 run → Artifacts 区域，仅登录 GitHub 可见，适合测试用 |
 
-APK 使用 GitHub Secrets 中配置的正式密钥签名。首次从旧的调试签名版本迁移时，Android 通常无法直接覆盖安装，需卸载旧版再安装；服务器中的保险库数据不受影响，本地登录设置需重新填写。
+APK 沿用仓库内的 `mobile/android/app/debug.keystore` 签名，与历史已发布版本保持同一签名，支持覆盖安装。
 
 ## 版本门控原理
 
@@ -58,24 +58,21 @@ APK 使用 GitHub Secrets 中配置的正式密钥签名。首次从旧的调试
 
 1. 从 `build.gradle` 读取 `versionName` / `versionCode`
 2. 计算 tag 名 `app-v{versionName}-{versionCode}`（例如 `app-v1.0-1`）
-3. 该 tag **不存在** → 视为新版本，执行构建，并在成功后创建该 tag 和 Release
-4. 该 tag **已存在** → 说明这个版本编译过，任务直接跳过（Actions 里会显示 notice）
+3. 查询该 tag 对应的 GitHub Release，只有正式发布且包含已上传的非空 `app-release.apk` 才跳过
+4. 没有 Release、只有 tag、草稿或缺少 APK → 执行构建，成功后发布 APK；API 查询异常则报错
 
 因此：
 
-- 只改代码不改版本号 → **不会**发布新 APK
+- 同一版本的 APK 已发布 → **不会**重复发布
+- 上次发布失败、只有 tag 没有 APK → 可以重跑补发
 - 改了版本号 → 必然触发一次发布
 - 发布产物与 tag 一一对应，可随时从 Releases 回滚下载历史版本
 
 ## 手动触发与重新发布
 
 - **手动触发**：Actions → Build Android APK → Run workflow（同样受版本门控约束）
-- **重新发布同一版本**（例如构建机故障后重试）：
-  ```bash
-  git push origin :refs/tags/app-v1.2.0-3   # 删除远端 tag
-  git tag -d app-v1.2.0-3                    # 删除本地 tag
-  ```
-  然后到 Actions 手动 Run workflow，或在 GitHub 上删除对应 Release 后重推版本号改动。
+- **重试失败的发布**：Actions → Build Android APK → Run workflow；只有 tag、尚无 APK 时仍会构建。
+- 已发布的版本请增加版本号后发布，保留历史产物。若修复构建需要新提交，应确保尚未发布的 tag 指向实际构建提交。
 
 ## 本地构建（对照）
 
@@ -91,32 +88,13 @@ cd android
 本地开发调试（Metro 热更新）用 debug 变体：`npm run start` + `npm run android`，
 见 [mobile/README.md](../../mobile/README.md)。
 
-## 签名注意事项
+## 签名说明
 
-`release` 只使用独立的正式密钥，缺少配置会失败，不会回退到调试签名。
-`debug` 和 `e2e` 保留调试签名，供本地验证使用。
+`release`、`debug` 和 `e2e` 均使用仓库中的 `mobile/android/app/debug.keystore`，沿用最初发布的签名身份；无需 `ANDROID_KEYSTORE_*` 或 `ANDROID_KEY_*` Secrets。
 
-首次配置：
+此密钥已公开，不具备私有正式签名密钥的身份保护能力。目前沿用它是为了兼容旧版本覆盖安装。以后切换独立签名时需另行安排迁移，不能直接覆盖安装旧签名版本。
 
-1. 如果已有正式发布密钥，请继续使用该密钥；没有时在可信环境生成，并备份到仓库之外：
-   ```bash
-   keytool -genkeypair -v -keystore tiny-password-release.keystore \
-     -alias tiny-password -keyalg RSA -keysize 2048 -validity 10000
-   ```
-2. 在仓库的 **Settings → Secrets and variables → Actions** 中添加：
-
-   | Secret | 内容 |
-   | --- | --- |
-   | `ANDROID_KEYSTORE_B64` | 正式 keystore 文件的 Base64 编码 |
-   | `ANDROID_KEYSTORE_PASSWORD` | keystore 密码 |
-   | `ANDROID_KEY_ALIAS` | 签名条目 alias，如 `tiny-password` |
-   | `ANDROID_KEY_PASSWORD` | 签名条目的密码；PKCS12 常与 keystore 密码一致 |
-
-3. 工作流会把 keystore 解码到 runner 临时目录，仅供构建使用，结束后删除；不要提交密钥或密码。
-
-本地 `assembleRelease` 从环境读取 `ANDROID_KEYSTORE_FILE`（绝对路径）、
-`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。
-开发测试可直接运行 `assembleE2e`，无需正式密钥。
+Release 仍禁止明文 HTTP，`e2e` 仅供本地 HTTP 联调。
 
 ## 常见问题
 
@@ -125,5 +103,4 @@ cd android
 - **版本号改了但没触发**：确认推送的分支是 `master`，且改动涉及 `mobile/**` 路径。
 - **想同时出 debug 包**：工作流里把 `assembleRelease` 改为
   `assembleRelease assembleDebug`，并在上传步骤加对应路径。
-- **keystore 丢失**：正式签名 keystore 一旦丢失将无法以同一签名
-  更新应用，务必备份在密码管理器之外的安全位置。
+- **覆盖安装失败**：确认应用包名相同、构建号递增且使用同一 `debug.keystore`。
