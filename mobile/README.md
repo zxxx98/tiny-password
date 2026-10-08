@@ -50,6 +50,12 @@ npm run android        # 需连接设备或模拟器；构建并安装 debug 变
 - 服务端需已完成一次 Web 初始化（setup）；MVP 不提供 setup 页面。测试服务器本地启动方式见仓库根 `compose.yaml` 或 `Makefile`。
 - 认证完全依赖 Cookie + `X-CSRF-Token`：登录前 `POST /api/v1/csrf` 获取预认证上下文，登录后使用会话 Cookie 与响应体中的 CSRF token；改密后消费 `X-CSRF-Token` 响应头完成轮换。
 
+## 检查更新
+
+Android 登录页和保险库页提供「检查更新」入口，展示已安装 APK 的版本号与构建号。点击后查询本仓库 GitHub Releases，筛选包含完整 `app-release.apk` 的 `app-v{versionName}-{versionCode}` 正式发布，以 `versionCode` 判断是否需要升级（同版本号重新构建也能识别）。不会把服务端发布、草稿或预发布识别为安卓更新。
+
+发现新版时展示版本信息和发布说明，点「下载更新」后通过浏览器下载 APK，再由用户手动安装；覆盖安装要求签名一致。已是最新版、网络异常、超时和服务限流均有提示，可再次检查。检查更新无需登录，不携带保险库的认证信息，不在启动时自动请求。设备需能访问 GitHub。
+
 ## 指纹 / 生物识别登录
 
 1. 在系统设置中录入指纹（或设备支持的生物识别），打开 App 登录页。

@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {NewsprintButton} from '../components/NewsprintButton';
+import {CheckUpdateButton} from '../components/CheckUpdateButton';
 import {Banner} from '../components/Banner';
 import {ConfirmDialog} from '../components/ConfirmDialog';
 import {colors} from '../theme/colors';
@@ -369,6 +370,8 @@ export function VaultScreen({
           }
         />
       )}
+
+      {active ? <CheckUpdateButton /> : null}
 
       <View style={styles.addRow}>
         <NewsprintButton label="+ ADD ENTRY" onPress={() => {

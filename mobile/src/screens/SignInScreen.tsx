@@ -12,6 +12,7 @@ import {
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {NewsprintInput} from '../components/NewsprintInput';
 import {NewsprintButton} from '../components/NewsprintButton';
+import {CheckUpdateButton} from '../components/CheckUpdateButton';
 import {Banner} from '../components/Banner';
 import {ChangePasswordForm} from '../components/ChangePasswordForm';
 import {ConfirmDialog} from '../components/ConfirmDialog';
@@ -705,6 +706,8 @@ export function SignInScreen({
           loading={submitting}
           testID="sign-in-submit"
         />
+
+        <CheckUpdateButton />
 
         <View style={styles.footer}>
           <Text style={styles.footerMeta}>PRIVATE / SECURE</Text>

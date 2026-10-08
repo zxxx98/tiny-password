@@ -15,6 +15,17 @@
 - The default Compose service publishes no host port, runs non-root with dropped capabilities, read-only root filesystem, bounded resources, a tmpfs scratch area, and a graceful stop window.
 - Service-worker navigations, API calls, archive transfers, and all non-whitelisted URLs remain network-only; the browser never receives an offline copy of vault contents.
 
+## Mobile 1.4.0 (9) - 2026-10-08
+
+### Added
+
+- Manual Android update checks on the sign-in and vault screens, showing the installed APK version and release notes before opening the APK download in a browser.
+- Identify stable Android releases by tag and versionCode, excluding server releases and incomplete uploads, with pagination, timeout, network-error and rate-limit handling.
+
+### Validation
+
+- Mobile TypeScript checks, unit tests and Android debug Kotlin compilation passed.
+
 ## Mobile 1.3.0 (8) - 2026-10-08
 
 ### Added
