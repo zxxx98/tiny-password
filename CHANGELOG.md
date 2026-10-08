@@ -15,6 +15,17 @@
 - The default Compose service publishes no host port, runs non-root with dropped capabilities, read-only root filesystem, bounded resources, a tmpfs scratch area, and a graceful stop window.
 - Service-worker navigations, API calls, archive transfers, and all non-whitelisted URLs remain network-only; the browser never receives an offline copy of vault contents.
 
+## Mobile 1.3.0 (8) - 2026-10-08
+
+### Added
+
+- Opt-in fingerprint / biometric login backed by system-protected credentials, with password fallback and no automatic password filling or biometric prompt at startup.
+
+### Security
+
+- Bind biometric credentials to the configured server; remove saved credentials when disabling the feature, switching servers, or signing out.
+- Refresh saved credentials after forced password changes and discard late authentication results; serialize credential writes so sign-out cannot be undone by pending enrollment.
+
 ## 1.0.1 - 2026-10-03
 
 ### Added

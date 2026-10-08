@@ -69,6 +69,9 @@ function renderSignIn(options?: {
   session?: SessionController;
   initialServerUrl?: string;
   rememberedCredentials?: {username: string; password: string} | null;
+  biometricAvailable?: boolean;
+  biometricEnabled?: boolean;
+  onBiometricUnlock?: jest.Mock;
   onRememberedCredentialsSaved?: jest.Mock;
   onRememberedCredentialsCleared?: jest.Mock;
 }): ReactTestRenderer {
@@ -80,6 +83,9 @@ function renderSignIn(options?: {
         session={fake}
         initialServerUrl={options?.initialServerUrl ?? ''}
         rememberedCredentials={options?.rememberedCredentials ?? null}
+        biometricAvailable={options?.biometricAvailable}
+        biometricEnabled={options?.biometricEnabled}
+        onBiometricUnlock={options?.onBiometricUnlock}
         onRememberedCredentialsSaved={options?.onRememberedCredentialsSaved}
         onRememberedCredentialsCleared={options?.onRememberedCredentialsCleared}
         onAuthenticated={jest.fn()}
@@ -184,24 +190,25 @@ test('saves credentials only after an authenticated login', async () => {
     await tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
   });
 
-  expect(onSave).toHaveBeenCalledWith({username: 'alice', password: 'secret'});
+  expect(onSave).toHaveBeenCalledWith({username: 'alice', password: 'secret'}, false);
 });
 
-test('saves the new password after confirmed forced password change', async () => {
+test.each([false, true])('saves the new password after forced change (biometric=%s)', async biometric => {
   const onSave = jest.fn();
   const fake = makeFakeSession('signed-out', true);
   const tree = renderSignIn({
     session: fake.session,
     initialServerUrl: 'https://vault.example.com',
     onRememberedCredentialsSaved: onSave,
+    biometricAvailable: biometric,
   });
 
   await act(async () => {
     tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
     tree.root.findByProps({testID: 'password-input'}).props.onChangeText('old-secret');
-    tree.root.findByProps({testID: 'remember-password'}).props.onPress();
+    tree.root.findByProps({testID: biometric ? 'enable-biometric' : 'remember-password'}).props.onPress();
   });
-  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toEqual({checked: true});
+  expect(tree.root.findByProps({testID: biometric ? 'enable-biometric' : 'remember-password'}).props.accessibilityState).toEqual({checked: true});
   await act(async () => {
     await tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
   });
@@ -218,7 +225,7 @@ test('saves the new password after confirmed forced password change', async () =
 
   expect((fake.session.changePassword as jest.Mock)).toHaveBeenCalledWith('old-secret', 'new-secret-123');
   expect(onSave).toHaveBeenCalledTimes(1);
-  expect(onSave).toHaveBeenCalledWith({username: 'alice', password: 'new-secret-123'});
+  expect(onSave).toHaveBeenCalledWith({username: 'alice', password: 'new-secret-123'}, biometric);
 });
 
 test('signing out from forced password change clears the remembered-password choice', async () => {
@@ -260,4 +267,92 @@ function createTree(element: React.ReactElement): ReactTestRenderer {
 }
 afterEach(async () => {
   act(() => renderedTrees.splice(0).forEach(tree => tree.unmount()));
+});
+
+
+test('biometric login authenticates with the server without autofilling or re-saving the password', async () => {
+  const fake = makeFakeSession();
+  const unlock = jest.fn(async () => ({username: 'alice', password: 'secret'}));
+  const save = jest.fn();
+  const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
+    biometricEnabled: true, onBiometricUnlock: unlock, onRememberedCredentialsSaved: save});
+  expect(unlock).not.toHaveBeenCalled();
+  await act(async () => { tree.root.findByProps({testID: 'biometric-sign-in'}).props.onPress(); });
+  expect(unlock).toHaveBeenCalledWith('https://vault.example.com');
+  expect(fake.session.login).toHaveBeenCalledWith('alice', 'secret');
+  expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('');
+  expect(save).not.toHaveBeenCalled();
+});
+
+test('canceled biometric verification sends no login request and permits password fallback', async () => {
+  const fake = makeFakeSession();
+  const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
+    biometricEnabled: true, onBiometricUnlock: jest.fn(async () => { throw new Error('Canceled'); })});
+  await act(async () => { tree.root.findByProps({testID: 'biometric-sign-in'}).props.onPress(); });
+  expect(fake.session.login).not.toHaveBeenCalled();
+  expect(tree.root.findByProps({testID: 'sign-in-error'}).props.text).toContain('使用密码');
+  await act(async () => {
+    tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
+    tree.root.findByProps({testID: 'password-input'}).props.onChangeText('manual-password');
+  });
+  await act(async () => { tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress(); });
+  expect(fake.session.login).toHaveBeenCalledWith('alice', 'manual-password');
+});
+
+test('changing server before biometric login never unlocks old credentials', async () => {
+  const fake = makeFakeSession();
+  const unlock = jest.fn();
+  const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
+    biometricEnabled: true, onBiometricUnlock: unlock});
+  act(() => tree.root.findByProps({accessibilityLabel: '配置服务器地址'}).props.onPress());
+  act(() => tree.root.findByProps({testID: 'server-input'}).props.onChangeText('https://other.example.com'));
+  await act(async () => { tree.root.findByProps({testID: 'biometric-sign-in'}).props.onPress(); });
+  expect(unlock).not.toHaveBeenCalled();
+  expect(fake.session.login).not.toHaveBeenCalled();
+});
+
+test('opting into biometrics saves only after successful password login', async () => {
+  const fake = makeFakeSession();
+  const save = jest.fn();
+  const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
+    biometricAvailable: true, onRememberedCredentialsSaved: save});
+  act(() => {
+    tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
+    tree.root.findByProps({testID: 'password-input'}).props.onChangeText('secret');
+    tree.root.findByProps({testID: 'enable-biometric'}).props.onPress();
+  });
+  expect(save).not.toHaveBeenCalled();
+  await act(async () => { tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress(); });
+  expect(save).toHaveBeenCalledWith({username: 'alice', password: 'secret'}, true);
+});
+
+
+test('a late biometric result cannot log in after the screen unmounts', async () => {
+  const fake = makeFakeSession();
+  let finish!: (value: {username: string; password: string}) => void;
+  const unlock = jest.fn(() => new Promise(resolve => { finish = resolve; }));
+  const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
+    biometricEnabled: true, onBiometricUnlock: unlock});
+  await act(async () => { tree.root.findByProps({testID: 'biometric-sign-in'}).props.onPress(); });
+  act(() => tree.unmount());
+  await act(async () => { finish({username: 'alice', password: 'secret'}); });
+  expect(fake.session.login).not.toHaveBeenCalled();
+});
+
+test('session refresh during enrollment does not trigger a second credential save', async () => {
+  const fake = makeFakeSession();
+  let finish!: () => void;
+  const save = jest.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+  const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
+    biometricAvailable: true, onRememberedCredentialsSaved: save});
+  act(() => {
+    tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
+    tree.root.findByProps({testID: 'password-input'}).props.onChangeText('secret');
+    tree.root.findByProps({testID: 'enable-biometric'}).props.onPress();
+  });
+  await act(async () => { tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress(); });
+  act(() => fake.setPhase('authenticated'));
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(tree.root.findByProps({testID: 'sign-in-submit'}).props.disabled).toBe(true);
+  await act(async () => { finish(); });
 });

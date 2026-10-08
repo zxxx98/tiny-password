@@ -176,3 +176,30 @@ test('a late resume result cannot reveal content after another background transi
   });
   expect(tree.root.findByProps({testID: 'resume-mask'})).toBeTruthy();
 });
+
+test('cold-start biometric login reaches the vault and sign-out removes the biometric entry point', async () => {
+  const unlock = jest.fn(async () => ({username: 'alice', password: 'protected-secret'}));
+  const clear = jest.fn(async () => {});
+  const store: RememberedLoginStore = {
+    load: async () => ({serverUrl: 'https://vault.example.com', credentials: null,
+      biometricAvailable: true, biometricEnabled: true}),
+    loadServerUrl: async () => 'https://vault.example.com',
+    loadCredentials: async () => null,
+    saveServerUrl: async () => {},
+    saveCredentials: jest.fn(async () => {}),
+    clearCredentials: clear,
+    unlockCredentials: unlock,
+  };
+  await act(async () => { tree = renderer.create(<AppRoot rememberedLoginStore={store} />); });
+  expect(unlock).not.toHaveBeenCalled();
+  expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('');
+  await act(async () => { tree.root.findByProps({testID: 'biometric-sign-in'}).props.onPress(); });
+  expect(tree.root.findByType(VaultScreen)).toBeTruthy();
+  expect(store.saveCredentials).not.toHaveBeenCalled();
+  expect(requests.mock.calls.some(([url, init]) => url.endsWith('/auth/login') &&
+    JSON.parse(init.body).password === 'protected-secret')).toBe(true);
+  await act(async () => { tree.root.findByType(VaultScreen).props.onSignOut(); });
+  expect(clear).toHaveBeenCalledTimes(1);
+  expect(tree.root.findAllByProps({testID: 'biometric-sign-in'})).toHaveLength(0);
+  expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('');
+});

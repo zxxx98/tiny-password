@@ -8,6 +8,8 @@ export interface RememberedCredentials {
 export interface RememberedLoginSnapshot {
   serverUrl: string | null;
   credentials: RememberedCredentials | null;
+  biometricAvailable?: boolean;
+  biometricEnabled?: boolean;
 }
 
 export interface StorageLike {
@@ -27,7 +29,8 @@ export interface RememberedLoginStore {
   loadServerUrl(): Promise<string | null>;
   saveServerUrl(serverUrl: string): Promise<void>;
   loadCredentials(): Promise<RememberedCredentials | null>;
-  saveCredentials(credentials: RememberedCredentials): Promise<void>;
+  saveCredentials(credentials: RememberedCredentials, biometric?: boolean): Promise<void>;
+  unlockCredentials?(serverUrl: string): Promise<RememberedCredentials | null>;
   clearCredentials(): Promise<void>;
 }
 

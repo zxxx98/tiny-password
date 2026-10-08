@@ -50,6 +50,7 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
   const [masked, setMasked] = useState(false);
   const [resumeUnreachable, setResumeUnreachable] = useState(false);
   const [rememberedLogin, setRememberedLogin] = useState(EMPTY_REMEMBERED_LOGIN);
+  const credentialsRevisionRef = useRef(0);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
   const [snap, setSnap] = useState(() => session.getSnapshot());
@@ -94,21 +95,33 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
   );
 
   const saveRememberedCredentials = useCallback(
-    (credentials: RememberedCredentials): void => {
-      setRememberedLogin(previous => ({...previous, credentials}));
-      void rememberedLoginStore.saveCredentials(credentials).catch(() => {
-        setPersistenceNotice('记住密码未能保存，请重试');
-      });
+    async (credentials: RememberedCredentials, biometric = false): Promise<void> => {
+      const revision = ++credentialsRevisionRef.current;
+      try {
+        await rememberedLoginStore.saveCredentials(credentials, biometric);
+      } catch {
+        if (revision !== credentialsRevisionRef.current) { return; }
+        setRememberedLogin(previous => ({...previous, credentials: null, biometricEnabled: false}));
+        setEditorNotice('登录成功，但本地登录凭据未能保存，下次请使用密码登录并重新启用');
+        setPersistenceNotice('本地登录凭据未能保存，下次请使用密码登录并重新启用');
+        return;
+      }
+      if (revision !== credentialsRevisionRef.current) { return; }
+      setPersistenceNotice(null);
+      setRememberedLogin(previous => ({...previous,
+        credentials: biometric ? null : credentials, biometricEnabled: biometric,
+      }));
     },
     [rememberedLoginStore],
   );
 
   const clearRememberedCredentials = useCallback(async (): Promise<void> => {
-    setRememberedLogin(previous => ({...previous, credentials: null}));
+    credentialsRevisionRef.current += 1;
+    setRememberedLogin(previous => ({...previous, credentials: null, biometricEnabled: false}));
     try {
       await rememberedLoginStore.clearCredentials();
     } catch {
-      setPersistenceNotice('已退出登录，但记住密码未能清除');
+      setPersistenceNotice('本地登录凭据未能清除，请检查设备安全设置');
     }
   }, [rememberedLoginStore]);
 
@@ -233,6 +246,9 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
                 session={session}
                 initialServerUrl={rememberedLogin.serverUrl ?? DEFAULT_SERVER_URL}
                 rememberedCredentials={rememberedLogin.credentials}
+                biometricAvailable={rememberedLogin.biometricAvailable}
+                biometricEnabled={rememberedLogin.biometricEnabled}
+                onBiometricUnlock={rememberedLoginStore.unlockCredentials}
                 initialNotice={signOutNotice}
                 persistenceNotice={persistenceNotice}
                 onRememberedServerUrlSaved={saveRememberedServerUrl}
@@ -264,7 +280,7 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
                 />
               ) : null
             ) : null}
-            {preferencesReady && snap.phase === 'authenticated' && api ? (
+            {preferencesReady && route.name !== 'signin' && snap.phase === 'authenticated' && api ? (
               <View
                 style={[styles.root, route.name !== 'vault' && styles.hiddenScreen]}
                 pointerEvents={route.name === 'vault' ? 'auto' : 'none'}

@@ -27,11 +27,14 @@ interface SignInScreenProps {
   session: SessionController;
   initialServerUrl: string;
   rememberedCredentials?: RememberedCredentials | null;
+  biometricAvailable?: boolean;
+  biometricEnabled?: boolean;
+  onBiometricUnlock?: (serverUrl: string) => Promise<RememberedCredentials | null>;
   /** One-shot banner, e.g. the sign-out notice from the Vault. */
   initialNotice?: string | null;
   persistenceNotice?: string | null;
   onRememberedServerUrlSaved?: (serverUrl: string) => void | Promise<void>;
-  onRememberedCredentialsSaved?: (credentials: RememberedCredentials) => void | Promise<void>;
+  onRememberedCredentialsSaved?: (credentials: RememberedCredentials, biometric?: boolean) => void | Promise<void>;
   onRememberedCredentialsCleared?: () => void | Promise<void>;
   onAuthenticated: () => void;
   onActivity: () => void;
@@ -53,14 +56,16 @@ const PREAUTH_REFRESH_MS = 10 * 60 * 1000;
  * Sign in — and, on the same screen, the forced password change phase.
  * The screen owns the server-address control (collapsible; expanded when no
  * address is configured), the credential form and the change-password form.
- * No biometric button exists in V1; sessions never persist across cold
- * starts, so this screen is always the entry point. Optional remembered
+ * Sessions never persist across cold starts. Optional remembered
  * credentials are explicitly supplied by AppRoot after secure hydration.
  */
 export function SignInScreen({
   session,
   initialServerUrl,
   rememberedCredentials = null,
+  biometricAvailable = false,
+  biometricEnabled = false,
+  onBiometricUnlock,
   initialNotice,
   persistenceNotice,
   onRememberedServerUrlSaved,
@@ -88,6 +93,10 @@ export function SignInScreen({
   const [rememberPassword, setRememberPassword] = useState(
     () => Boolean(rememberedCredentials?.username && rememberedCredentials?.password),
   );
+  const [useBiometric, setUseBiometric] = useState(biometricEnabled);
+  const biometricRef = useRef(useBiometric);
+  biometricRef.current = useBiometric;
+  const biometricLoginRef = useRef(false);
   const [phase, setPhase] = useState<Phase>(() => {
     const current = session.getSnapshot().phase;
     return current === 'must-change' || current === 'confirming-change' ? 'change-password' : 'sign-in';
@@ -100,6 +109,7 @@ export function SignInScreen({
   const holdNavigationRef = useRef(false);
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loginPendingRef = useRef(false);
+  const savingCredentialsRef = useRef(false);
   const loginAttemptRef = useRef(0);
   const [signOutConfirmVisible, setSignOutConfirmVisible] = useState(false);
   const usernameRef = useRef(username);
@@ -144,6 +154,8 @@ export function SignInScreen({
       const previous = session.getSnapshot().serverUrl;
       if (previous !== null && previous !== normalized) {
         clearRememberedCredentials();
+        biometricRef.current = false;
+        setUseBiometric(false);
         setPassword('');
         passwordRef.current = '';
       }
@@ -183,26 +195,34 @@ export function SignInScreen({
         setPhase('change-password');
         setSubmitting(false);
       } else if (snap.phase === 'authenticated') {
+        if (savingCredentialsRef.current || holdNavigationRef.current) {
+          return;
+        }
         setSubmitting(false);
-        if (skipNextAuthenticatedSaveRef.current) {
+        if (skipNextAuthenticatedSaveRef.current || biometricLoginRef.current) {
           skipNextAuthenticatedSaveRef.current = false;
-          if (holdNavigationRef.current) {
-            return;
-          }
           onAuthenticated();
           return;
         }
         const savedUsername = usernameRef.current.trim();
         const savedPassword = passwordRef.current;
-        if (rememberPasswordRef.current && savedUsername && savedPassword) {
-          runPersistence(
-            onRememberedCredentialsSaved
-              ? () => onRememberedCredentialsSaved({username: savedUsername, password: savedPassword})
-              : undefined,
-            '记住密码未能保存，请重试',
-          );
-        }
-        if (holdNavigationRef.current) {
+        if ((rememberPasswordRef.current || biometricRef.current) && savedUsername && savedPassword
+          && onRememberedCredentialsSaved) {
+          setSubmitting(true);
+          savingCredentialsRef.current = true;
+          const attempt = loginAttemptRef.current;
+          void Promise.resolve().then(() => onRememberedCredentialsSaved(
+            {username: savedUsername, password: savedPassword}, biometricRef.current,
+          )).then(() => {
+            if (attempt === loginAttemptRef.current && session.getSnapshot().phase === 'authenticated') {
+              onAuthenticated();
+            }
+          }).catch(() => {
+            setSubmitting(false);
+            setPersistenceError('本地登录凭据未能保存，可重试登录或关闭记住密码和指纹登录');
+          }).finally(() => {
+            savingCredentialsRef.current = false;
+          });
           return;
         }
         onAuthenticated();
@@ -214,7 +234,7 @@ export function SignInScreen({
       }
     });
     return unsubscribe;
-  }, [onAuthenticated, onRememberedCredentialsSaved, runPersistence, session]);
+  }, [onAuthenticated, onRememberedCredentialsSaved, session]);
 
   // During the confirming-change window, surface the retry error and poll
   // nothing — the user presses RETRY CONFIRM explicitly.
@@ -244,8 +264,8 @@ export function SignInScreen({
     return () => subscription.remove();
   }, [phase, signOutConfirmVisible, submitting]);
 
-  const doSignIn = async () => {
-    if (submitting || loginPendingRef.current) {
+  const doSignIn = async (biometric = false) => {
+    if (submitting || loginPendingRef.current || savingCredentialsRef.current) {
       return;
     }
     onActivity();
@@ -269,7 +289,7 @@ export function SignInScreen({
         return;
       }
     }
-    if (username.trim().length === 0 || password.length === 0) {
+    if (!biometric && (username.trim().length === 0 || password.length === 0)) {
       setFormError('请输入用户名和密码');
       return;
     }
@@ -277,6 +297,22 @@ export function SignInScreen({
     setSubmitting(true);
     const attempt = ++loginAttemptRef.current;
     try {
+      let credentials = {username: username.trim(), password};
+      if (biometric) {
+        const unlocked = await onBiometricUnlock?.(desired);
+        if (attempt !== loginAttemptRef.current || session.getSnapshot().serverUrl !== desired) {
+          return;
+        }
+        if (!unlocked) {
+          setFormError('无法读取指纹登录凭据，请使用密码登录并重新启用');
+          return;
+        }
+        credentials = unlocked;
+        // Keep the password out of the form and avoid re-enrolling on every login.
+        setUsername(unlocked.username);
+        usernameRef.current = unlocked.username;
+      }
+      biometricLoginRef.current = biometric;
       // A 401 (e.g. a failed forced password change) wipes the pre-auth context,
       // and an old context expires server-side after 15 minutes; re-fetch it so
       // a retry cannot dead-end on "缺少预认证上下文" or "安全校验失败".
@@ -290,7 +326,7 @@ export function SignInScreen({
           return;
         }
       }
-      const result = await session.login(username.trim(), password);
+      const result = await session.login(credentials.username, credentials.password);
       if (result.ok) {
         return; // phase subscription drives the next screen
       }
@@ -298,9 +334,12 @@ export function SignInScreen({
       if (result.error) {
         setFormError(result.error);
       }
+    } catch {
+      setFormError(biometric ? '指纹验证未完成，请重试或使用密码登录' : '登录失败，请重试');
     } finally {
+      biometricLoginRef.current = false;
       loginPendingRef.current = false;
-      if (attempt === loginAttemptRef.current) {
+      if (attempt === loginAttemptRef.current && !savingCredentialsRef.current) {
         setSubmitting(false);
       }
     }
@@ -317,29 +356,27 @@ export function SignInScreen({
   );
 
   const doChangePassword = async (current: string, next: string) => {
+    const attempt = loginAttemptRef.current;
     setChangeError(null);
     setChangeSuccess(null);
     setSubmitting(true);
     const result = await session.changePassword(current, next);
     if (result.ok) {
       // Confirm the session requirement is lifted; never resubmits the change.
+      clearRememberedCredentials();
       pendingNewPasswordRef.current = next;
       skipNextAuthenticatedSaveRef.current = true;
       // Hold the subscription-driven navigation so the success banner shows.
       holdNavigationRef.current = true;
       const outcome = await session.confirmSession();
       if (outcome === 'confirmed') {
-        if (rememberPasswordRef.current && usernameRef.current.trim() && next) {
-          runPersistence(
-            onRememberedCredentialsSaved
-              ? () =>
-                  onRememberedCredentialsSaved({
-                    username: usernameRef.current.trim(),
-                    password: next,
-                  })
-              : undefined,
-            '记住密码未能保存，请重试',
-          );
+        if ((rememberPasswordRef.current || biometricRef.current) && usernameRef.current.trim() && next) {
+          await onRememberedCredentialsSaved?.({
+            username: usernameRef.current.trim(), password: next,
+          }, biometricRef.current);
+        }
+        if (attempt !== loginAttemptRef.current || session.getSnapshot().phase !== 'authenticated') {
+          return;
         }
         setSubmitting(true); // stay disabled while the success banner holds
         setChangeSuccess('密码已修改成功，正在进入保险库…');
@@ -381,23 +418,20 @@ export function SignInScreen({
   };
 
   const retryConfirm = async () => {
+    const attempt = loginAttemptRef.current;
     setSubmitting(true);
     setChangeError(null);
     holdNavigationRef.current = true;
     const outcome = await session.confirmSession();
     if (outcome === 'confirmed') {
       const next = pendingNewPasswordRef.current;
-      if (rememberPasswordRef.current && usernameRef.current.trim() && next) {
-        runPersistence(
-          onRememberedCredentialsSaved
-            ? () =>
-                onRememberedCredentialsSaved({
-                  username: usernameRef.current.trim(),
-                  password: next,
-                })
-            : undefined,
-          '记住密码未能保存，请重试',
-        );
+      if ((rememberPasswordRef.current || biometricRef.current) && usernameRef.current.trim() && next) {
+        await onRememberedCredentialsSaved?.({
+          username: usernameRef.current.trim(), password: next,
+        }, biometricRef.current);
+      }
+      if (attempt !== loginAttemptRef.current || session.getSnapshot().phase !== 'authenticated') {
+        return;
       }
       pendingNewPasswordRef.current = null;
       setSubmitting(true); // stay disabled while the success banner holds
@@ -425,11 +459,14 @@ export function SignInScreen({
   };
 
   const doSignOut = async () => {
+    loginAttemptRef.current += 1;
     setSignOutConfirmVisible(false);
     pendingNewPasswordRef.current = null;
     skipNextAuthenticatedSaveRef.current = false;
     clearRememberedCredentials();
     rememberPasswordRef.current = false;
+    biometricRef.current = false;
+    setUseBiometric(false);
     setRememberPassword(false);
     if (successTimerRef.current !== null) {
       clearTimeout(successTimerRef.current);
@@ -562,6 +599,7 @@ export function SignInScreen({
         <NewsprintInput
           label="USERNAME"
           value={username}
+          editable={!submitting}
           onChangeText={setUsername}
           autoCapitalize="none"
           autoCorrect={false}
@@ -576,6 +614,7 @@ export function SignInScreen({
           <NewsprintInput
             label="PASSWORD"
             value={password}
+            editable={!submitting}
             onChangeText={setPassword}
             secure={!showPassword}
             autoCapitalize="none"
@@ -584,7 +623,7 @@ export function SignInScreen({
             autoComplete="password"
             importantForAutofill="yes"
             returnKeyType="go"
-            onSubmitEditing={doSignIn}
+            onSubmitEditing={() => void doSignIn()}
             accessibilityLabel="密码"
             testID="password-input"
           />
@@ -602,15 +641,18 @@ export function SignInScreen({
 
         <Pressable
           accessibilityRole="checkbox"
+          disabled={submitting}
           accessibilityLabel="记住密码"
           accessibilityState={{checked: rememberPassword}}
           onPress={() => {
             const next = !rememberPasswordRef.current;
             rememberPasswordRef.current = next;
             setRememberPassword(next);
-            if (!next) {
-              clearRememberedCredentials();
+            if (next) {
+              biometricRef.current = false;
+              setUseBiometric(false);
             }
+            clearRememberedCredentials();
           }}
           style={styles.rememberRow}
           testID="remember-password">
@@ -620,12 +662,45 @@ export function SignInScreen({
           <Text style={styles.rememberText}>REMEMBER PASSWORD</Text>
         </Pressable>
 
+        {biometricAvailable || biometricEnabled ? (
+          <Pressable
+            accessibilityRole="checkbox"
+            accessibilityLabel="启用指纹登录"
+            accessibilityState={{checked: useBiometric}}
+            disabled={submitting}
+            testID="enable-biometric"
+            style={styles.rememberRow}
+            onPress={() => {
+              const next = !biometricRef.current;
+              biometricRef.current = next;
+              setUseBiometric(next);
+              rememberPasswordRef.current = false;
+              setRememberPassword(false);
+              // Remove the existing persisted copy before changing storage modes.
+              clearRememberedCredentials();
+            }}>
+            <View style={[styles.checkbox, useBiometric ? styles.checkboxChecked : null]}>
+              {useBiometric ? <Text style={styles.checkboxMark}>✓</Text> : null}
+            </View>
+            <Text style={styles.rememberText}>启用指纹 / 生物识别登录</Text>
+          </Pressable>
+        ) : null}
+        {biometricEnabled && onBiometricUnlock ? (
+          <NewsprintButton
+            label="指纹 / 生物识别登录"
+            variant="secondary"
+            disabled={submitting}
+            onPress={() => void doSignIn(true)}
+            testID="biometric-sign-in"
+          />
+        ) : null}
+
         <Banner kind="warning" text={persistenceError ?? persistenceNotice ?? ''} testID="persistence-notice" />
         <Banner kind="error" text={formError ?? ''} testID="sign-in-error" />
 
         <NewsprintButton
           label="SIGN IN"
-          onPress={doSignIn}
+          onPress={() => void doSignIn()}
           disabled={submitting}
           loading={submitting}
           testID="sign-in-submit"
