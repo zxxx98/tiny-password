@@ -12,7 +12,6 @@ import {
 } from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {NewsprintButton} from '../components/NewsprintButton';
-import {CheckUpdateButton} from '../components/CheckUpdateButton';
 import {Banner} from '../components/Banner';
 import {ConfirmDialog} from '../components/ConfirmDialog';
 import {colors} from '../theme/colors';
@@ -43,6 +42,7 @@ interface VaultScreenProps {
   onOpenGenerator: () => void;
   onSignOut: () => void;
   onActivity: () => void;
+  onOpenSettings?: () => void;
 }
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -67,6 +67,7 @@ export function VaultScreen({
   onOpenGenerator,
   onSignOut,
   onActivity,
+  onOpenSettings,
 }: VaultScreenProps): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
@@ -245,6 +246,17 @@ export function VaultScreen({
             <Text style={styles.kicker}>READABLE VAULT</Text>
           </View>
           <View style={styles.headerActions}>
+            {onOpenSettings ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="打开设置"
+                onPress={onOpenSettings}
+                hitSlop={8}
+                style={styles.signOutButton}
+                testID="open-settings">
+                <Text style={styles.signOutText}>SETTINGS</Text>
+              </Pressable>
+            ) : null}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="打开独立密码生成器"
@@ -370,8 +382,6 @@ export function VaultScreen({
           }
         />
       )}
-
-      {active ? <CheckUpdateButton /> : null}
 
       <View style={styles.addRow}>
         <NewsprintButton label="+ ADD ENTRY" onPress={() => {

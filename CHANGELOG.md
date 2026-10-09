@@ -15,6 +15,17 @@
 - The default Compose service publishes no host port, runs non-root with dropped capabilities, read-only root filesystem, bounded resources, a tmpfs scratch area, and a graceful stop window.
 - Service-worker navigations, API calls, archive transfers, and all non-whitelisted URLs remain network-only; the browser never receives an offline copy of vault contents.
 
+## Mobile 1.4.1 (10) - 2026-10-09
+
+### Changed
+
+- Consolidate Android version information and update checks into a dedicated settings page, with compact settings entries on the sign-in and vault screens.
+- Preserve login inputs, vault search and list position when returning from settings; hide settings while the app is in the background.
+
+### Validation
+
+- Mobile TypeScript checks and all 175 unit tests passed.
+
 ## Mobile 1.4.0 (9) - 2026-10-08
 
 ### Fixed

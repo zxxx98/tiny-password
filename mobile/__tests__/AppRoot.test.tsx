@@ -2,6 +2,9 @@ import React from 'react';
 import renderer, {act, type ReactTestRenderer} from 'react-test-renderer';
 import {AppState, FlatList, Modal} from 'react-native';
 import {AppRoot} from '../src/AppRoot';
+import {SettingsScreen} from '../src/screens/SettingsScreen';
+import {CheckUpdateButton} from '../src/components/CheckUpdateButton';
+import {NewsprintHeader} from '../src/components/NewsprintHeader';
 import {VaultScreen} from '../src/screens/VaultScreen';
 import type {RememberedLoginStore} from '../src/auth/rememberedLogin';
 import type {FetchInit} from '../src/api/client';
@@ -92,7 +95,7 @@ afterEach(async () => {
   jest.useRealTimers();
 });
 
-async function login() {
+async function login(authenticate = true) {
   const store: RememberedLoginStore = {
     load: async () => ({serverUrl: 'https://vault.example.com', credentials: null}),
     loadServerUrl: async () => null,
@@ -108,6 +111,7 @@ async function login() {
     tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
     tree.root.findByProps({testID: 'password-input'}).props.onChangeText('dummy-password');
   });
+  if (!authenticate) { return; }
   await act(async () => {
     await tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
   });
@@ -202,4 +206,37 @@ test('cold-start biometric login reaches the vault and sign-out removes the biom
   expect(clear).toHaveBeenCalledTimes(1);
   expect(tree.root.findAllByProps({testID: 'biometric-sign-in'})).toHaveLength(0);
   expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('');
+});
+
+
+test('settings is the only update UI and returning preserves login inputs', async () => {
+  await login(false);
+  expect(tree.root.findAllByType(CheckUpdateButton)).toHaveLength(0);
+  act(() => tree.root.findByProps({testID: 'open-settings'}).props.onPress());
+  const settings = tree.root.findByType(SettingsScreen);
+  expect(settings.findAllByType(CheckUpdateButton)).toHaveLength(1);
+  // Android's hardware back is delivered through the full-screen Modal.
+  act(() => settings.findAllByType(Modal)[0].props.onRequestClose());
+  expect(tree.root.findAllByType(SettingsScreen)).toHaveLength(0);
+  expect(tree.root.findByProps({testID: 'username-input'}).props.value).toBe('alice');
+  expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('dummy-password');
+});
+
+test('settings preserves the vault list and hides while the app is in the background', async () => {
+  await login();
+  act(() => tree.root.findByProps({testID: 'vault-search'}).props.onChangeText('Git'));
+  await act(async () => { jest.advanceTimersByTime(300); });
+  const list = tree.root.findByType(FlatList).instance;
+  expect(tree.root.findAllByType(CheckUpdateButton)).toHaveLength(0);
+  act(() => tree.root.findByProps({testID: 'open-settings'}).props.onPress());
+  expect(tree.root.findAllByType(CheckUpdateButton)).toHaveLength(1);
+  act(() => changeAppState('background'));
+  expect(tree.root.findByType(SettingsScreen).findAllByType(Modal)[0].props.visible).toBe(false);
+  await act(async () => changeAppState('active'));
+  const settings = tree.root.findByType(SettingsScreen);
+  expect(settings.findAllByType(Modal)[0].props.visible).toBe(true);
+  act(() => settings.findByType(NewsprintHeader).props.onBack());
+  expect(tree.root.findAllByType(SettingsScreen)).toHaveLength(0);
+  expect(tree.root.findByProps({testID: 'vault-search'}).props.value).toBe('Git');
+  expect(tree.root.findByType(FlatList).instance).toBe(list);
 });

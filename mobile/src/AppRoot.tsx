@@ -3,6 +3,7 @@ import {AppState, Keyboard, StatusBar, StyleSheet, Text, View} from 'react-nativ
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {SignInScreen} from './screens/SignInScreen';
 import {VaultScreen} from './screens/VaultScreen';
+import {SettingsScreen} from './screens/SettingsScreen';
 import {GeneratorScreen} from './screens/GeneratorScreen';
 import {EntryEditorScreen, type EditorRoute} from './screens/EntryEditorScreen';
 import {NewsprintButton} from './components/NewsprintButton';
@@ -43,6 +44,7 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
   }
   const session = sessionRef.current;
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRoute] = useState<Route>({name: 'signin'});
   const [signOutNotice, setSignOutNotice] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -132,10 +134,12 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
         const next = session.getSnapshot();
         setSnap(next);
         if (next.phase === 'signed-out' || next.phase === 'unconfigured') {
+          setSettingsOpen(false);
           setRoute({name: 'signin'});
           setEditorNotice(null);
           void sensitiveClipboard.clear();
         } else if (next.phase === 'must-change' || next.phase === 'confirming-change') {
+          setSettingsOpen(false);
           setRoute({name: 'signin'});
         }
       }),
@@ -259,6 +263,7 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
                   setRoute({name: 'vault'});
                 }}
                 onActivity={onActivity}
+                onOpenSettings={() => { Keyboard.dismiss(); setSettingsOpen(true); }}
               />
             ) : route.name === 'generator' ? (
               api ? (
@@ -296,11 +301,14 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
                   onAddEntry={() => setRoute({name: 'editor', editor: {mode: 'create'}})}
                   onOpenGenerator={() => setRoute({name: 'generator'})}
                   onSignOut={handleSignOutFromVault}
+                  onOpenSettings={() => { Keyboard.dismiss(); setSettingsOpen(true); }}
                   onActivity={onActivity}
                 />
               </View>
             ) : null}
           </View>
+
+          {settingsOpen ? <SettingsScreen onClose={() => setSettingsOpen(false)} /> : null}
 
           {masked ? (
             <View accessibilityViewIsModal style={styles.mask} testID="resume-mask">

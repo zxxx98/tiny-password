@@ -12,7 +12,6 @@ import {
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {NewsprintInput} from '../components/NewsprintInput';
 import {NewsprintButton} from '../components/NewsprintButton';
-import {CheckUpdateButton} from '../components/CheckUpdateButton';
 import {Banner} from '../components/Banner';
 import {ChangePasswordForm} from '../components/ChangePasswordForm';
 import {ConfirmDialog} from '../components/ConfirmDialog';
@@ -39,6 +38,7 @@ interface SignInScreenProps {
   onRememberedCredentialsCleared?: () => void | Promise<void>;
   onAuthenticated: () => void;
   onActivity: () => void;
+  onOpenSettings?: () => void;
 }
 
 type Phase = 'sign-in' | 'change-password';
@@ -74,6 +74,7 @@ export function SignInScreen({
   onRememberedCredentialsCleared,
   onAuthenticated,
   onActivity,
+  onOpenSettings,
 }: SignInScreenProps): React.JSX.Element {
   const {hidden} = useInteraction();
   const insets = useSafeAreaInsets();
@@ -707,11 +708,18 @@ export function SignInScreen({
           testID="sign-in-submit"
         />
 
-        <CheckUpdateButton />
-
         <View style={styles.footer}>
           <Text style={styles.footerMeta}>PRIVATE / SECURE</Text>
-          <Text style={styles.footerMeta}>EDITION: MOBILE V1</Text>
+          {onOpenSettings ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="打开设置"
+              onPress={onOpenSettings}
+              style={styles.settingsButton}
+              testID="open-settings">
+              <Text style={styles.footerMeta}>SETTINGS</Text>
+            </Pressable>
+          ) : null}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -834,6 +842,7 @@ const styles = StyleSheet.create({
     letterSpacing: letterSpacing.label,
     color: colors.foreground,
   },
+  settingsButton: {minHeight: 48, justifyContent: 'center'},
   footer: {
     marginTop: spacing.xl,
     flexDirection: 'row',
