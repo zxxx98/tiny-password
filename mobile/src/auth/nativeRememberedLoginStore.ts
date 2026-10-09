@@ -54,7 +54,7 @@ export const nativeRememberedLoginStore: RememberedLoginStore = {
     const serverUrl = await ordinaryStore.loadServerUrl();
     const biometricEnabled = await hasGenericPassword({service: BIOMETRIC_SERVICE});
     const biometricAvailable = Boolean(await getSupportedBiometryType().catch(() => null));
-    // Never read biometric secrets or display a system prompt during startup.
+    // Discover enrollment first; the sign-in screen requests the startup prompt once.
     const credentials = biometricEnabled ? null : await ordinaryStore.loadCredentials();
     return {serverUrl, credentials, biometricAvailable, biometricEnabled};
   },

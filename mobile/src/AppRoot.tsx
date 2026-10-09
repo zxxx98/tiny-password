@@ -7,6 +7,7 @@ import {SettingsScreen} from './screens/SettingsScreen';
 import {GeneratorScreen} from './screens/GeneratorScreen';
 import {EntryEditorScreen, type EditorRoute} from './screens/EntryEditorScreen';
 import {NewsprintButton} from './components/NewsprintButton';
+import {verifyBiometricEnrollment} from './auth/verifyBiometricEnrollment';
 import {SessionController} from './auth/session';
 import {colors} from './theme/colors';
 import {fonts, letterSpacing, typeScale} from './theme/typography';
@@ -44,6 +45,8 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
   }
   const session = sessionRef.current;
 
+  const [biometricRequested, setBiometricRequested] = useState(false);
+  const autoBiometricPending = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [route, setRoute] = useState<Route>({name: 'signin'});
   const [signOutNotice, setSignOutNotice] = useState<string | null>(null);
@@ -67,6 +70,7 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
       .load()
       .then(snapshot => {
         if (current) {
+          autoBiometricPending.current = Boolean(snapshot.biometricEnabled);
           setRememberedLogin(snapshot);
         }
       })
@@ -103,6 +107,7 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
         await rememberedLoginStore.saveCredentials(credentials, biometric);
       } catch {
         if (revision !== credentialsRevisionRef.current) { return; }
+        setBiometricRequested(false);
         setRememberedLogin(previous => ({...previous, credentials: null, biometricEnabled: false}));
         setEditorNotice('登录成功，但本地登录凭据未能保存，下次请使用密码登录并重新启用');
         setPersistenceNotice('本地登录凭据未能保存，下次请使用密码登录并重新启用');
@@ -110,6 +115,7 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
       }
       if (revision !== credentialsRevisionRef.current) { return; }
       setPersistenceNotice(null);
+      setBiometricRequested(false);
       setRememberedLogin(previous => ({...previous,
         credentials: biometric ? null : credentials, biometricEnabled: biometric,
       }));
@@ -119,6 +125,8 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
 
   const clearRememberedCredentials = useCallback(async (): Promise<void> => {
     credentialsRevisionRef.current += 1;
+    setBiometricRequested(false);
+    autoBiometricPending.current = false;
     setRememberedLogin(previous => ({...previous, credentials: null, biometricEnabled: false}));
     try {
       await rememberedLoginStore.clearCredentials();
@@ -227,6 +235,50 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
       setRefreshKey(k => k + 1);
     }
   }, []);
+  const changeBiometric = async (enabled: boolean, password?: string): Promise<void> => {
+    if (!enabled) {
+      // Surface deletion failures to settings rather than claiming the switch is off.
+      ++credentialsRevisionRef.current;
+      await rememberedLoginStore.clearCredentials();
+      setBiometricRequested(false);
+      autoBiometricPending.current = false;
+      setRememberedLogin(previous => ({...previous, credentials: null, biometricEnabled: false}));
+      return;
+    }
+    const snapshot = session.getSnapshot();
+    if (snapshot.phase !== 'authenticated') {
+      setBiometricRequested(true);
+      return;
+    }
+    if (!password || !snapshot.serverUrl || !snapshot.principal) {
+      throw new Error('请输入当前账号的密码');
+    }
+    const revision = ++credentialsRevisionRef.current;
+    const credentials = {username: snapshot.principal.username, password};
+    const stillCurrent = () => revision === credentialsRevisionRef.current
+      && session.getSnapshot().phase === 'authenticated'
+      && session.getSnapshot().serverUrl === snapshot.serverUrl
+      && session.getSnapshot().principal?.user_id === snapshot.principal?.user_id;
+    await verifyBiometricEnrollment(snapshot.serverUrl, credentials, snapshot.principal.user_id);
+    if (!stillCurrent()) { throw new Error('登录状态已变化，请重新登录后启用'); }
+    await rememberedLoginStore.saveServerUrl(snapshot.serverUrl);
+    if (!stillCurrent()) { throw new Error('登录状态已变化，请重新登录后启用'); }
+    try {
+      await rememberedLoginStore.saveCredentials(credentials, true);
+    } catch {
+      if (stillCurrent()) {
+        setRememberedLogin(previous => ({...previous, credentials: null, biometricEnabled: false}));
+      }
+      throw new Error('指纹登录未能启用，请重试或使用密码登录');
+    }
+    if (!stillCurrent()) {
+      if (revision === credentialsRevisionRef.current) { await rememberedLoginStore.clearCredentials(); }
+      throw new Error('登录状态已变化，请重新登录后启用');
+    }
+    setRememberedLogin(previous => ({...previous, credentials: null, biometricEnabled: true}));
+    setBiometricRequested(false);
+  };
+
   const api = session.getApi();
 
   return (
@@ -250,7 +302,9 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
                 session={session}
                 initialServerUrl={rememberedLogin.serverUrl ?? DEFAULT_SERVER_URL}
                 rememberedCredentials={rememberedLogin.credentials}
-                biometricAvailable={rememberedLogin.biometricAvailable}
+                biometricEnrollmentRequested={biometricRequested}
+                autoBiometricLogin={!settingsOpen && autoBiometricPending.current}
+                onAutoBiometricAttempt={() => { autoBiometricPending.current = false; }}
                 biometricEnabled={rememberedLogin.biometricEnabled}
                 onBiometricUnlock={rememberedLoginStore.unlockCredentials}
                 initialNotice={signOutNotice}
@@ -308,7 +362,15 @@ export function AppRoot({rememberedLoginStore = nativeRememberedLoginStore}: App
             ) : null}
           </View>
 
-          {settingsOpen ? <SettingsScreen onClose={() => setSettingsOpen(false)} /> : null}
+          {settingsOpen ? (
+            <SettingsScreen
+              onClose={() => setSettingsOpen(false)}
+              biometricAvailable={Boolean(rememberedLogin.biometricAvailable)}
+              biometricEnabled={Boolean(rememberedLogin.biometricEnabled || biometricRequested)}
+              authenticated={snap.phase === 'authenticated'}
+              onBiometricChange={changeBiometric}
+            />
+          ) : null}
 
           {masked ? (
             <View accessibilityViewIsModal style={styles.mask} testID="resume-mask">

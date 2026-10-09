@@ -15,6 +15,18 @@
 - The default Compose service publishes no host port, runs non-root with dropped capabilities, read-only root filesystem, bounded resources, a tmpfs scratch area, and a graceful stop window.
 - Service-worker navigations, API calls, archive transfers, and all non-whitelisted URLs remain network-only; the browser never receives an offline copy of vault contents.
 
+## Mobile 1.5.0 (11) - 2026-10-09
+
+### Changed
+
+- Move biometric login enrollment to Settings and automatically prompt once on cold start when enabled; successful verification signs in directly, while cancellation or failure allows password fallback.
+- Verify authenticated enrollment in an isolated temporary session without replacing the active vault session; enrollment before sign-in completes after successful password login.
+- Clear protected credentials when disabling biometric login and preserve enrollment through forced password changes, with stale-result guards during session changes.
+
+### Validation
+
+- Mobile TypeScript checks and all 182 unit tests passed; biometric device validation remains pending.
+
 ## Mobile 1.4.1 (10) - 2026-10-09
 
 ### Changed

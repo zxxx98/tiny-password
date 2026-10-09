@@ -12,8 +12,8 @@ test('uses 77Password as the Android app label', () => {
 test('increments the Android release version so CI packages this update', () => {
   const buildGradle = fs.readFileSync(path.join(androidMain, '..', '..', '..', 'app', 'build.gradle'), 'utf8');
 
-  expect(buildGradle).toMatch(/versionCode\s+10/);
-  expect(buildGradle).toMatch(/versionName\s+"1\.4\.1"/);
+  expect(buildGradle).toMatch(/versionCode\s+11/);
+  expect(buildGradle).toMatch(/versionName\s+"1\.5\.0"/);
 });
 
 test.each([

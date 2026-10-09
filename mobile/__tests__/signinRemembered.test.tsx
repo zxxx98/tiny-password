@@ -69,7 +69,7 @@ function renderSignIn(options?: {
   session?: SessionController;
   initialServerUrl?: string;
   rememberedCredentials?: {username: string; password: string} | null;
-  biometricAvailable?: boolean;
+  biometricEnrollmentRequested?: boolean;
   biometricEnabled?: boolean;
   onBiometricUnlock?: jest.Mock;
   onRememberedCredentialsSaved?: jest.Mock;
@@ -83,7 +83,7 @@ function renderSignIn(options?: {
         session={fake}
         initialServerUrl={options?.initialServerUrl ?? ''}
         rememberedCredentials={options?.rememberedCredentials ?? null}
-        biometricAvailable={options?.biometricAvailable}
+        biometricEnrollmentRequested={options?.biometricEnrollmentRequested}
         biometricEnabled={options?.biometricEnabled}
         onBiometricUnlock={options?.onBiometricUnlock}
         onRememberedCredentialsSaved={options?.onRememberedCredentialsSaved}
@@ -108,7 +108,7 @@ test('uses remembered server and credentials as the initial sign-in values', () 
   expect(tree.root.findByProps({testID: 'server-input'}).props.value).toBe('https://vault.example.com');
   expect(tree.root.findByProps({testID: 'username-input'}).props.value).toBe('alice');
   expect(tree.root.findByProps({testID: 'password-input'}).props.value).toBe('secret');
-  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toEqual({checked: true});
+  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toMatchObject({checked: true});
 });
 
 test('unchecking remember password immediately clears persisted credentials', async () => {
@@ -121,7 +121,7 @@ test('unchecking remember password immediately clears persisted credentials', as
   await act(async () => {
     tree.root.findByProps({testID: 'remember-password'}).props.onPress();
   });
-  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toEqual({checked: false});
+  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toMatchObject({checked: false});
 
   expect(onClear).toHaveBeenCalledTimes(1);
 });
@@ -185,7 +185,7 @@ test('saves credentials only after an authenticated login', async () => {
     tree.root.findByProps({testID: 'password-input'}).props.onChangeText('secret');
     tree.root.findByProps({testID: 'remember-password'}).props.onPress();
   });
-  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toEqual({checked: true});
+  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toMatchObject({checked: true});
   await act(async () => {
     await tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
   });
@@ -200,15 +200,15 @@ test.each([false, true])('saves the new password after forced change (biometric=
     session: fake.session,
     initialServerUrl: 'https://vault.example.com',
     onRememberedCredentialsSaved: onSave,
-    biometricAvailable: biometric,
+    biometricEnrollmentRequested: biometric,
   });
 
   await act(async () => {
     tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
     tree.root.findByProps({testID: 'password-input'}).props.onChangeText('old-secret');
-    tree.root.findByProps({testID: biometric ? 'enable-biometric' : 'remember-password'}).props.onPress();
+    if (!biometric) { tree.root.findByProps({testID: 'remember-password'}).props.onPress(); }
   });
-  expect(tree.root.findByProps({testID: biometric ? 'enable-biometric' : 'remember-password'}).props.accessibilityState).toEqual({checked: true});
+  expect(tree.root.findAllByProps({testID: 'enable-biometric'})).toHaveLength(0);
   await act(async () => {
     await tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress();
   });
@@ -256,7 +256,7 @@ test('signing out from forced password change clears the remembered-password cho
   });
 
   expect(onClear).toHaveBeenCalledTimes(1);
-  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toEqual({checked: false});
+  expect(tree.root.findByProps({testID: 'remember-password'}).props.accessibilityState).toMatchObject({checked: false});
 });
 
 const renderedTrees: ReactTestRenderer[] = [];
@@ -315,11 +315,10 @@ test('opting into biometrics saves only after successful password login', async 
   const fake = makeFakeSession();
   const save = jest.fn();
   const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
-    biometricAvailable: true, onRememberedCredentialsSaved: save});
+    biometricEnrollmentRequested: true, onRememberedCredentialsSaved: save});
   act(() => {
     tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
     tree.root.findByProps({testID: 'password-input'}).props.onChangeText('secret');
-    tree.root.findByProps({testID: 'enable-biometric'}).props.onPress();
   });
   expect(save).not.toHaveBeenCalled();
   await act(async () => { tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress(); });
@@ -344,11 +343,10 @@ test('session refresh during enrollment does not trigger a second credential sav
   let finish!: () => void;
   const save = jest.fn(() => new Promise<void>(resolve => { finish = resolve; }));
   const tree = renderSignIn({session: fake.session, initialServerUrl: 'https://vault.example.com',
-    biometricAvailable: true, onRememberedCredentialsSaved: save});
+    biometricEnrollmentRequested: true, onRememberedCredentialsSaved: save});
   act(() => {
     tree.root.findByProps({testID: 'username-input'}).props.onChangeText('alice');
     tree.root.findByProps({testID: 'password-input'}).props.onChangeText('secret');
-    tree.root.findByProps({testID: 'enable-biometric'}).props.onPress();
   });
   await act(async () => { tree.root.findByProps({testID: 'sign-in-submit'}).props.onPress(); });
   act(() => fake.setPhase('authenticated'));

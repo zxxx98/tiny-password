@@ -27,7 +27,9 @@ interface SignInScreenProps {
   session: SessionController;
   initialServerUrl: string;
   rememberedCredentials?: RememberedCredentials | null;
-  biometricAvailable?: boolean;
+  biometricEnrollmentRequested?: boolean;
+  autoBiometricLogin?: boolean;
+  onAutoBiometricAttempt?: () => void;
   biometricEnabled?: boolean;
   onBiometricUnlock?: (serverUrl: string) => Promise<RememberedCredentials | null>;
   /** One-shot banner, e.g. the sign-out notice from the Vault. */
@@ -64,7 +66,9 @@ export function SignInScreen({
   session,
   initialServerUrl,
   rememberedCredentials = null,
-  biometricAvailable = false,
+  biometricEnrollmentRequested = false,
+  autoBiometricLogin = false,
+  onAutoBiometricAttempt,
   biometricEnabled = false,
   onBiometricUnlock,
   initialNotice,
@@ -95,10 +99,12 @@ export function SignInScreen({
   const [rememberPassword, setRememberPassword] = useState(
     () => Boolean(rememberedCredentials?.username && rememberedCredentials?.password),
   );
-  const [useBiometric, setUseBiometric] = useState(biometricEnabled);
+  const [useBiometric, setUseBiometric] = useState(biometricEnabled || biometricEnrollmentRequested);
   const biometricRef = useRef(useBiometric);
   biometricRef.current = useBiometric;
   const biometricLoginRef = useRef(false);
+  const autoBiometricAttemptedRef = useRef(false);
+
   const [phase, setPhase] = useState<Phase>(() => {
     const current = session.getSnapshot().phase;
     return current === 'must-change' || current === 'confirming-change' ? 'change-password' : 'sign-in';
@@ -120,6 +126,18 @@ export function SignInScreen({
   passwordRef.current = password;
   const rememberPasswordRef = useRef(rememberPassword);
   rememberPasswordRef.current = rememberPassword;
+  useEffect(() => {
+    const enabled = biometricEnabled || biometricEnrollmentRequested;
+    biometricRef.current = enabled;
+    setUseBiometric(enabled);
+    if (enabled) {
+      rememberPasswordRef.current = false;
+      setRememberPassword(false);
+    }
+  }, [biometricEnabled, biometricEnrollmentRequested]);
+
+  const pendingBiometricRef = useRef(false);
+  const pendingRememberRef = useRef(false);
   const pendingNewPasswordRef = useRef<string | null>(null);
   const skipNextAuthenticatedSaveRef = useRef(false);
 
@@ -177,7 +195,7 @@ export function SignInScreen({
   // the user applies a new address.
   useEffect(() => {
     if (!session.serverConfigured && serverUrl.trim().length > 0 && applyServer(serverUrl)) {
-      void session.preflight();
+      if (!autoBiometricLogin || !biometricEnabled) { void session.preflight(); }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -347,6 +365,16 @@ export function SignInScreen({
     }
   };
 
+  useEffect(() => {
+    if (!autoBiometricLogin || !biometricEnabled || !onBiometricUnlock || hidden
+      || phase !== 'sign-in' || autoBiometricAttemptedRef.current) { return; }
+    autoBiometricAttemptedRef.current = true;
+    onAutoBiometricAttempt?.();
+    void doSignIn(true);
+    // A cold start gets exactly one attempt; re-renders/resume must not re-prompt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoBiometricLogin, biometricEnabled, hidden, phase]);
+
   useEffect(
     () => () => {
       loginAttemptRef.current += 1;
@@ -365,6 +393,8 @@ export function SignInScreen({
     const result = await session.changePassword(current, next);
     if (result.ok) {
       // Confirm the session requirement is lifted; never resubmits the change.
+      pendingBiometricRef.current = biometricRef.current;
+      pendingRememberRef.current = rememberPasswordRef.current;
       clearRememberedCredentials();
       pendingNewPasswordRef.current = next;
       skipNextAuthenticatedSaveRef.current = true;
@@ -372,10 +402,10 @@ export function SignInScreen({
       holdNavigationRef.current = true;
       const outcome = await session.confirmSession();
       if (outcome === 'confirmed') {
-        if ((rememberPasswordRef.current || biometricRef.current) && usernameRef.current.trim() && next) {
+        if ((pendingRememberRef.current || pendingBiometricRef.current) && usernameRef.current.trim() && next) {
           await onRememberedCredentialsSaved?.({
             username: usernameRef.current.trim(), password: next,
-          }, biometricRef.current);
+          }, pendingBiometricRef.current);
         }
         if (attempt !== loginAttemptRef.current || session.getSnapshot().phase !== 'authenticated') {
           return;
@@ -427,10 +457,10 @@ export function SignInScreen({
     const outcome = await session.confirmSession();
     if (outcome === 'confirmed') {
       const next = pendingNewPasswordRef.current;
-      if ((rememberPasswordRef.current || biometricRef.current) && usernameRef.current.trim() && next) {
+      if ((pendingRememberRef.current || pendingBiometricRef.current) && usernameRef.current.trim() && next) {
         await onRememberedCredentialsSaved?.({
           username: usernameRef.current.trim(), password: next,
-        }, biometricRef.current);
+        }, pendingBiometricRef.current);
       }
       if (attempt !== loginAttemptRef.current || session.getSnapshot().phase !== 'authenticated') {
         return;
@@ -643,10 +673,11 @@ export function SignInScreen({
 
         <Pressable
           accessibilityRole="checkbox"
-          disabled={submitting}
+          disabled={submitting || useBiometric}
           accessibilityLabel="记住密码"
-          accessibilityState={{checked: rememberPassword}}
+          accessibilityState={{checked: rememberPassword, disabled: submitting || useBiometric}}
           onPress={() => {
+            if (useBiometric) { return; }
             const next = !rememberPasswordRef.current;
             rememberPasswordRef.current = next;
             setRememberPassword(next);
@@ -664,29 +695,6 @@ export function SignInScreen({
           <Text style={styles.rememberText}>REMEMBER PASSWORD</Text>
         </Pressable>
 
-        {biometricAvailable || biometricEnabled ? (
-          <Pressable
-            accessibilityRole="checkbox"
-            accessibilityLabel="启用指纹登录"
-            accessibilityState={{checked: useBiometric}}
-            disabled={submitting}
-            testID="enable-biometric"
-            style={styles.rememberRow}
-            onPress={() => {
-              const next = !biometricRef.current;
-              biometricRef.current = next;
-              setUseBiometric(next);
-              rememberPasswordRef.current = false;
-              setRememberPassword(false);
-              // Remove the existing persisted copy before changing storage modes.
-              clearRememberedCredentials();
-            }}>
-            <View style={[styles.checkbox, useBiometric ? styles.checkboxChecked : null]}>
-              {useBiometric ? <Text style={styles.checkboxMark}>✓</Text> : null}
-            </View>
-            <Text style={styles.rememberText}>启用指纹 / 生物识别登录</Text>
-          </Pressable>
-        ) : null}
         {biometricEnabled && onBiometricUnlock ? (
           <NewsprintButton
             label="指纹 / 生物识别登录"
